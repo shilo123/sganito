@@ -555,7 +555,7 @@ public class Shibutz
 
         var EmptyHours = GetEmptyHour();
      
-
+        
 
         foreach (HourSchool hs in EmptyHours)
         {
