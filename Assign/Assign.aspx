@@ -611,15 +611,16 @@
 
             var DayContainer = "";
 
+            var Seq = 0;
 
-
+                
             for (var i = 0; i < Data.length; i++) {
 
                 var DayId = (Data[i].HourId).toString().substring(0, 1);
-                //var DayId2 = (TargetObj.HourId).toString().substring(0, 1);
+              
 
                 if (PrevTeacherId != Data[i].TeacherId) {
-
+                    
                     Template = $("#dvPrintTemplate").html();
                     Template = Template.replace("@TeacherName", Data[i].TeacherName);
                     Template = Template.replace(/@TeacherId/g, Data[i].TeacherId);
@@ -683,8 +684,19 @@
                     addClass = "emptyHour";
                 }
 
+                Seq += 1;
+                if (PrevDayId != DayId) {
 
-                DayContainer = "<div class='teacherRub " + addClass + "'>" + className
+                    Seq = 1;
+                    PrevDayId = DayId;
+
+                }
+                
+
+
+             
+
+                DayContainer = "<div class='teacherRub " + addClass + "'><b>" + Seq+"&nbsp;</b>" + className
                     + "<div class='teacherPro'>" + ProfessionalName + "</div></div>";
 
 

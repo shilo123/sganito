@@ -20,9 +20,11 @@
 
         function InitCombos() {
 
-
-            GetComboItems("Tafkid", "ConfigurationId=" + ConfigurationId, "#ddlTafkid", "TafkidId", "Name");
+            GetComboItems("Tafkid", "", "#ddlTafkid", "TafkidId", "Name");
+            //GetComboItems("Tafkid", "ConfigurationId=" + ConfigurationId, "#ddlTafkid", "TafkidId", "Name");
             GetComboItems("Professional", "ConfigurationId=" + ConfigurationId, "#ddlProfessional", "ProfessionalId", "Name");
+
+
         }
 
         function InitEVENTS() {

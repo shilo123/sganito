@@ -1,26 +1,27 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 14
-VisualStudioVersion = 14.0.25420.1
+# Visual Studio Version 18
+VisualStudioVersion = 18.1.11304.174 d18.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{E24C65DC-7377-472B-9ABA-BC803B73C61A}") = "Sganit", ".", "{20455D3B-C4A3-4206-B1F6-B07580D206EB}"
 	ProjectSection(WebsiteProperties) = preProject
-		TargetFrameworkMoniker = ".NETFramework,Version%3Dv4.0"
+		TargetFrameworkMoniker = ".NETFramework,Version%3Dv4.8"
 		Debug.AspNetCompiler.VirtualPath = "/localhost_59212"
-		Debug.AspNetCompiler.PhysicalPath = "..\..\..\..\..\..\..\Dev\Sganit\"
+		Debug.AspNetCompiler.PhysicalPath = "..\Sganit\"
 		Debug.AspNetCompiler.TargetPath = "PrecompiledWeb\localhost_59212\"
 		Debug.AspNetCompiler.Updateable = "true"
 		Debug.AspNetCompiler.ForceOverwrite = "true"
 		Debug.AspNetCompiler.FixedNames = "false"
 		Debug.AspNetCompiler.Debug = "True"
 		Release.AspNetCompiler.VirtualPath = "/localhost_59212"
-		Release.AspNetCompiler.PhysicalPath = "..\..\..\..\..\..\..\Dev\Sganit\"
+		Release.AspNetCompiler.PhysicalPath = "..\Sganit\"
 		Release.AspNetCompiler.TargetPath = "PrecompiledWeb\localhost_59212\"
 		Release.AspNetCompiler.Updateable = "true"
 		Release.AspNetCompiler.ForceOverwrite = "true"
 		Release.AspNetCompiler.FixedNames = "false"
 		Release.AspNetCompiler.Debug = "False"
 		VWDPort = "59212"
+		SlnRelativePath = "..\Sganit\"
 	EndProjectSection
 EndProject
 Global
@@ -33,5 +34,8 @@ Global
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {EDDCF9B6-8C89-466F-B338-3A80831F81A4}
 	EndGlobalSection
 EndGlobal

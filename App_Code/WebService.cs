@@ -1,20 +1,21 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Web;
-using System.Web.Services;
-using System.Data;
-using System.ServiceModel.Web;
-using System.Web.Script.Serialization;
-using System.Collections;
-using System.Text;
-using System.Web.Security;
 using System.Activities.Statements;
-using System.IO;
+using System.Collections;
+using System.Collections.Generic;
 using System.Configuration;
-using System.Web.Configuration;
-using System.Net.Mail;
+using System.Data;
+using System.Data.SqlClient;
+using System.IO;
+using System.Linq;
 using System.Net;
+using System.Net.Mail;
+using System.ServiceModel.Web;
+using System.Text;
+using System.Web;
+using System.Web.Configuration;
+using System.Web.Script.Serialization;
+using System.Web.Security;
+using System.Web.Services;
 
 /// <summary>
 /// Summary description for WebService
@@ -61,7 +62,7 @@ public class WebService : System.Web.Services.WebService
 
     }
 
-
+   
     [WebMethod]
     public void BetKneset_UpdateHTML()
     {
@@ -937,16 +938,28 @@ public class WebService : System.Web.Services.WebService
     public void Assign_ShibutzAuto()
     {
         // to do add paremter ConfigId
-        
 
-        DataSet ds = Dal.ExeDataSetSp("Assign_GetInitDataForShibutz", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+        int configurationId = Helper.ConvertToInt(
+        HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]
+      );
 
-        Shibutz sh = new Shibutz(ds);
-        sh.StartShibutz();
+        DataSet ds = Dal.ExeDataSetSp("Assign_GetInitDataForShibutz", configurationId);
+
+        Shibutz sh = new Shibutz(ds, configurationId);
+
+        ShibutzRunResult r = sh.StartShibutz_SaveAlways();
+
+        // אינדיקציה מיידית
+        int saved = r.SavedCount;
+        int reds = r.ErrorCount;
+
+
         HttpContext.Current.Response.Write(ConvertDataTabletoString(ds.Tables[0]));
-
     }
 
+   
+
+    
     [WebMethod]
     public void Assign_GetDataForAssignAuto()
     {
