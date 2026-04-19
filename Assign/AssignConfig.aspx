@@ -1,4 +1,4 @@
-﻿<%@ Page Title="" Language="C#" MasterPageFile="~/MasterPage/MasterPage.master" AutoEventWireup="true"
+<%@ Page Title="" Language="C#" MasterPageFile="~/MasterPage/MasterPage.master" AutoEventWireup="true"
     CodeFile="AssignConfig.aspx.cs" Inherits="Assign_AssignConfig" %>
 
 <asp:Content ID="Content1" ContentPlaceHolderID="head" runat="Server">
@@ -33,6 +33,167 @@
         .Disable {
             background: lightgray;
             border: solid 1px gray;
+        }
+
+        /* Loading overlay during automatic scheduling - Professional rich animation */
+        #shibutzLoadingOverlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.65);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+        #shibutzLoadingOverlay.active {
+            display: flex;
+        }
+        .shibutz-loading-box {
+            background: linear-gradient(135deg, #fff 0%, #f8fbff 100%);
+            border-radius: 16px;
+            padding: 45px 55px;
+            text-align: center;
+            box-shadow: 0 15px 50px rgba(0,0,0,0.25), 0 0 0 1px rgba(33,150,243,0.1);
+            max-width: 400px;
+            direction: rtl;
+            position: relative;
+            overflow: hidden;
+        }
+        .shibutz-loading-box::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #2196F3, #03A9F4, #00BCD4, #2196F3);
+            background-size: 200% 100%;
+            animation: shibutz-shimmer 2s linear infinite;
+        }
+        @keyframes shibutz-shimmer {
+            0% { background-position: 100% 0; }
+            100% { background-position: -100% 0; }
+        }
+        .shibutz-loader-wrap {
+            position: relative;
+            margin: 0 auto 28px;
+            width: 120px;
+            height: 120px;
+        }
+        .shibutz-loader-rings {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 3px solid transparent;
+            border-top-color: #2196F3;
+            animation: shibutz-spin 1s linear infinite;
+        }
+        .shibutz-loader-rings:nth-child(2) {
+            width: 85%;
+            height: 85%;
+            top: 7.5%;
+            left: 7.5%;
+            border-top-color: #03A9F4;
+            animation-duration: 1.2s;
+            animation-direction: reverse;
+        }
+        .shibutz-loader-rings:nth-child(3) {
+            width: 70%;
+            height: 70%;
+            top: 15%;
+            left: 15%;
+            border-top-color: #00BCD4;
+            animation-duration: 0.8s;
+        }
+        .shibutz-schedule-grid {
+            position: absolute;
+            width: 48px;
+            height: 48px;
+            top: 50%;
+            left: 50%;
+            margin: -24px 0 0 -24px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            grid-template-rows: repeat(4, 1fr);
+            gap: 3px;
+        }
+        .shibutz-schedule-cell {
+            background: #e3f2fd;
+            border-radius: 2px;
+            animation: shibutz-cell-pulse 1.5s ease-in-out infinite;
+        }
+        .shibutz-schedule-cell:nth-child(1) { animation-delay: 0s; }
+        .shibutz-schedule-cell:nth-child(2) { animation-delay: 0.1s; }
+        .shibutz-schedule-cell:nth-child(3) { animation-delay: 0.2s; }
+        .shibutz-schedule-cell:nth-child(4) { animation-delay: 0.3s; }
+        .shibutz-schedule-cell:nth-child(5) { animation-delay: 0.15s; }
+        .shibutz-schedule-cell:nth-child(6) { animation-delay: 0.25s; }
+        .shibutz-schedule-cell:nth-child(7) { animation-delay: 0.35s; }
+        .shibutz-schedule-cell:nth-child(8) { animation-delay: 0.05s; }
+        .shibutz-schedule-cell:nth-child(9) { animation-delay: 0.2s; }
+        .shibutz-schedule-cell:nth-child(10) { animation-delay: 0.3s; }
+        .shibutz-schedule-cell:nth-child(11) { animation-delay: 0.4s; }
+        .shibutz-schedule-cell:nth-child(12) { animation-delay: 0.1s; }
+        .shibutz-schedule-cell:nth-child(13) { animation-delay: 0.25s; }
+        .shibutz-schedule-cell:nth-child(14) { animation-delay: 0.35s; }
+        .shibutz-schedule-cell:nth-child(15) { animation-delay: 0.15s; }
+        .shibutz-schedule-cell:nth-child(16) { animation-delay: 0.3s; }
+        @keyframes shibutz-cell-pulse {
+            0%, 100% { background: #e3f2fd; transform: scale(0.9); opacity: 0.7; }
+            50% { background: #2196F3; transform: scale(1.1); opacity: 1; }
+        }
+        @keyframes shibutz-spin {
+            to { transform: rotate(360deg); }
+        }
+        .shibutz-loading-title {
+            font-size: 20px;
+            font-weight: bold;
+            background: linear-gradient(90deg, #1565C0, #03A9F4, #1565C0);
+            background-size: 200% auto;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: shibutz-title-shine 2.5s linear infinite;
+            margin-bottom: 10px;
+        }
+        @keyframes shibutz-title-shine {
+            0% { background-position: 0% center; }
+            100% { background-position: 200% center; }
+        }
+        .shibutz-loading-sub {
+            font-size: 14px;
+            color: #607D8B;
+            margin-bottom: 18px;
+        }
+        .shibutz-progress-bar {
+            height: 4px;
+            background: #e0e0e0;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .shibutz-progress-fill {
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(90deg, transparent 0%, #2196F3 30%, #00BCD4 70%, transparent 100%);
+            background-size: 200% 100%;
+            border-radius: 2px;
+            animation: shibutz-progress 1.8s ease-in-out infinite;
+        }
+        @keyframes shibutz-progress {
+            0% { background-position: 100% 0; }
+            100% { background-position: -100% 0; }
+        }
+        .shibutz-loading-dots {
+            display: inline-block;
+            animation: shibutz-dots 1.4s ease-in-out infinite;
+        }
+        @keyframes shibutz-dots {
+            0%, 80%, 100% { opacity: 0.3; }
+            40% { opacity: 1; }
         }
     </style>
 
@@ -161,14 +322,393 @@
 
         }
 
-        function DoAssign() {
+        function ShowLastErrorsReport() {
+            // Get last errors from session using the same Ajax helper as DoAssign
+            try {
+                console.log("Fetching last errors report from session...");
+                var errorsResult = Ajax("Assign_GetShibutzErrors");
+                console.log("Errors result type:", typeof errorsResult);
+                console.log("Errors result:", JSON.stringify(errorsResult));
+                
+                // ASP.NET Web Service returns {d: "..."} format
+                var errorsData = null;
+                if (errorsResult) {
+                    if (errorsResult.d) {
+                        // ASP.NET wraps response in {d: "..."}
+                        try {
+                            if (typeof errorsResult.d === 'string') {
+                                errorsData = JSON.parse(errorsResult.d);
+                            } else {
+                                errorsData = errorsResult.d;
+                            }
+                        } catch (e) {
+                            console.log("Failed to parse errorsResult.d as JSON:", e, "Raw value:", errorsResult.d);
+                            errorsData = errorsResult.d;
+                        }
+                    } else if (Array.isArray(errorsResult)) {
+                        // Direct array response
+                        errorsData = errorsResult;
+                    } else if (typeof errorsResult === 'string') {
+                        // String response - try to parse
+                        try {
+                            errorsData = JSON.parse(errorsResult);
+                        } catch (e) {
+                            console.log("Failed to parse errorsResult as JSON:", e, "Raw value:", errorsResult);
+                        }
+                    } else {
+                        console.log("Unexpected errorsResult format:", typeof errorsResult, errorsResult);
+                    }
+                } else {
+                    console.log("errorsResult is null or undefined");
+                }
+                
+                var savedCount = 0;
+                var errorCount = 0;
+                var errors = [];
+                
+                if (errorsData && errorsData.length > 0) {
+                    console.log("Parsed data - total rows:", errorsData.length);
+                    console.log("First row sample:", JSON.stringify(errorsData[0]));
+                    
+                    // Get counts from LAST row (summary row with ClassId=0)
+                    var lastRow = errorsData[errorsData.length - 1];
+                    savedCount = lastRow.SavedCount || 0;
+                    errorCount = lastRow.ErrorCount || 0;
+                    
+                    console.log("Summary from last row - savedCount:", savedCount, "errorCount:", errorCount);
+                    
+                    // Filter out summary rows (ClassId = 0) - keep only actual errors
+                    for (var i = 0; i < errorsData.length; i++) {
+                        if (errorsData[i].ClassId > 0) {
+                            errors.push(errorsData[i]);
+                        }
+                    }
+                    
+                    console.log("Filtered errors count:", errors.length, "errorCount from server:", errorCount);
+                } else {
+                    console.log("No errors data returned or empty array");
+                }
+                
+                // Show modal even if empty (to show summary)
+                ShowErrorsModal(errors, savedCount, errorCount);
+            } catch (e) {
+                console.log("Error fetching last errors report:", e);
+                alert("לא ניתן לטעון את דוח השגיאות האחרון: " + e.message);
+            }
+        }
 
-          
+        function DoFixMissing() {
             IsStop = false;
             $('#dvAlert').hide();
-            var x = Ajax("Assign_ShibutzAuto");
-            UpdateClassStatus();
-            $('#dvAlert').show();
+            $('#shibutzLoadingOverlay').addClass('active');
+            $('.shibutz-loading-title').html('מתקן חוסרים באמצעות הזזות<span class="shibutz-loading-dots">...</span>');
+
+            $.ajax({
+                type: "POST",
+                url: "../WebService.asmx/Assign_ShibutzFixMissing",
+                data: {},
+                async: true,
+                dataType: "json",
+                success: function (data) {
+                    setTimeout(function() {
+                        try {
+                            var errorsResult = Ajax("Assign_GetShibutzErrors");
+                            var errorsData = null;
+                            if (errorsResult) {
+                                if (errorsResult.d) {
+                                    try {
+                                        errorsData = typeof errorsResult.d === 'string' ? JSON.parse(errorsResult.d) : errorsResult.d;
+                                    } catch (e) { errorsData = errorsResult.d; }
+                                } else if (Array.isArray(errorsResult)) {
+                                    errorsData = errorsResult;
+                                } else if (typeof errorsResult === 'string') {
+                                    try { errorsData = JSON.parse(errorsResult); } catch (e) { }
+                                }
+                            }
+
+                            var savedCount = 0, errorCount = 0, errors = [];
+                            if (errorsData && errorsData.length > 0) {
+                                var lastRow = errorsData[errorsData.length - 1];
+                                savedCount = lastRow.SavedCount || 0;
+                                errorCount = lastRow.ErrorCount || 0;
+                                for (var i = 0; i < errorsData.length; i++) {
+                                    if (errorsData[i].ClassId > 0) errors.push(errorsData[i]);
+                                }
+                            }
+
+                            if (errors.length > 0) {
+                                ShowErrorsModal(errors, savedCount, errorCount);
+                            } else if (errorCount > 0) {
+                                ShowErrorsModal([], savedCount, errorCount);
+                            } else {
+                                ShowSuccessModal(savedCount);
+                            }
+                        } catch (e) {
+                            ShowSuccessModal(0);
+                        }
+                        $('#shibutzLoadingOverlay').removeClass('active');
+                        $('.shibutz-loading-title').html('מבצע שיבוץ אוטומטי<span class="shibutz-loading-dots">...</span>');
+                    }, 500);
+                    UpdateClassStatus();
+                    $('#dvAlert').show();
+                },
+                error: function (request, status, error) {
+                    $('#shibutzLoadingOverlay').removeClass('active');
+                    $('.shibutz-loading-title').html('מבצע שיבוץ אוטומטי<span class="shibutz-loading-dots">...</span>');
+                    bootbox.alert("אירעה שגיאה בזמן תיקון חוסרים. אנא נסה שוב.");
+                },
+                complete: function () {
+                    $('#shibutzLoadingOverlay').removeClass('active');
+                }
+            });
+        }
+
+        function DoAssign() {
+            IsStop = false;
+            $('#dvAlert').hide();
+            $('#shibutzLoadingOverlay').addClass('active');
+
+            $.ajax({
+                type: "POST",
+                url: "../WebService.asmx/Assign_ShibutzAuto",
+                data: {},
+                async: true,
+                dataType: "json",
+                success: function (data) {
+                    setTimeout(function() {
+                        try {
+                            console.log("Fetching errors from session...");
+                            var errorsResult = Ajax("Assign_GetShibutzErrors");
+                    console.log("Errors result type:", typeof errorsResult);
+                    console.log("Errors result:", JSON.stringify(errorsResult));
+                    
+                    // ASP.NET Web Service returns {d: "..."} format
+                    var errorsData = null;
+                    if (errorsResult) {
+                        if (errorsResult.d) {
+                            // ASP.NET wraps response in {d: "..."}
+                            try {
+                                if (typeof errorsResult.d === 'string') {
+                                    errorsData = JSON.parse(errorsResult.d);
+                                } else {
+                                    errorsData = errorsResult.d;
+                                }
+                            } catch (e) {
+                                console.log("Failed to parse errorsResult.d as JSON:", e, "Raw value:", errorsResult.d);
+                                errorsData = errorsResult.d;
+                            }
+                        } else if (Array.isArray(errorsResult)) {
+                            // Direct array response
+                            errorsData = errorsResult;
+                        } else if (typeof errorsResult === 'string') {
+                            // String response - try to parse
+                            try {
+                                errorsData = JSON.parse(errorsResult);
+                            } catch (e) {
+                                console.log("Failed to parse errorsResult as JSON:", e, "Raw value:", errorsResult);
+                            }
+                        } else {
+                            console.log("Unexpected errorsResult format:", typeof errorsResult, errorsResult);
+                        }
+                    } else {
+                        console.log("errorsResult is null or undefined");
+                    }
+                    
+                    var savedCount = 0;
+                    var errorCount = 0;
+                    var errors = [];
+                    
+                    if (errorsData && errorsData.length > 0) {
+                        console.log("Parsed data - total rows:", errorsData.length);
+                        console.log("First row sample:", JSON.stringify(errorsData[0]));
+                        
+                        // Get counts from LAST row (summary row with ClassId=0)
+                        var lastRow = errorsData[errorsData.length - 1];
+                        savedCount = lastRow.SavedCount || 0;
+                        errorCount = lastRow.ErrorCount || 0;
+                        
+                        console.log("Summary from last row - savedCount:", savedCount, "errorCount:", errorCount);
+                        
+                        // Filter out summary rows (ClassId = 0) - keep only actual errors
+                        for (var i = 0; i < errorsData.length; i++) {
+                            if (errorsData[i].ClassId > 0) {
+                                errors.push(errorsData[i]);
+                                // Log first error message to check encoding
+                                if (i === 0 && errorsData[i].Message) {
+                                    console.log("First error message raw:", errorsData[i].Message);
+                                    console.log("First error message char codes:", 
+                                        Array.from(errorsData[i].Message).map(function(c) { return c.charCodeAt(0); }));
+                                }
+                            }
+                        }
+                        
+                        console.log("Filtered errors count:", errors.length, "errorCount from server:", errorCount);
+                    } else {
+                        console.log("No errors data returned or empty array");
+                    }
+                    
+                    // Always show modal - with errors or success message
+                    if (errors.length > 0) {
+                        // We have actual errors - show errors modal
+                        console.log("Showing errors modal with", errors.length, "errors");
+                        ShowErrorsModal(errors, savedCount, errorCount);
+                    } else if (errorCount > 0) {
+                        // Server says there are errors but we didn't get them - show empty errors modal
+                        console.log("Server reports", errorCount, "errors but none received - showing empty errors modal");
+                        ShowErrorsModal([], savedCount, errorCount);
+                    } else if (savedCount > 0) {
+                        // No errors and has saved hours - show success modal
+                        console.log("Showing success modal with savedCount:", savedCount);
+                        ShowSuccessModal(savedCount);
+                    } else {
+                        // No data at all - but if we have 0 saved and 0 errors, maybe there's a problem
+                        // Check if there are actually unassigned hours by looking at the page
+                        console.log("No data returned - savedCount:", savedCount, "errorCount:", errorCount);
+                        if (savedCount == 0 && errorCount == 0) {
+                            // This is suspicious - no hours saved and no errors reported
+                            // Show a warning instead of success
+                            console.log("Warning: No hours saved and no errors reported - this might indicate a problem");
+                            ShowErrorsModal([], 0, 0);
+                        } else {
+                            ShowSuccessModal(savedCount);
+                        }
+                    }
+                } catch (e) {
+                    console.log("Error getting shibutz errors:", e);
+                    ShowSuccessModal(0);
+                }
+                $('#shibutzLoadingOverlay').removeClass('active');
+            }, 500);
+                UpdateClassStatus();
+                $('#dvAlert').show();
+                },
+                error: function (request, status, error) {
+                    $('#shibutzLoadingOverlay').removeClass('active');
+                    bootbox.alert("אירעה שגיאה בזמן ביצוע השיבוץ. אנא נסה שוב.");
+                },
+                complete: function () {
+                    $('#shibutzLoadingOverlay').removeClass('active');
+                }
+            });
+        }
+
+        function ShowErrorsModal(errors, savedCount, errorCount) {
+            var dayNames = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי"];
+            
+            var html = '<div class="container-fluid">';
+            html += '<div class="row">';
+            html += '<div class="col-md-12">';
+            html += '<div class="alert alert-info" style="margin-bottom: 15px;">';
+            html += '<strong>סיכום:</strong> שובצו ' + (savedCount || 0) + ' שעות, ' + (errorCount || errors.length) + ' שגיאות';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            
+            html += '<div class="row">';
+            html += '<div class="col-md-12">';
+            html += '<table class="table table-bordered table-hover table-striped" style="margin-bottom: 0;">';
+            html += '<thead>';
+            html += '<tr class="danger">';
+            html += '<th style="text-align: center; width: 80px;">כיתה</th>';
+            html += '<th style="text-align: center; width: 100px;">יום</th>';
+            html += '<th style="text-align: center; width: 80px;">שעה</th>';
+            html += '<th>סיבת השגיאה</th>';
+            html += '<th style="text-align: center; width: 200px;">מורים שחסרים שעות</th>';
+            html += '</tr>';
+            html += '</thead>';
+            html += '<tbody>';
+            
+            if (errors.length > 0) {
+                for (var i = 0; i < errors.length; i++) {
+                    var error = errors[i];
+                    var dayName = dayNames[error.Day - 1] || ("יום " + error.Day);
+                    var className = error.ClassName || ("כיתה " + error.ClassId);
+                    
+                    // Log to console for debugging
+                    console.log("Error " + i + ":", {
+                        ClassId: error.ClassId,
+                        ClassName: className,
+                        Day: error.Day,
+                        Hour: error.Hour,
+                        Message: error.Message,
+                        MessageLength: error.Message ? error.Message.length : 0,
+                        MessageType: typeof error.Message
+                    });
+                    
+                    var teachersMissingHours = error.TeachersMissingHours || "";
+                    
+                    html += '<tr>';
+                    html += '<td style="text-align: center;"><strong>' + className + '</strong></td>';
+                    html += '<td style="text-align: center;">' + dayName + '</td>';
+                    html += '<td style="text-align: center;">' + error.Hour + '</td>';
+                    html += '<td style="direction: rtl; text-align: right;">' + error.Message + '</td>';
+                    html += '<td style="direction: rtl; text-align: right;">' + (teachersMissingHours || "אין") + '</td>';
+                    html += '</tr>';
+                }
+            } else if (errorCount > 0) {
+                // Server reports errors but we didn't get them
+                html += '<tr>';
+                html += '<td colspan="5" style="text-align: center; direction: rtl;">';
+                html += 'השרת דיווח על ' + errorCount + ' שגיאות, אך הפרטים לא התקבלו. אנא בדוק את הקונסול לפרטים נוספים.';
+                html += '</td>';
+                html += '</tr>';
+            } else if (savedCount == 0 && errorCount == 0) {
+                // No hours saved and no errors - suspicious
+                html += '<tr>';
+                html += '<td colspan="5" style="text-align: center; direction: rtl;">';
+                html += 'לא שובצו שעות ולא דווחו שגיאות. ייתכן שיש בעיה בתהליך השיבוץ. אנא בדוק את הקונסול לפרטים נוספים.';
+                html += '</td>';
+                html += '</tr>';
+            }
+            
+            html += '</tbody>';
+            html += '</table>';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            
+            bootbox.dialog({
+                title: '<i class="fa fa-exclamation-triangle"></i> דוח שגיאות שיבוץ',
+                message: html,
+                size: 'large',
+                buttons: {
+                    ok: {
+                        label: "סגור",
+                        className: "btn-info",
+                        callback: function() {
+                            return true;
+                        }
+                    }
+                }
+            });
+        }
+
+        function ShowSuccessModal(savedCount) {
+            var html = '<div class="container-fluid">';
+            html += '<div class="row">';
+            html += '<div class="col-md-12">';
+            html += '<div class="alert alert-success" style="margin-bottom: 15px; text-align: center; font-size: 18px;">';
+            html += '<strong>שיבוץ הושלם בהצלחה!</strong><br/>';
+            html += 'שובצו ' + (savedCount || 0) + ' שעות';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            
+            bootbox.dialog({
+                title: '<i class="fa fa-check-circle"></i> שיבוץ אוטומטי',
+                message: html,
+                size: 'medium',
+                buttons: {
+                    ok: {
+                        label: "סגור",
+                        className: "btn-success",
+                        callback: function() {
+                            return true;
+                        }
+                    }
+                }
+            });
         }
 
 
@@ -327,6 +867,24 @@
 </asp:Content>
 <asp:Content ID="Content2" ContentPlaceHolderID="ContentPlaceHolder1" runat="Server">
 
+    <div id="shibutzLoadingOverlay">
+        <div class="shibutz-loading-box">
+            <div class="shibutz-loader-wrap">
+                <div class="shibutz-loader-rings"></div>
+                <div class="shibutz-loader-rings"></div>
+                <div class="shibutz-loader-rings"></div>
+                <div class="shibutz-schedule-grid">
+                    <div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div>
+                    <div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div>
+                    <div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div>
+                    <div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div><div class="shibutz-schedule-cell"></div>
+                </div>
+            </div>
+            <div class="shibutz-loading-title">מבצע שיבוץ אוטומטי<span class="shibutz-loading-dots">...</span></div>
+            <div class="shibutz-loading-sub">אנא המתן, התהליך עשוי לקחת מספר שניות</div>
+            <div class="shibutz-progress-bar"><div class="shibutz-progress-fill"></div></div>
+        </div>
+    </div>
 
     <div class="col-md-12">
         <div class="row dvWeek">
@@ -377,7 +935,7 @@
 
 
                     <div class="col-sm-3">
-                        <div class="input-group dvUploadPublic" style="">
+                        <div class="input-group dvUploadPublic">
                             <span class="input-group-btn">
                                 <span class="btn btn-primary btn-file">בחר לוגו
                             <input id="fileUpload1" type="file" />
@@ -433,10 +991,15 @@
 
                     </div>--%>
 
-                    <div class="col-md-4">
+                    <div class="col-md-3">
 
                         <div class="btn btn-primary btn-round" style="width: 100%; font-size: 20px; font-weight: bold" onclick="DoAssign()">
                             שבץ אוטמטית
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="btn btn-warning btn-round" style="width: 100%; font-size: 18px; font-weight: bold; color: #fff;" onclick="DoFixMissing()">
+                            תקן חוסרים (הזזות)
                         </div>
                     </div>
                   <%--  <div class="col-md-2">
@@ -455,6 +1018,12 @@
                       <%--   <div class="btn btn-danger btn-round" style="" onclick="StopShibutz()">
                             עצור שיבוץ!!! 
                         </div>--%>
+                    </div>
+                    
+                    <div class="col-md-2">
+                        <div class="btn btn-info btn-round" style="width: 100%; font-size: 18px; font-weight: bold" onclick="ShowLastErrorsReport()">
+                            הצג דוח שגיאות אחרון
+                        </div>
                     </div>
 
                     <div class="col-md-12" id="dvAlert" style="font-size: 28px; color: brown; font-weight: bold; display: none; text-align: center">
@@ -585,6 +1154,8 @@
         </div>
     </div>
 
+    <!-- Errors Modal (will be created dynamically) -->
+
      <div class="modal fade" id="ModalDeleteType" tabindex="-1" role="dialog" aria-labelledby="myModalLabel"
         aria-hidden="true">
         <div class="modal-dialog modal-xs">
@@ -652,7 +1223,7 @@
 
 
                         <div class="col-md-1">
-                            <div class="btn btn-danger btn-round" onclick="DeleteExtra(@HourExtraId)">
+                            <div class="btn btn-danger btn-round" onclick="DeleteExtra('@HourExtraId')">
                                 מחק
                             </div>
                         </div>

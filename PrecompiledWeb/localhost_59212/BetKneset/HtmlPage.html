@@ -1,0 +1,348 @@
+﻿
+
+
+<!DOCTYPE html>
+<head>
+    <meta charset='utf-8' />
+    <title> בית כנסת - מעגלים </title>
+    <script src='../assets/js/Generic.js'></script>
+    <link rel='stylesheet' href='../assets/css/bootstrap-rtl.css'>
+    <script type='text/javascript' src='../assets/js/bootstrap.min.js'></script>
+    <link href='../assets/css/rtl-css/style-rtl.css' rel='stylesheet' />
+    <script src='../assets/js/lib/jquery-2.1.1.min.js'></script>
+    <script type='text/javascript'>
+
+
+                  // setInterval('CheckIfPending()', 60000);
+
+                   $(document).ready(function () {
+
+                   if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+                         $('body').css('overflow', 'auto');
+
+                        $('.dvBox').css('width', '99%').css('font-size','60px');
+                        $('.dvbadageTzahi').css('font-size','60px');
+
+                        $('.dvZmanim').removeClass('dvZmanim');
+                        $('.dvZmanimSP').removeClass('dvZmanimSP');
+                        $('.spComment').css('font-size','40px');
+                         $('.dvPageTitle').css('font-size','60px');
+
+                        $('.dvAlertMessage').css('width', '99%');
+                        $('.dvAlighnRight').removeClass('dvAlighnRight');
+
+                        $('div,span').prop('contenteditable', false);
+
+                        $('.dvCotainer,.dvCotainerM1,.dvCotainerM2').height('100%');
+
+
+                  }else{
+
+
+                    var CurrentHeight = $(document).height();
+                    $('.dvCotainer').height(CurrentHeight * 0.95);
+                    $('.dvCotainerM1').height(CurrentHeight * 0.75);
+                    $('.dvCotainerM2').height(CurrentHeight * 0.17);
+                    }
+
+                   //$('#dvInMain div').each(function (index) {
+                     
+                   //    $(this).attr("id", "dv_" + index.toString());
+                      
+                   //});
+
+                   //$(".dvMainbuttons").css("display", "none");
+                   //var textD = $("#dvInMain").html().replace(/&nbsp;/g, " ");
+
+                   //    // alert(html);
+                   //var Data = Ajax("BetKneset_UpdateHTML", "Type=2&html=" + textD);
+
+                 
+
+
+                });
+
+
+              function CheckIfPending() {
+                    mydata = Ajax('BetKneset_GetIfPending');
+                    if (mydata[0].res == '1') {
+
+                        location.reload();
+
+
+                    }
+
+                }
+
+
+        //dvInMain
+    </script>
+
+
+    
+
+</head>
+<body>
+    <form id='form1'>
+        <div class='dvInMain' id='dvInMain'>
+
+            <div class="col-md-12">
+                <img src="../assets/images/pesah.png" class="imgPesah">
+                <div class="col-md-4" style="padding: 2px">
+                    <div class="col-md-12 dvBox  dvBoxPesah dvCotainer">
+                        <div class="dvBasad" contenteditable="true">בס"ד ניסן התשע"ח</div>
+                        <div class="dvPageTitle" contenteditable="true">ערב פסח / זמני תפילות </div>
+                        <div class="col-md-12" contenteditable="true">---------------- ערב חג (שישי)  -------------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv1">שחרית נץ: </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv2" style="font-size: 22px;">6:00</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv3" style="font-size: 18px;">משכן ידידיה</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv4">שחרית מנין א': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv5" style="font-size: 22px;">5:30</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv6" style="font-size: 18px;">משכן ידידיה</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv7">שחרית מנין ב': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv8" contenteditable="true" style="font-size: 22px;">6:10</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv9" style="font-size: 18px;">בבית המדרש</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv10">שחרית מנין ג': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv11" style="font-size: 22px;">6:40</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv12" style="font-size: 18px;">במשכן ידידיה <br></span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv13">שחרית מנין ד': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv14" contenteditable="true" style="font-size: 22px;">7:30</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv15" style="font-size: 18px;">בבית המדרש</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv16">שחרית מנין ה': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv17" style="font-size: 22px;">8:15</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv18" style="font-size: 18px;">בבית המדרש</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv19">שחרית מנין ו': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv20" contenteditable="true" style="font-size: 22px;">9:00</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv21" style="font-size: 18px;">בבית המדרש</span></div>
+                        </div>
+                        <div class="col-md-12" contenteditable="true">----------------- סיום מסכת -----------------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv22">סיום מסכת א': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv23" style="font-size: 22px;">6:50</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv24" style="font-size: 17px;">בבית הכנסת </span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv25">סיום מסכת ב': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv26" contenteditable="true" style="font-size: 22px;">8:05</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv27" style="font-size: 18px;">בבית המדרש</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv28">סיום מסכת ג': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv29" contenteditable="true" style="font-size: 22px;">9:00</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv30" style="font-size: 18px;">בבית המדרש</span></div>
+                        </div>
+                        <div class="col-md-12">------------------------------------------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-6 dvZmanim" contenteditable="true" id="dv31"> סוף זמן אכילת חמץ - </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv32" contenteditable="true" style="font-size: 22px;"><span style="font-size: 23px;"><span style="font-size: 24px;"><span style="font-size: 25px;"><span style="font-size: 26px;">10:10</span></span></span></span></span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-6 dvZmanim" contenteditable="true" id="dv33">סוף זמן  שריפת חמץ - </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv34" contenteditable="true" style="font-size: 22px;"><span style="font-size: 23px;"><span style="font-size: 24px;"><span style="font-size: 25px;"><span style="font-size: 26px;"><span style="font-size: 27px;">11:25</span></span></span></span></span></span></div>
+                        </div>
+                        <div class="col-md-12">---------------------------------------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-10 dvZmanim" contenteditable="true" id="dv35">המקווה לטבילת גברים פתוח עד שעה - </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv36" contenteditable="true" style="font-size: 22px;">18:00</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-10 dvZmanim" contenteditable="true" id="dv35">תפילת מנחה גדולה בשעה - </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv37" contenteditable="true" style="font-size: 22px;">13:15</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4" style="padding: 2px">
+                    <div class="col-md-12 dvBox dvBoxPesah dvCotainer">
+                        <div class="dvBasad" contenteditable="true">בס"ד ניסן התשע"ח</div>
+                        <div class="dvPageTitle" contenteditable="true">חג פסח / זמני תפילות </div>
+                        <div class="dvPageTitle dvMainbuttons" style="display: none;">
+                            <div class="btn btn-default btn-round mennageButton dvMainbuttons" style="display: none;">
+                                <select id="ddlType" class="form-control " onchange="changeLooz();">
+                                    <option value="1">שבת</option>
+                                    <option value="2">חג פסח</option>
+                                    <option value="3">שביעי של פסח</option>
+                                    <option value="4">חג עצמאות</option>
+                                    <option value="5">חג שבועות</option>
+                                </select>
+                            </div>
+                            <!--<div class="btn btn-success btn-round mennageButton dvMainbuttons" onclick="AddRemoveFont(7)" style="">
+                        הוסף הודעה
+                    </div>-->
+                            <div class="btn btn-primary btn-round dvMainbuttons" onclick="SaveData()" style="display: none;">
+                                שמור לוח
+                            </div>
+                        </div>
+                        <div class="col-md-12" contenteditable="true">----------------- ערב חג ------------------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv38">מנחה גדולה:</div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv39" style="font-size: 22px;">13:15</span></div>
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv40">מנחה: </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv41" style="font-size: 21px;">18:40</span></div>
+                        </div>
+                        <!--<div class="col-md-12 dvAlighncenter"><span class="spComment" id="dv42" contenteditable="true">דברי תורה</span></div>-->
+                        <div class="col-md-12" contenteditable="true">-------------- יום החג (שבת) ---------------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv43">נץ (פתיחה): </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv44" style="font-size: 22px;">5:35</span></div>
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv45">נץ(הודו):</div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv46" style="font-size: 22px;">5:52</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv47">שחרית: </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv48" style="font-size: 22px;">8:00</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv49" style="font-size: 15px;">   מוריד הטל במוסף</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv50">שיעור: </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv51" style="font-size: 22px;">10:30</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv52" style="font-size: 15px;">"והיא שעמדה לאבותינו .."</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding:0px">----------------------------------------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv52">תפילת מנחה א': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv53" style="font-size: 22px;">13:15</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv54" style="font-size: 17px;">שיעור בן איש חי</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv552">תפילת מנחה ב': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv553" style="font-size: 22px;">15:30</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv554" style="font-size: 17px;"></span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv55">שיעור דף יומי: </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv56" style="font-size: 22px;">16:15</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv57" style="font-size: 17px;">משכן ידידיה</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv58"> מנחה ג': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv59" style="font-size: 22px;">17:15</span></div>
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv558"> מנחה ד': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv559" style="font-size: 26px;">18:15</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-6 dvZmanim" contenteditable="true" id="dv61">שיעור:</div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv62" style="font-size: 21px;">18:40</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-2 dvMessage"><u><b>נושא:</b></u></div>
+                            <div style="text-align: center; font-size: 34px;" class="col-md-10 dvMessage" contenteditable="true" id="dv63">
+                                <span style="font-size: 33px;"><span style="font-size: 32px;">מצוות ספירת העומר</span></span>
+                            </div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px;">
+                            <div class="col-md-6 dvZmanim" style="padding: 0px;" contenteditable="true" id="dv64">ערבית:</div>
+                            <div class="col-md-2 dvZmanimSP" style="padding: 0px;"><span class="badge dvbadageTzahi" contenteditable="true" id="dv65" style="font-size: 21px;">19:35</span></div>
+
+
+
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="dvInnerMoed" contenteditable="true" id="dv67">
+                                <span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="margin-right: 3px;"><span style="font-size: 20px;"><span style="font-size: 21px;"><span style="font-size: 22px;"><u><span style="margin-right: -3px;"><span style="margin-right: -3px;"><span style="margin-right: -3px;"><span style="margin-right: -3px;">יום שכולו תורה - יום חמישי ערב חג שני</span></span></span></span></u></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span> <br>
+                                <span style="font-size: 20px;">
+                                    <span style="font-size: 21px;">
+                                        10:00 - הרב שמעון אמור                                  <br>
+                                        11:00 - הרב  צבי שוורץ  " בכל דור ודור .." <br>
+                                        12:00 - הרב חיים מגורי
+                                    </span>
+                                </span>
+                            </div>
+                            <div class="col-md-12 dvAlighncenter"><span class="spComment" contenteditable="true" id="dv68" style="font-size: 27px;color:sandybrown">מועדים לשמחה!</span></div>
+                            <br /><br />
+                         </div>
+                    </div>
+                </div>
+                <div class="col-md-4" style="padding: 2px">
+                    <div class="col-md-12 dvBox dvBoxPesah dvCotainer">
+                        <div class="dvBasad" contenteditable="true">בס"ד ניסן התשע"ח</div>
+                        <div class="dvPageTitle" contenteditable="true">חול המועד / זמני תפילות </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="dvInnerMoed" contenteditable="true" id="dv69" style="font-size: 15px;">
+                                <u>חול המועד</u> <br>
+                                ימי חול המועד הם ימים שיש בהם קדושה ראוי לכבדם בלבוש מכובד , אסור לכבס בהם למעט בגדי קטנים ומגבות כשצריך.
+                                יש איסור מלאכה בחול המועד למעט  הדברים שחז"ל התירו , כשיש צורך לעבוד  יש להתייעץ עם רב קודם.
+
+
+
+                            </div>
+                        </div>
+                        <div class="col-md-12" contenteditable="true">----------------- שחרית  --------------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv70">שחרית נץ: </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv71" style="font-size: 22px;">6:00</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv72" style="font-size: 17px;">משכן ידידיה</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv73">שחרית מנין א': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv74" style="font-size: 22px;">5:30</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv75" style="font-size: 17px;">משכן ידידיה</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv76">שחרית מנין ב': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv77" contenteditable="true" style="font-size: 15px;"><span style="font-size: 22px;">7:00</span><br></span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv78" style="font-size: 18px;">בבית הכנסת </span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv79">שחרית מנין ג': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv80" style="font-size: 22px;">8:15</span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv81" style="font-size: 17px;">" .. ישתבח .." - <span style="font-size: 18px;"><span style="font-size: 19px;"><span style="font-size: 20px;"><span style="font-size: 21px;">8:30</span></span></span></span></span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv82">שחרית מנין ד': </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" id="dv83" contenteditable="true" style="font-size: 15px;"><span style="font-size: 22px;">9:00</span><br></span></div>
+                            <div class="col-md-6 dvAlighnRight"><span class="spComment" contenteditable="true" id="dv84" style="font-size: 18px;">בבית המדרש</span></div>
+                        </div>
+                        <div class="col-md-12">----------------- מנחה וערבית  ---------</div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv85">מנחה א':</div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv86" style="font-size: 22px;">13:15</span></div>
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv87">מנחה ב' : </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv88" style="font-size: 21px;">18:30</span></div>
+                        </div>
+                        <div class="col-md-12 dvAlighncenter"><span class="spComment" id="dv89" contenteditable="true">שיעור דף יומי בין מנחה לערבית</span></div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv90">ערבית א':</div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv91" style="font-size: 22px;">13:15</span></div>
+                            <div class="col-md-4 dvZmanim" contenteditable="true" id="dv92">ערבית ב' : </div>
+                            <div class="col-md-2 dvZmanimSP"><span class="badge dvbadageTzahi" contenteditable="true" id="dv93" style="font-size: 21px;">19:25</span></div>
+                        </div>
+                        <div class="col-md-12" style="padding: 0px">
+                            <div class="dvInnerMoed" contenteditable="true" id="dv94" style="font-size: 16px;">
+                                <u> עירוב תבשילין</u> <br>
+                                יום חמישי חול המועד לא לשכוח לעשות " עירוב תבשילין ".
+                                לוקחים מצה אחת ( עדיף שתיים) וכן תבשיל בשר עוף וכו' המנהג לקחת ביצה קשה .
+
+                                מברכים ... "במצוותיו וציוונו על מצוות עירוב ".
+
+                                ואומרים בזה העירוב יהיה מותר לנו לאפות לבשל להטמין להדליק ולעשות כל מה שנצטרך מיום טוב לשבת.
+
+
+                            </div>
+                            <div contenteditable="true" id="dv95">
+                                <b>	לא לשכוח להדליק נר נשמה שנוכל להעביר אש         ביום טוב (שביעי של פסח -יום שישי).</b>
+                            </div>
+                            <!--<div class="col-md-12">-----------------------------------------</div>-->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
+        </div>
+    </form>
+</body>
+</html>
+

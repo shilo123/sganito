@@ -1,0 +1,153 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>חוויה טוניסאית-טיול בלתי נשכח לטוניס</title>
+   
+    <meta name="description" content="הריחות והמראות.. ההווי והפולקלור הטוניסאי בטיול אחד מעורר את החושים.
+זאת ההזדמנות שלכם להצטרף לטיול עוצמתי לטוניס." />
+    <meta name="title" content="חוויה טוניסאית-טיול בלתי נשכח לטוניס" />
+    <meta property="og:url" content="http://sganit.co.il/Tunis/Main.html" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="http://sganit.co.il/Tunis/icon.jpg" />
+
+  
+    <meta charset="utf-8" />
+    <script type="text/javascript" src="../assets/js/lib/jquery-1.11.min.js"></script>
+    <script src="../assets/js/Generic.js"></script>
+    <link rel="stylesheet" href="../assets/css/bootstrap-rtl.css">
+    <style>
+        .gg {
+            padding: 0px;
+            margin: 0px;
+        }
+
+        .bottom {
+            background: #011631;
+        }
+
+        .tunisPanel {
+            direction: rtl;
+            font-size: 15px;
+            font-weight: bold;
+            background: #011631;
+        }
+
+        .pratim {
+            color: white;
+            font-size: 35px;
+            font-weight: bold;
+            text-align: center;
+        }
+
+        .btnSend {
+            font-weight: bold;
+            height: 70px;
+        }
+
+        .inp {
+            height: 70px;
+        }
+    </style>
+
+    <script>
+        function sendReq() {
+
+            var flName = $("#flName").val();
+            var flPhone = $("#flPhone").val();
+            var flmail = $("#flmail").val();
+
+
+
+
+            if ((!flPhone && !flmail) || (flPhone.length < 7 && flmail.length < 7) || !validateEmail(flmail)) {
+                alert("חובה להזין מייל תקין או מספר טלפון");
+                return;
+
+            }
+
+
+            // alert(html);
+            var Data = Ajax("Tunis_UpdateHTML", "flName=" + flName + "&flPhone=" + flPhone + "&flmail=" + flmail);
+            $(".hidePanel").hide();
+            $(".pratim").html("בקשתך התקבלה נחזור אליך בהקדם!");
+
+
+
+        }
+
+
+
+        function validateEmail(sEmail) {
+
+            if (sEmail) {
+                if (sEmail.indexOf("@") >= 1 && sEmail.indexOf(".") >= 1) {
+
+                    return true;
+                }
+
+                return false;
+
+            }
+
+            return true;
+        }
+
+
+        function sendPDF() {
+            window.open("תכנית טיול תוניס 2020.pdf", "", "width=900,height=1000");
+        }
+
+
+    </script>
+</head>
+<body class="gg">
+    <div class="bottom gg col-md-12">
+
+        <img src="tun.jpeg" width="100%" />
+        <div class="tunisPanel col-md-12">
+            <div class="col-md-12">
+                <div class="col-md-1">
+                </div>
+                <div class="col-md-1 pratim">
+                    <button class="btn btn-lg btn-info" onclick="sendPDF()">לתוכנית הטיול</button>
+                </div>
+                <br />
+
+
+                <div class="col-md-7 pratim">
+                    השאר פרטים ואנו נחזור אליך!<br />
+                </div>
+
+            </div>
+           
+                <div class="col-md-12 hidePanel">
+                    <div class="col-md-1">
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" class="form-control input-lg inp" id="flName" placeholder="שם ושם משפחה"><br />
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" class="form-control input-lg inp" id="flPhone" placeholder="טלפון"><br />
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" class="form-control input-lg inp" id="flmail" placeholder="מייל"><br />
+                    </div>
+                    <div class="col-md-1" style="text-align:left">
+                        <button type="button" class="btn btn-lg btn-info btnSend" onclick="sendReq()">שלח לנו!</button>
+                    </div>
+                </div>
+
+                <div style="height:250px">
+                    &nbsp;
+
+
+                </div>
+
+
+
+
+            </div>
+
+        </div>
+</body>
+</html>

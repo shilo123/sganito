@@ -1,4 +1,4 @@
-﻿<%@ Page Title="" Language="C#" MasterPageFile="~/MasterPage/MasterPage.master" AutoEventWireup="true"
+<%@ Page Title="" Language="C#" MasterPageFile="~/MasterPage/MasterPage.master" AutoEventWireup="true"
     CodeFile="Assign.aspx.cs" Inherits="Assign_Assign" %>
 
 <asp:Content ID="Content1" ContentPlaceHolderID="head" runat="Server">
@@ -43,6 +43,11 @@
             position: fixed;
             z-index:5000;
          }
+
+        .teacherHighlight {
+            background-color: #ffeb3b !important;
+            box-shadow: 0 0 8px #ff9800;
+        }
 
     </style>
 
@@ -199,6 +204,7 @@
 
             DefineDragAndDropEvents();
             DefineRightClickEVENT();
+            ReapplyHighlightIfNeeded();
         }
 
         function SetMissTeacher(ClassId) {
@@ -421,6 +427,8 @@
 
             }
 
+            ReapplyHighlightIfNeeded();
+
 
 
 
@@ -564,12 +572,14 @@
                             OpenTeacherHours(Obj, 1);
                             break;
                         case "li2":
-                            SetPartani(Obj, 1);
+                            OpenTeacherHoursPerClass(Obj);
                             break;
                         case "li3":
-                            SetPartani(Obj, 2);
+                            HighlightTeacherInClass(Obj);
                             break;
-
+                        case "li4":
+                            CancelHighlight();
+                            break;
                         default:
                             break;
 
@@ -716,6 +726,87 @@
             $(".ui-dialog-titlebar-close").html("<span style='color:black'>X</span>");
            
 
+        }
+
+        function OpenTeacherHoursPerClass(Obj) {
+            var TeacherId = $(Obj).attr("id").replace("dvTeacherHour_", "").replace("dvTeacher_", "");
+            var Data = Ajax("Assign_GetTeacherHoursPerClass", "TeacherId=" + TeacherId);
+            if (!Data || Data.length === 0) {
+                bootbox.alert("לא נמצאו נתונים למורה זה");
+                return;
+            }
+            var TeacherName = Data[0].TeacherName || "";
+            var html = "<div style='padding:15px;direction:rtl;min-width:350px'><h4 style='text-align:center'>שעות בבית הספר - " + TeacherName + "</h4><table class='table table-bordered table-striped'><thead><tr><th>כיתה</th><th>שעות מתוכננות</th><th>שובץ</th></tr></thead><tbody>";
+            for (var i = 0; i < Data.length; i++) {
+                html += "<tr><td>" + (Data[i].ClassName || Data[i].ClassId) + "</td><td>" + (Data[i].ExpectedHours != null ? Data[i].ExpectedHours : "-") + "</td><td>" + (Data[i].AssignedHours != null ? Data[i].AssignedHours : "0") + "</td></tr>";
+            }
+            html += "</tbody></table></div>";
+
+            // Use jQuery UI dialog (כמו 'שעות למורה') – לא חוסם מסך, ניתן להזיז ולפתוח כמה במקביל
+            var $dlg = $("<div></div>")
+                .html(html)
+                .dialog({
+                    title: "שעות בבית הספר - " + TeacherName,
+                    width: 450,
+                    modal: false,
+                    resizable: true,
+                    draggable: true,
+                    closeOnEscape: true,
+                    close: function () {
+                        $(this).dialog("destroy").remove();
+                    }
+                });
+
+            // כפתור סגירה עם X שחור כמו בדיאלוגים האחרים
+            $dlg.closest(".ui-dialog").find(".ui-dialog-titlebar-close").html("<span style='color:black'>X</span>");
+        }
+
+        var LastHighlightedTeacherId = "";
+        var LastHighlightedClassId = "";
+
+        function HighlightTeacherInClass(Obj) {
+            var TeacherId = $(Obj).attr("id").replace("dvTeacherHour_", "").replace("dvTeacher_", "");
+            var ClassId = "";
+            var parentDiv = $(Obj).closest("[classid]");
+            if (parentDiv.length) ClassId = parentDiv.attr("classid");
+            if (!ClassId) ClassId = SelectedClassId;
+            if (!ClassId) {
+                var Data = Ajax("Assign_GetTeacherHoursPerClass", "TeacherId=" + TeacherId);
+                if (!Data || Data.length === 0) {
+                    bootbox.alert("לא נמצאו כיתות למורה זה");
+                    return;
+                }
+                if (Data.length === 1) {
+                    ClassId = Data[0].ClassId;
+                } else {
+                    var opts = Data.map(function (r) { return { text: (r.ClassName || r.ClassId) + " (" + (r.AssignedHours || 0) + "/" + (r.ExpectedHours || "-") + ")", value: r.ClassId }; });
+                    var selHtml = "<div style='direction:rtl;padding:10px'><label>בחר כיתה להדגשה:</label><select id='hlClassSelect' class='form-control'>";
+                    for (var i = 0; i < opts.length; i++) selHtml += "<option value='" + opts[i].value + "'>" + opts[i].text + "</option>";
+                    selHtml += "</select></div>";
+                    bootbox.dialog({ message: selHtml, title: "סמן שעות בכיתה", buttons: { ok: { label: "הצג", callback: function () { ClassId = $("#hlClassSelect").val(); doHighlight(TeacherId, ClassId); } } } });
+                    return;
+                }
+            }
+            doHighlight(TeacherId, ClassId);
+        }
+
+        function CancelHighlight() {
+            LastHighlightedTeacherId = "";
+            LastHighlightedClassId = "";
+            $(".teacherHighlight").removeClass("teacherHighlight");
+        }
+
+        function doHighlight(TeacherId, ClassId) {
+            LastHighlightedTeacherId = TeacherId;
+            LastHighlightedClassId = ClassId;
+            $(".teacherHighlight").removeClass("teacherHighlight");
+            $("[id^='dv_" + ClassId + "_']").find("div[teacherid='" + TeacherId + "'], div:has(span[id='dvTeacherHour_" + TeacherId + "'])").addClass("teacherHighlight");
+        }
+
+        function ReapplyHighlightIfNeeded() {
+            if (LastHighlightedTeacherId && LastHighlightedClassId) {
+                doHighlight(LastHighlightedTeacherId, LastHighlightedClassId);
+            }
         }
 
 
@@ -1062,11 +1153,11 @@
             @Name  
         </div>
     </div>
-    <%-- טמפלט של מורה מסויים --%>
+    <%-- טמפלט של מורה מסויים (גם במורים פנויים - תפריט ימני עובד) --%>
     <div id="dvTeacherTemplate" style="display: none">
         <div class="btn btn-success btn-round draggable selected" id="dvTeacher_@TeacherId" teacherid="@TeacherId" style="float: right; margin: 2px"
             onclick="SetTeacherData(@TeacherId,1)">
-            @Name (@FreeHour) 
+            <span id="dvTeacherHour_@TeacherId">@Name</span> (@FreeHour) 
         </div>
     </div>
 
@@ -1102,7 +1193,9 @@
     <ul id="contextMenuAbsence" class="dropdown-menu dropdown-menu-right" role="menu"
         style="display: none;">
         <li><a id="li1" tabindex="-1" href="#">הצג מערכת מורה</a></li>
-
+        <li><a id="li2" tabindex="-1" href="#">שעות בבית הספר</a></li>
+        <li><a id="li3" tabindex="-1" href="#">סמן שעות בכיתה</a></li>
+        <li><a id="li4" tabindex="-1" href="#">בטל הדגשה</a></li>
         <li class="divider"></li>
         <li><a tabindex="-1" href="#">סגור</a></li>
     </ul>

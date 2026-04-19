@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Activities.Statements;
 using System.Collections;
 using System.Collections.Generic;
@@ -934,8 +934,10 @@ public class WebService : System.Web.Services.WebService
 
 
 
-    [WebMethod]
+    [WebMethod(EnableSession = true)]
     public void Assign_ShibutzAuto()
+    {
+        try
     {
         // to do add paremter ConfigId
 
@@ -943,18 +945,340 @@ public class WebService : System.Web.Services.WebService
         HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]
       );
 
+        // CRITICAL: Delete existing auto-assignments BEFORE running - prevents duplicates
+        Dal.ExeSp("Assign_DeleteAssignAuto", "1", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+
         DataSet ds = Dal.ExeDataSetSp("Assign_GetInitDataForShibutz", configurationId);
 
         Shibutz sh = new Shibutz(ds, configurationId);
 
         ShibutzRunResult r = sh.StartShibutz_SaveAlways();
-
-        // אינדיקציה מיידית
         int saved = r.SavedCount;
         int reds = r.ErrorCount;
 
+            // Store errors in session for JavaScript to retrieve - ALWAYS store, even if empty
+            if (HttpContext.Current != null && HttpContext.Current.Session != null)
+            {
+                // Make sure we store the errors list - use the one from the Shibutz object
+                // IMPORTANT: Get the errors AFTER StartShibutz_SaveAlways() completes
+                List<ShibutzError> errorsToStore = sh.Errors != null ? sh.Errors : new List<ShibutzError>();
+                
+                // Verify we have the errors
+                if (errorsToStore.Count != reds)
+                {
+                    // If counts don't match, use the count from the result
+                    // This shouldn't happen, but let's be safe
+                }
+                
+                HttpContext.Current.Session["ShibutzErrors"] = errorsToStore;
+                HttpContext.Current.Session["ShibutzSavedCount"] = saved;
+                HttpContext.Current.Session["ShibutzErrorCount"] = reds;
+            }
 
+            if (HttpContext.Current != null && HttpContext.Current.Response != null && ds != null && ds.Tables != null && ds.Tables.Count > 0)
+            {
         HttpContext.Current.Response.Write(ConvertDataTabletoString(ds.Tables[0]));
+    }
+        }
+        catch (Exception ex)
+        {
+            // Log error and return empty result
+            try
+            {
+                if (HttpContext.Current != null && HttpContext.Current.Session != null)
+                {
+                    HttpContext.Current.Session["ShibutzErrors"] = new List<ShibutzError>();
+                    HttpContext.Current.Session["ShibutzSavedCount"] = 0;
+                    HttpContext.Current.Session["ShibutzErrorCount"] = 0;
+                }
+            }
+            catch
+            {
+                // Ignore session errors
+            }
+            
+            DataTable dt = new DataTable();
+            if (HttpContext.Current != null && HttpContext.Current.Response != null)
+            {
+                HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+            }
+        }
+    }
+
+    [WebMethod(EnableSession = true)]
+    public void Assign_ShibutzFixMissing()
+    {
+        try
+        {
+            int configurationId = Helper.ConvertToInt(
+                HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]
+            );
+
+            // Load the init data (slots + candidates)
+            DataSet ds = Dal.ExeDataSetSp("Assign_GetInitDataForShibutz", configurationId);
+
+            // Load EXISTING assignments from DB (don't delete them!)
+            DataTable existingAssignments = Dal.ExeSp("Assign_GetAssignment", "0", configurationId);
+
+            // Build the model
+            Shibutz sh = new Shibutz(ds, configurationId);
+
+            // Run fix: load existing, fill only reds
+            ShibutzRunResult r = sh.FixMissingSlots_SaveAlways(existingAssignments);
+            int saved = r.SavedCount;
+            int reds = r.ErrorCount;
+
+            if (HttpContext.Current != null && HttpContext.Current.Session != null)
+            {
+                List<ShibutzError> errorsToStore = sh.Errors != null ? sh.Errors : new List<ShibutzError>();
+                HttpContext.Current.Session["ShibutzErrors"] = errorsToStore;
+                HttpContext.Current.Session["ShibutzSavedCount"] = saved;
+                HttpContext.Current.Session["ShibutzErrorCount"] = reds;
+            }
+
+            if (HttpContext.Current != null && HttpContext.Current.Response != null && ds != null && ds.Tables != null && ds.Tables.Count > 0)
+            {
+                HttpContext.Current.Response.Write(ConvertDataTabletoString(ds.Tables[0]));
+            }
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                if (HttpContext.Current != null && HttpContext.Current.Session != null)
+                {
+                    HttpContext.Current.Session["ShibutzErrors"] = new List<ShibutzError>();
+                    HttpContext.Current.Session["ShibutzSavedCount"] = 0;
+                    HttpContext.Current.Session["ShibutzErrorCount"] = 0;
+                }
+            }
+            catch { }
+
+            DataTable dt = new DataTable();
+            if (HttpContext.Current != null && HttpContext.Current.Response != null)
+            {
+                HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+            }
+        }
+    }
+
+    [WebMethod(EnableSession = true)]
+    public void Assign_GetShibutzErrors()
+    {
+        try
+        {
+            List<ShibutzError> errors = HttpContext.Current.Session["ShibutzErrors"] as List<ShibutzError>;
+            int savedCount = HttpContext.Current.Session["ShibutzSavedCount"] != null ? 
+                (int)HttpContext.Current.Session["ShibutzSavedCount"] : 0;
+            int errorCount = HttpContext.Current.Session["ShibutzErrorCount"] != null ? 
+                (int)HttpContext.Current.Session["ShibutzErrorCount"] : 0;
+
+            DataTable dtErrors = new DataTable();
+            dtErrors.Columns.Add("ClassId", typeof(int));
+            dtErrors.Columns.Add("ClassName", typeof(string));
+            dtErrors.Columns.Add("Day", typeof(int));
+            dtErrors.Columns.Add("Hour", typeof(int));
+            dtErrors.Columns.Add("Message", typeof(string));
+            dtErrors.Columns.Add("TeachersMissingHours", typeof(string));
+            dtErrors.Columns.Add("SavedCount", typeof(int));
+            dtErrors.Columns.Add("ErrorCount", typeof(int));
+
+            // Get class names for all class IDs
+            Dictionary<int, string> classNames = new Dictionary<int, string>();
+            // Get teacher names for all teacher IDs
+            Dictionary<int, string> teacherNames = new Dictionary<int, string>();
+            if (errors != null && errors.Count > 0)
+            {
+                List<int> classIds = new List<int>();
+                List<int> teacherIds = new List<int>();
+                for (int i = 0; i < errors.Count; i++)
+                {
+                    if (errors[i] != null && errors[i].ClassId > 0)
+                    {
+                        if (!classIds.Contains(errors[i].ClassId))
+                        {
+                            classIds.Add(errors[i].ClassId);
+                        }
+                    }
+                    // Collect teacher IDs from TeachersMissingHours
+                    if (errors[i] != null && errors[i].TeachersMissingHours != null)
+                    {
+                        for (int j = 0; j < errors[i].TeachersMissingHours.Count; j++)
+                        {
+                            int tid = errors[i].TeachersMissingHours[j];
+                            if (tid > 0 && !teacherIds.Contains(tid))
+                            {
+                                teacherIds.Add(tid);
+                            }
+                        }
+                    }
+                }
+                
+                // Get class names from database
+                if (classIds.Count > 0)
+                {
+                    DataTable dtClasses = Dal.ExeSp("Class_GetAllClass", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+                    if (dtClasses != null && dtClasses.Rows.Count > 0)
+                    {
+                        for (int i = 0; i < dtClasses.Rows.Count; i++)
+                        {
+                            int cid = 0;
+                            if (dtClasses.Rows[i]["ClassId"] != null)
+                            {
+                                int.TryParse(dtClasses.Rows[i]["ClassId"].ToString(), out cid);
+                            }
+                            string cname = dtClasses.Rows[i]["ClassName"] != null ? dtClasses.Rows[i]["ClassName"].ToString() : "";
+                            if (cid > 0 && !string.IsNullOrEmpty(cname))
+                            {
+                                classNames[cid] = cname;
+                            }
+                        }
+                    }
+                }
+                
+                // Get teacher names from database
+                if (teacherIds.Count > 0)
+                {
+                    DataTable dtTeachers = Dal.ExeSp("Teacher_GetTeacherList", "", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"], "", "");
+                    if (dtTeachers != null && dtTeachers.Rows.Count > 0)
+                    {
+                        for (int i = 0; i < dtTeachers.Rows.Count; i++)
+                        {
+                            int tid = 0;
+                            if (dtTeachers.Rows[i]["TeacherId"] != null)
+                            {
+                                int.TryParse(dtTeachers.Rows[i]["TeacherId"].ToString(), out tid);
+                            }
+                            string tname = "";
+                            if (dtTeachers.Rows[i]["FullText"] != null)
+                            {
+                                tname = dtTeachers.Rows[i]["FullText"].ToString();
+                            }
+                            else if (dtTeachers.Rows[i]["FirstName"] != null && dtTeachers.Rows[i]["LastName"] != null)
+                            {
+                                tname = dtTeachers.Rows[i]["FirstName"].ToString() + " " + dtTeachers.Rows[i]["LastName"].ToString();
+                            }
+                            if (tid > 0 && !string.IsNullOrEmpty(tname))
+                            {
+                                teacherNames[tid] = tname;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Add all error rows
+            if (errors != null && errors.Count > 0)
+            {
+                for (int i = 0; i < errors.Count; i++)
+                {
+                    ShibutzError err = errors[i];
+                    if (err != null)
+                    {
+                        DataRow dr = dtErrors.NewRow();
+                        dr["ClassId"] = err.ClassId;
+                        dr["ClassName"] = classNames.ContainsKey(err.ClassId) ? classNames[err.ClassId] : ("כיתה " + err.ClassId);
+                        dr["Day"] = err.Day;
+                        dr["Hour"] = err.Hour;
+                        // Fix encoding for Hebrew messages - ensure UTF-8
+                        string message = err.Message != null ? err.Message : "";
+                        // Replace teacher IDs with names in message
+                        if (!string.IsNullOrEmpty(message) && teacherNames.Count > 0)
+                        {
+                            // Replace "מורה X" with teacher name
+                            foreach (int tid in teacherNames.Keys)
+                            {
+                                string teacherIdStr = "מורה " + tid;
+                                string teacherName = teacherNames[tid];
+                                message = message.Replace(teacherIdStr, teacherName);
+                            }
+                        }
+                        // Ensure the message is properly encoded as UTF-8
+                        if (!string.IsNullOrEmpty(message))
+                        {
+                            // Convert to UTF-8 bytes and back to ensure proper encoding
+                            byte[] messageBytes = System.Text.Encoding.UTF8.GetBytes(message);
+                            message = System.Text.Encoding.UTF8.GetString(messageBytes);
+                        }
+                        dr["Message"] = message;
+                        
+                        // Build teachers missing hours list
+                        string teachersMissingHoursStr = "";
+                        if (err.TeachersMissingHours != null && err.TeachersMissingHours.Count > 0)
+                        {
+                            List<string> teacherNamesList = new List<string>();
+                            for (int j = 0; j < err.TeachersMissingHours.Count; j++)
+                            {
+                                int tid = err.TeachersMissingHours[j];
+                                if (teacherNames.ContainsKey(tid))
+                                {
+                                    teacherNamesList.Add(teacherNames[tid]);
+                                }
+                                else
+                                {
+                                    teacherNamesList.Add("מורה " + tid);
+                                }
+                            }
+                            teachersMissingHoursStr = string.Join(", ", teacherNamesList.ToArray());
+                        }
+                        dr["TeachersMissingHours"] = teachersMissingHoursStr;
+                        
+                        dr["SavedCount"] = savedCount;
+                        dr["ErrorCount"] = errorCount;
+                        dtErrors.Rows.Add(dr);
+                    }
+                }
+            }
+            
+            // Always add a summary row with counts at the END (so JavaScript can get counts even if no errors)
+            // This row has ClassId=0 to mark it as summary
+            DataRow summaryRow = dtErrors.NewRow();
+            summaryRow["ClassId"] = 0;
+            summaryRow["ClassName"] = "";
+            summaryRow["Day"] = 0;
+            summaryRow["Hour"] = 0;
+            summaryRow["Message"] = "";
+            summaryRow["TeachersMissingHours"] = "";
+            summaryRow["SavedCount"] = savedCount;
+            summaryRow["ErrorCount"] = errorCount;
+            dtErrors.Rows.Add(summaryRow);
+
+            // Set encoding for Hebrew text - MUST be set before writing
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Charset = "utf-8";
+            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
+            
+            // Use ConvertDataTabletoString which handles encoding properly
+            string jsonResult = ConvertDataTabletoString(dtErrors);
+            HttpContext.Current.Response.Write(jsonResult);
+        }
+        catch (Exception ex)
+        {
+            // Return empty result on error
+            DataTable dtErrors = new DataTable();
+            dtErrors.Columns.Add("ClassId", typeof(int));
+            dtErrors.Columns.Add("ClassName", typeof(string));
+            dtErrors.Columns.Add("Day", typeof(int));
+            dtErrors.Columns.Add("Hour", typeof(int));
+            dtErrors.Columns.Add("Message", typeof(string));
+            dtErrors.Columns.Add("TeachersMissingHours", typeof(string));
+            dtErrors.Columns.Add("SavedCount", typeof(int));
+            dtErrors.Columns.Add("ErrorCount", typeof(int));
+            
+            DataRow summaryRow = dtErrors.NewRow();
+            summaryRow["ClassId"] = 0;
+            summaryRow["ClassName"] = "";
+            summaryRow["Day"] = 0;
+            summaryRow["Hour"] = 0;
+            summaryRow["Message"] = "";
+            summaryRow["TeachersMissingHours"] = "";
+            summaryRow["SavedCount"] = 0;
+            summaryRow["ErrorCount"] = 0;
+            dtErrors.Rows.Add(summaryRow);
+            
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dtErrors));
+        }
     }
 
    
@@ -1053,6 +1377,116 @@ public class WebService : System.Web.Services.WebService
 
         DataTable dt = Dal.ExeSp("Assign_GetAllTeacherOptional", ClassId, HourId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Assign_GetTeacherHoursPerClass()
+    {
+        string teacherId = GetParams("TeacherId");
+        string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+        int tid = 0;
+        int.TryParse(teacherId, out tid);
+        if (tid <= 0)
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        try
+        {
+            DataTable dt = Dal.ExeSp("Assign_GetTeacherHoursPerClass", tid, configId);
+            if (dt != null && dt.Rows.Count > 0)
+            {
+                HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+                return;
+            }
+        }
+        catch { }
+        try
+        {
+            DataSet ds = Dal.ExeDataSetSp("Assign_GetInitDataForShibutz", configId);
+            DataTable slots = ds.Tables.Count > 0 ? ds.Tables[0] : null;
+            Dictionary<int, string> classNames = new Dictionary<int, string>();
+            if (slots != null && slots.Columns.Contains("ClassId") && slots.Columns.Contains("Name"))
+                foreach (DataRow r in slots.Rows)
+                {
+                    int cid;
+                    if (int.TryParse(r["ClassId"].ToString(), out cid) && !classNames.ContainsKey(cid) && r["Name"] != null && r["Name"] != DBNull.Value)
+                        classNames[cid] = r["Name"].ToString();
+                }
+            Dictionary<string, int> expected = new Dictionary<string, int>();
+            if (slots != null && slots.Columns.Contains("ClassId") && slots.Columns.Contains("TeachList"))
+            {
+                foreach (DataRow row in slots.Rows)
+                {
+                    int classId;
+                    if (!int.TryParse(row["ClassId"].ToString(), out classId)) continue;
+                    string teachList = (row["TeachList"] == null || row["TeachList"] == DBNull.Value) ? "" : row["TeachList"].ToString();
+                    if (string.IsNullOrEmpty(teachList)) continue;
+                    foreach (string item in teachList.Split(','))
+                    {
+                        string t = item.Trim();
+                        if (string.IsNullOrEmpty(t)) continue;
+                        string[] parts = t.Split('-');
+                        if (parts.Length < 2) continue;
+                        int tId = 0, hours = 0;
+                        int.TryParse(parts[0], out tId);
+                        int.TryParse(parts[1], out hours);
+                        if (tId != tid) continue;
+                        string key = classId + "_" + tId;
+                        if (!expected.ContainsKey(key) || expected[key] < hours) expected[key] = hours;
+                    }
+                }
+            }
+            DataTable assign = Dal.ExeSp("Assign_GetAssignment", "0", configId);
+            Dictionary<string, int> assigned = new Dictionary<string, int>();
+            if (assign != null && assign.Columns.Contains("TeacherId") && assign.Columns.Contains("ClassId"))
+            {
+                foreach (DataRow r in assign.Rows)
+                {
+                    int rTid;
+                    if (!int.TryParse(r["TeacherId"].ToString(), out rTid) || rTid != tid) continue;
+                    int cId;
+                    if (!int.TryParse(r["ClassId"].ToString(), out cId)) continue;
+                    string key = cId + "_" + rTid;
+                    if (!assigned.ContainsKey(key)) assigned[key] = 0;
+                    assigned[key]++;
+                }
+            }
+            DataTable result = new DataTable();
+            result.Columns.Add("TeacherId", typeof(int));
+            result.Columns.Add("TeacherName", typeof(string));
+            result.Columns.Add("ClassId", typeof(int));
+            result.Columns.Add("ClassName", typeof(string));
+            result.Columns.Add("ExpectedHours", typeof(int));
+            result.Columns.Add("AssignedHours", typeof(int));
+            DataTable teacherData = Dal.ExeSp("Teacher_GetAllTeacherHours", teacherId, configId);
+            string teacherName = "";
+            if (teacherData != null && teacherData.Rows.Count > 0 && teacherData.Columns.Contains("TeacherName"))
+                teacherName = teacherData.Rows[0]["TeacherName"].ToString();
+            HashSet<int> classIds = new HashSet<int>();
+            foreach (string k in expected.Keys) { string[] p = k.Split('_'); if (p.Length >= 2) classIds.Add(int.Parse(p[0])); }
+            foreach (string k in assigned.Keys) { string[] p = k.Split('_'); if (p.Length >= 2) classIds.Add(int.Parse(p[0])); }
+            foreach (int cId in classIds)
+            {
+                string key = cId + "_" + tid;
+                int exp = expected.ContainsKey(key) ? expected[key] : 0;
+                int ass = assigned.ContainsKey(key) ? assigned[key] : 0;
+                if (exp <= 0 && ass <= 0) continue;
+                DataRow dr = result.NewRow();
+                dr["TeacherId"] = tid;
+                dr["TeacherName"] = teacherName;
+                dr["ClassId"] = cId;
+                dr["ClassName"] = classNames.ContainsKey(cId) ? classNames[cId] : cId.ToString();
+                dr["ExpectedHours"] = exp;
+                dr["AssignedHours"] = ass;
+                result.Rows.Add(dr);
+            }
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(result));
+        }
+        catch
+        {
+            HttpContext.Current.Response.Write("[]");
+        }
     }
 
 
@@ -1224,8 +1658,6 @@ public class WebService : System.Web.Services.WebService
 
     public static string ConvertDataTabletoString(DataTable dt)
     {
-
-
         System.Web.Script.Serialization.JavaScriptSerializer serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
         List<Dictionary<string, object>> rows = new List<Dictionary<string, object>>();
         Dictionary<string, object> row;
@@ -1234,12 +1666,22 @@ public class WebService : System.Web.Services.WebService
             row = new Dictionary<string, object>();
             foreach (DataColumn col in dt.Columns)
             {
-                row.Add(col.ColumnName, dr[col]);
+                object value = dr[col];
+                // Ensure Hebrew strings are properly encoded
+                if (value != null && value is string)
+                {
+                    string strValue = value.ToString();
+                    // Keep the string as-is - JavaScriptSerializer will handle UTF-8 encoding
+                    row.Add(col.ColumnName, strValue);
+                }
+                else
+                {
+                    row.Add(col.ColumnName, value);
+                }
             }
             rows.Add(row);
         }
         return serializer.Serialize(rows);
-
     }
 
 }
