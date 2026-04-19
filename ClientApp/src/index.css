@@ -1,0 +1,2 @@
+body { margin: 0; display: block !important; }
+a[href^="javascript:"] { cursor: pointer; }
