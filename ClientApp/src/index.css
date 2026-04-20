@@ -870,15 +870,22 @@ input[type='radio'] {
   line-height: 1;
 }
 
-/* Cell "selected" state */
+/* Cell "selected" state — inline styles from legacy code applied
+   weak color overrides. Use explicit longhand + !important to win
+   even against inline `style={{ backgroundColor: '#B8C0DC' }}`. */
 .dvForRIGHT > div.selected,
 .dvForRIGHT > div[data-selected='true'] {
-  background: var(--color-accent);
-  border-color: var(--color-accent-dark);
-  color: white;
+  background-color: #b04218 !important;
+  border-color: #8a3212 !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 6px -2px rgba(176, 66, 24, 0.35);
 }
 .dvForRIGHT > div.selected .spSeqNumber,
-.dvForRIGHT > div[data-selected='true'] .spSeqNumber { color: rgba(255, 255, 255, 0.7); }
+.dvForRIGHT > div[data-selected='true'] .spSeqNumber { color: rgba(255, 255, 255, 0.75) !important; }
+.dvForRIGHT > div.selected:hover,
+.dvForRIGHT > div[data-selected='true']:hover {
+  background-color: #8a3212 !important;
+}
 
 /* Generic detail rows (used by list pages) */
 .dvRequireTitle {
@@ -943,4 +950,299 @@ a[href^="javascript:"] { cursor: pointer; }
   color: var(--color-ink-mute) !important;
   font-size: 0.92rem !important;
   font-weight: 400 !important;
+}
+
+/* ============================================================
+   POLISH PASS — per-page refinements
+   ============================================================ */
+
+/* ---------- Login page: centered, editorial headline ---------- */
+
+body:has(> #root > .container:only-child) {
+  background-image:
+    radial-gradient(circle at 15% 12%, rgba(176, 66, 24, 0.08) 0%, transparent 50%),
+    radial-gradient(circle at 85% 88%, rgba(77, 107, 74, 0.07) 0%, transparent 50%),
+    linear-gradient(0deg, var(--color-paper) 0%, var(--color-paper-deep) 100%);
+}
+
+.container[style*="max-width: 400"],
+.container[style*="maxWidth: 400"] {
+  max-width: 420px !important;
+  margin-top: 0 !important;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 2rem 1rem;
+}
+
+.container[style*="max-width: 400"] .panel,
+.container[style*="maxWidth: 400"] .panel {
+  width: 100%;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.8) inset,
+    0 20px 60px -20px rgba(26, 24, 20, 0.25),
+    0 0 0 1px var(--color-line);
+  border: none;
+  animation: loginEnter 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes loginEnter {
+  from { opacity: 0; transform: translateY(14px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.container[style*="max-width: 400"] .panel-heading,
+.container[style*="maxWidth: 400"] .panel-heading {
+  background: linear-gradient(135deg, var(--color-ink) 0%, #2a211a 100%);
+  padding: 1.75rem 1.5rem 1.5rem;
+  text-align: center;
+  border: none;
+  position: relative;
+}
+.container[style*="max-width: 400"] .panel-heading::before,
+.container[style*="maxWidth: 400"] .panel-heading::before { display: none; }
+
+.container[style*="max-width: 400"] .panel-title,
+.container[style*="maxWidth: 400"] .panel-title {
+  color: var(--color-paper) !important;
+  font-family: var(--font-display);
+  font-size: 1.6rem !important;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  display: block !important;
+}
+.container[style*="max-width: 400"] .panel-title::after,
+.container[style*="maxWidth: 400"] .panel-title::after {
+  content: '';
+  display: block;
+  width: 42px;
+  height: 2px;
+  background: var(--color-accent);
+  margin: 0.7rem auto 0;
+  border-radius: 2px;
+}
+
+.container[style*="max-width: 400"] .panel-body,
+.container[style*="maxWidth: 400"] .panel-body {
+  padding: 1.75rem 1.5rem 1.75rem !important;
+}
+
+.container[style*="max-width: 400"] .panel-body .btn-block,
+.container[style*="maxWidth: 400"] .panel-body .btn-block {
+  margin-top: 1.25rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
+}
+
+/* ---------- Sidebar: elegant active-state marker ---------- */
+
+.mainNav li a {
+  position: relative;
+  overflow: hidden;
+}
+.mainNav li a::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  background: var(--color-accent);
+  border-radius: 0 3px 3px 0;
+  transform: translateY(-50%);
+  transition: height 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mainNav li a:hover::before { height: 45%; }
+.mainNav li a.active::before { height: 70%; }
+.mainNav li a.active {
+  background: linear-gradient(
+    to inline-end,
+    rgba(176, 66, 24, 0.12) 0%,
+    var(--color-sidebar-soft) 100%
+  ) !important;
+}
+
+/* ---------- Class-status chips (btnArea) in top nav ---------- */
+
+.btnArea {
+  min-width: auto !important;
+  padding: 0.35rem 0.7rem !important;
+  border-radius: 8px !important;
+  line-height: 1.1 !important;
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.btnArea:hover { transform: translateY(-1px); }
+
+/* ---------- Welcome page refinement ---------- */
+
+.panel-primary .panel-heading {
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-dark) 100%);
+  color: white;
+  border-bottom: none;
+}
+.panel-primary .panel-heading::before { background: white; }
+.panel-primary .panel-title { color: white; font-size: 1.2rem; }
+
+.panel-primary .panel-body h4 {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  color: var(--color-ink);
+  margin: 0 0 0.4rem;
+  font-weight: 500;
+}
+.panel-primary .panel-body h4 strong {
+  color: var(--color-accent);
+  font-weight: 700;
+}
+
+/* ---------- Grid panels (scheduling days) refinement ---------- */
+
+.dvDaysCotainer > .col-md-2 {
+  padding: 0 0.3rem !important;
+}
+.dvDaysCotainer .panel {
+  margin-bottom: 0.5rem;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.dvDaysCotainer .panel-heading {
+  padding: 0.65rem 0.85rem;
+  background: linear-gradient(180deg, white 0%, var(--color-paper-deep) 100%);
+}
+.dvDaysCotainer .panel-heading::before {
+  width: 3px;
+  height: 0.85rem;
+  margin-inline-end: 0.5rem;
+}
+.dvDaysCotainer .panel-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+/* Row of class-chip buttons under day headers */
+.dvForRIGHT > div {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+  transition: all 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Total-hours badge pill in SchoolHours header */
+#spTotals {
+  min-width: 1.75rem;
+  margin-inline-start: 0.5rem;
+}
+
+/* ---------- Tables: tabular numbers for numeric columns ---------- */
+
+.table,
+.table th,
+.table td {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* ---------- Modals: soft backdrop ---------- */
+
+.modal {
+  background: rgba(26, 24, 20, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.modal .modal-dialog { margin-top: 6vh; }
+
+/* Inline modals some pages wrap with their own backdrop — keep them */
+.modal[style*="backgroundColor"] { background: transparent; }
+.modal[style*="backgroundColor"] .modal-content {
+  border-radius: 14px;
+  box-shadow: 0 25px 60px -15px rgba(26, 24, 20, 0.5);
+}
+
+/* ---------- Inputs: slightly larger for touch / readability ---------- */
+
+.panel-body .form-control,
+.modal-body .form-control {
+  font-size: 0.95rem;
+  padding: 0.6rem 0.9rem;
+}
+
+/* Numeric input alignment (LTR for numbers inside RTL app) */
+input[type='number'],
+input[type='text'][id*="Hour"],
+input[type='text'][id*="Min"],
+input[type='text'][id*="Retzef"] {
+  direction: ltr;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Print-friendly: de-emphasize sidebar ---------- */
+
+@media print {
+  #left-navigation, .navigation { display: none !important; }
+  #main-container { grid-template-columns: 1fr !important; }
+  body { background: white; }
+  .panel { box-shadow: none !important; border: 1px solid #ccc !important; }
+}
+
+/* ---------- Icon alignment fixes ---------- */
+
+.btn i,
+.btn .fa,
+.btn .glyphicon { font-size: 0.85em; }
+
+.input-group-addon i,
+.help-block i { margin-inline-end: 0.25rem; color: var(--color-ink-mute); }
+
+/* Panel bullet refinement for sage/info variants */
+.panel-info .panel-heading { background: linear-gradient(180deg, #f7f4ec 0%, var(--color-paper-deep) 100%); }
+
+/* ---------- Matrix table tightening ---------- */
+
+.table td:first-child,
+.table th:first-child { font-weight: 600; }
+
+.table tbody tr:hover td { background: var(--color-accent-soft); }
+
+/* ---------- BetKneset viewer content ---------- */
+
+.dvInMain {
+  font-family: var(--font-display);
+  line-height: 1.75;
+  padding: 2rem 2.25rem;
+  min-height: 400px;
+  background: linear-gradient(180deg, white 0%, #fdfbf5 100%);
+  box-shadow: 0 1px 0 rgba(26, 24, 20, 0.02), 0 10px 30px -10px rgba(26, 24, 20, 0.08);
+}
+.dvInMain strong, .dvInMain b { color: var(--color-accent-dark); }
+
+/* ---------- Alert top-margin when it is a flash message ---------- */
+
+.alert { animation: alertIn 0.25s cubic-bezier(0.22, 1, 0.36, 1); }
+@keyframes alertIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Consistent 12-col grid negative margin polish ---------- */
+
+.row > [class*='col-'] { margin-bottom: 0.5rem; }
+.row > [class*='col-']:last-child { margin-bottom: 0; }
+
+/* ---------- Professional list rows: alternating backgrounds ---------- */
+
+.col-md-12 > .row > .panel-body > div > div:nth-child(even) .dvRequireDetails {
+  background: var(--color-line-soft);
+}
+
+/* ---------- Help text refinements ---------- */
+
+.help-block.m-b-none {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--color-ink-soft);
+  padding-top: 0.45rem;
 }
