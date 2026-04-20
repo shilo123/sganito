@@ -130,6 +130,11 @@ export default function TeacherHours() {
   const [search, setSearch] = useState('');
   const [selectedTeacher, setSelectedTeacher] = useState<Teacher | null>(null);
   const [teacherHours, setTeacherHours] = useState<TeacherHourRow[]>([]);
+  const [tafkidOptions, setTafkidOptions] = useState<Array<{ TafkidId: number; Name: string }>>([]);
+  const [classOptions, setClassOptions] = useState<Array<{ ClassId: number; ClassName: string }>>([]);
+  const [filterName, setFilterName] = useState('');
+  const [filterTafkid, setFilterTafkid] = useState<string>('');
+  const [filterClass, setFilterClass] = useState<string>('');
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
     x: 0,
@@ -154,7 +159,41 @@ export default function TeacherHours() {
 
   useEffect(() => {
     loadTeachers();
+    ajax<Array<{ TafkidId: number; Name: string }>>('Gen_GetTable', { TableName: 'Tafkid', Condition: '' })
+      .then((rows) => setTafkidOptions(Array.isArray(rows) ? rows : []))
+      .catch(() => setTafkidOptions([]));
+    ajax<Array<{ ClassId: number; ClassName: string; LayerId?: number }>>('Class_GetAllClass')
+      .then((rows) => setClassOptions(Array.isArray(rows) ? rows : []))
+      .catch(() => setClassOptions([]));
   }, [loadTeachers]);
+
+  const sortedTeachers = useMemo(() => {
+    const toStr = (v: unknown) => (v == null ? '' : String(v));
+    return [...teachers].sort((a, b) => {
+      const ta = Number(a.TafkidId ?? 999);
+      const tb = Number(b.TafkidId ?? 999);
+      if (ta !== tb) return ta - tb;
+      return toStr(a.FullText).localeCompare(toStr(b.FullText), 'he');
+    });
+  }, [teachers]);
+
+  const tableTeachers = useMemo(() => {
+    const nameQ = filterName.trim().toLowerCase();
+    const tafQ = filterTafkid.trim();
+    const clsQ = filterClass.trim();
+    return sortedTeachers.filter((t) => {
+      if (nameQ) {
+        const hay = String(t.FullText ?? `${t.FirstName ?? ''} ${t.LastName ?? ''}`).toLowerCase();
+        if (!hay.includes(nameQ)) return false;
+      }
+      if (tafQ && String(t.TafkidId ?? '') !== tafQ) return false;
+      if (clsQ) {
+        const mc = (t as { ManageClassId?: unknown }).ManageClassId;
+        if (mc == null || String(mc) !== clsQ) return false;
+      }
+      return true;
+    });
+  }, [sortedTeachers, filterName, filterTafkid, filterClass]);
 
   useEffect(() => {
     if (selectedTeacher) {
@@ -465,7 +504,63 @@ export default function TeacherHours() {
       )}
 
       <div className="col-md-12">
-        <div id="dvTeacherTable" style={{ paddingTop: 20 }}>
+        <div className="teacher-filter-bar">
+          <div className="teacher-filter-bar__title">
+            <i className="fa fa-filter" /> סנן לפי
+          </div>
+          <div className="teacher-filter-bar__field">
+            <label htmlFor="fltName">שם</label>
+            <input
+              id="fltName"
+              type="text"
+              className="form-control"
+              placeholder="חפש לפי שם"
+              value={filterName}
+              onChange={(e) => setFilterName(e.target.value)}
+            />
+          </div>
+          <div className="teacher-filter-bar__field">
+            <label htmlFor="fltTafkid">תפקיד</label>
+            <select
+              id="fltTafkid"
+              className="form-control"
+              value={filterTafkid}
+              onChange={(e) => setFilterTafkid(e.target.value)}
+            >
+              <option value="">כל התפקידים</option>
+              {tafkidOptions.map((o) => (
+                <option key={o.TafkidId} value={o.TafkidId}>{o.Name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="teacher-filter-bar__field">
+            <label htmlFor="fltClass">כיתה (מחנך/ת)</label>
+            <select
+              id="fltClass"
+              className="form-control"
+              value={filterClass}
+              onChange={(e) => setFilterClass(e.target.value)}
+            >
+              <option value="">כל הכיתות</option>
+              {classOptions.map((c) => (
+                <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>
+              ))}
+            </select>
+          </div>
+          {(filterName || filterTafkid || filterClass) && (
+            <button
+              type="button"
+              className="btn btn-default btn-sm"
+              onClick={() => { setFilterName(''); setFilterTafkid(''); setFilterClass(''); }}
+            >
+              <i className="fa fa-times" /> נקה
+            </button>
+          )}
+          <div className="teacher-filter-bar__count">
+            מציג {tableTeachers.length} מתוך {teachers.length}
+          </div>
+        </div>
+        <div id="dvTeacherTable" style={{ paddingTop: 8 }}>
           <div className="col-md-2 dvRequireTitle">שם מורה</div>
           <div className="col-md-2 dvRequireTitle">תפקיד</div>
           <div className="col-md-2 dvRequireTitle">מקצוע</div>
@@ -474,7 +569,7 @@ export default function TeacherHours() {
           <div className="col-md-1 dvRequireTitle">שעות פרטני</div>
           <div className="col-md-1 dvRequireTitle">&nbsp;</div>
           <div id="dvReqContainer" className="dvPanelReq clear">
-            {teachers.map((t) => (
+            {tableTeachers.map((t) => (
               <div key={String(t.TeacherId)}>
                 <div className="col-md-2 dvRequireDetails">
                   <a
