@@ -1195,8 +1195,12 @@ input[type='radio'] {
 }
 .dvDaysCotainer > .col-md-2 {
   padding: 0 !important;
-  width: auto;
+  /* Grid lays out each day in its own cell; override the generic
+     col-md-2 width !important so the panel fills the cell. */
+  width: 100% !important;
+  max-width: 100% !important;
   flex: none;
+  min-width: 0;
 }
 .dvDaysCotainer .panel {
   margin-bottom: 0;
