@@ -143,7 +143,7 @@ export default function TeacherHours() {
 
   const loadTeachers = useCallback(async () => {
     if (!configurationId) return;
-    const data = await ajax<Teacher[]>('Teacher_GetTeacherList', { TeacherId: 0 });
+    const data = await ajax<Teacher[]>('Teacher_GetTeacherList', { TeacherId: '' });
     setTeachers(Array.isArray(data) ? data : []);
   }, [configurationId]);
 

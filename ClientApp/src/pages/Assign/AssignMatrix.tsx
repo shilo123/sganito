@@ -70,7 +70,7 @@ export default function AssignMatrix() {
       try {
         const [classData, teacherData, assignData] = await Promise.all([
           ajax<ClassRow[]>('Class_GetAllClass'),
-          ajax<TeacherRow[]>('Teacher_GetTeacherList', { TeacherId: 0 }),
+          ajax<TeacherRow[]>('Teacher_GetTeacherList', { TeacherId: '' }),
           ajax<AssignmentRow[]>('Assign_GetAssignment', { LayerId: 0 }),
         ]);
         if (cancelled) return;

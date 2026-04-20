@@ -998,18 +998,18 @@ input[type='radio'] {
 .row::after { content: ''; display: table; clear: both; }
 [class*='col-'] { padding: 0 0.5rem; box-sizing: border-box; flex: 0 0 auto; }
 
-.col-md-1  { width: 8.3333%; }
-.col-md-2  { width: 16.6667%; }
-.col-md-3  { width: 25%; }
-.col-md-4  { width: 33.3333%; }
-.col-md-5  { width: 41.6667%; }
-.col-md-6  { width: 50%; }
-.col-md-7  { width: 58.3333%; }
-.col-md-8  { width: 66.6667%; }
-.col-md-9  { width: 75%; }
-.col-md-10 { width: 83.3333%; }
-.col-md-11 { width: 91.6667%; }
-.col-md-12 { width: 100%; }
+.col-md-1  { width: 8.3333% !important; max-width: 8.3333%; }
+.col-md-2  { width: 16.6667% !important; max-width: 16.6667%; }
+.col-md-3  { width: 25% !important; max-width: 25%; }
+.col-md-4  { width: 33.3333% !important; max-width: 33.3333%; }
+.col-md-5  { width: 41.6667% !important; max-width: 41.6667%; }
+.col-md-6  { width: 50% !important; max-width: 50%; }
+.col-md-7  { width: 58.3333% !important; max-width: 58.3333%; }
+.col-md-8  { width: 66.6667% !important; max-width: 66.6667%; }
+.col-md-9  { width: 75% !important; max-width: 75%; }
+.col-md-10 { width: 83.3333% !important; max-width: 83.3333%; }
+.col-md-11 { width: 91.6667% !important; max-width: 91.6667%; }
+.col-md-12 { width: 100% !important; max-width: 100%; }
 
 @media (max-width: 900px) { [class*='col-md-'] { width: 100%; } }
 
@@ -1321,6 +1321,60 @@ input[type='radio'] {
   color: var(--ink);
   font-size: 0.88rem;
   letter-spacing: -0.005em;
+}
+
+/* Row containers for the "fake table" pattern (cols directly in a div).
+   Legacy pages wrap each row as <div><col-md-*.../><col-md-*.../></div>
+   without a `.row` class, so we flex those wrappers here. */
+#dvTeacherTable,
+.dvPanelReq,
+#dvReqContainer {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+}
+#dvReqContainer {
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  overflow: hidden;
+}
+#dvReqContainer > div {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+  border-bottom: 1px solid var(--line-soft);
+  transition: background 0.12s;
+}
+#dvReqContainer > div:last-child { border-bottom: 0; }
+#dvReqContainer > div:hover { background: var(--primary-50); }
+#dvReqContainer > div:nth-child(even) { background: var(--line-soft); }
+#dvReqContainer > div:nth-child(even):hover { background: var(--primary-50); }
+
+/* The header row collectively wraps before #dvReqContainer */
+#dvTeacherTable > .dvRequireTitle {
+  border-bottom: 2px solid var(--line);
+}
+
+/* Fix cell styling within these flex rows */
+#dvReqContainer > div > .dvRequireDetails,
+#dvTeacherTable > .dvRequireTitle,
+#dvTeacherTable .dvRequireDetails {
+  border-bottom: 0;
+  min-height: 44px;
+  padding: 0.55rem 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+#dvReqContainer > div > .dvRequireDetails { background: transparent !important; }
+#dvReqContainer > div > .dvRequireDetails a {
+  color: var(--primary-deep);
+  font-weight: 600;
+}
+#dvReqContainer > div > .dvRequireDetails a:hover {
+  color: var(--primary);
+  text-decoration: underline;
 }
 .dvRequireDetails {
   padding: 0.65rem 1rem;
