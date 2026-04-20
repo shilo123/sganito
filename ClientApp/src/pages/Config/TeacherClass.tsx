@@ -86,6 +86,7 @@ export default function TeacherClass() {
   const [professionalOpts, setProfessionalOpts] = useState<ProfessionalOption[]>([]);
   const [teachers, setTeachers] = useState<TeacherRow[]>([]);
   const [classes, setClasses] = useState<ClassRow[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
 
   // teacher modal
   const [showTeacherModal, setShowTeacherModal] = useState(false);
@@ -190,8 +191,16 @@ export default function TeacherClass() {
   }, []);
 
   useEffect(() => {
-    loadCombos();
-    loadTeachers();
+    let cancelled = false;
+    setInitialLoading(true);
+    Promise.allSettled([loadCombos(), loadTeachers(), loadClasses(layerId)])
+      .finally(() => {
+        if (!cancelled) setInitialLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadCombos, loadTeachers]);
 
   useEffect(() => {
@@ -630,6 +639,18 @@ export default function TeacherClass() {
 
   return (
     <div className="tc-page">
+      {initialLoading && (
+        <div className="page-loading-overlay" role="status" aria-live="polite" aria-label="טוען">
+          <div className="page-loading-overlay__card">
+            <div className="page-loading-overlay__orb">
+              <span /><span /><span />
+            </div>
+            <div className="page-loading-overlay__title">טוען הגדרות כיתות</div>
+            <div className="page-loading-overlay__subtitle">מאחזר מורים, מקצועות וכיתות...</div>
+            <div className="page-loading-overlay__bar"><div /></div>
+          </div>
+        </div>
+      )}
       <div className="col-md-9 tc-page__classes">
         <div className="row dvWeek">
           <div className="panel panel-info">
