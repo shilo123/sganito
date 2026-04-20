@@ -209,6 +209,21 @@ export default function TeacherHours() {
     }
   }, [selectedTeacher, loadTeacherHours]);
 
+  useEffect(() => {
+    if (!selectedTeacher) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') resetTeacher();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', onKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTeacher]);
+
   const filteredTeachers = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return teachers;
@@ -440,81 +455,107 @@ export default function TeacherHours() {
       </div>
 
       {selectedTeacher && (
-        <div className="col-md-12" id="dvAllDays">
-          <div className="row dvWeek">
-            <div className="panel panel-info">
-              <div className="panel-heading">
-                <h3 className="panel-title">
-                  &nbsp; שעות למורה- <span className="spTeacherName">{teacherFullName}</span>
-                </h3>
+        <div
+          className="th-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`שעות למורה - ${teacherFullName}`}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) resetTeacher();
+          }}
+        >
+          <div className="th-modal__shell" id="dvAllDays">
+            <div className="th-modal__header">
+              <div className="th-modal__heading">
+                <div className="th-modal__kicker">הגדרת שעות שבועיות</div>
+                <h2 className="th-modal__title">{teacherFullName}</h2>
               </div>
-              <div className="panel-body">
-                <div className="col-md-10">
-                  <h5 style={{ fontStyle: 'italic' }}>
-                    בחר שעות ע"י לחיצה וגרירה , לביטול לחץ וגרור שוב.
-                  </h5>
+              <div className="th-modal__stats">
+                <div className="th-stat th-stat--primary">
+                  <span className="th-stat__val">{String(frontaly)}</span>
+                  <span className="th-stat__label">שעות פרונטלי</span>
                 </div>
-                <div className="col-md-2" style={{ textAlign: 'left' }}>
-                  <div className="btn btn-info btn-round" style={{ margin: 1 }}>
-                    סה"כ שעות פרונטלי{' '}
-                    <span className="badge" id="spFrontalyTotals">
-                      {String(frontaly)}
-                    </span>
-                  </div>
-                </div>
-                <div className="dvDaysCotainer">
-                  {DAYS.map((d) => (
-                    <div className="col-md-2" key={d.num}>
-                      <div className="panel panel-info">
-                        <div className="panel-heading">
-                          <h3 className="panel-title">&nbsp; {d.label}</h3>
-                        </div>
-                        <div className="panel-body" id={`dv${d.num}`}>
-                          {(dayCells[d.num] ?? []).map((cell) => (
-                            <div
-                              key={cell.hourId}
-                              id={cell.hourId}
-                              className={`dv_HourTypeId_${cell.HourTypeId} selected`}
-                              style={{ userSelect: 'none', cursor: 'pointer' }}
-                              onMouseDown={(e) => onCellMouseDown(e, cell.hourId)}
-                              onMouseEnter={() => onCellMouseEnter(cell.hourId)}
-                              onContextMenu={(e) => onCellContextMenu(e, cell)}
-                            >
-                              <span className="spSeqNumber">
-                                {cell.seq}){' '}
-                                <span id={`spHourType_${cell.hourId}`}>{cell.label}</span>
-                              </span>
-                              &nbsp;
-                            </div>
-                          ))}
-                          {/* תאי ריקים ללחיצה על שעות שאינן מוגדרות ביום (מאפשר הוספה) */}
-                          {SLOTS_PER_DAY(d.num).map((seq) => {
-                            const hourId = `${d.num}${seq}`;
-                            if (hourMap[hourId]) return null;
+              </div>
+              <button
+                type="button"
+                className="th-modal__close"
+                onClick={resetTeacher}
+                aria-label="סגור"
+                title="סגור (Esc)"
+              >
+                <i className="fa fa-times" />
+              </button>
+            </div>
+            <div className="th-modal__hint">
+              <i className="fa fa-info-circle" />
+              <span>בחר שעות על־ידי לחיצה וגרירה; לחיצה ימנית פותחת תפריט הגדרות (שהייה/פרטני).</span>
+            </div>
+            <div className="th-modal__legend">
+              <span className="th-legend__item th-legend__item--regular"><i /> שיבוץ כיתה</span>
+              <span className="th-legend__item th-legend__item--shehya"><i /> שהייה</span>
+              <span className="th-legend__item th-legend__item--partani"><i /> פרטני</span>
+              <span className="th-legend__item th-legend__item--empty"><i /> פנוי</span>
+            </div>
+            <div className="th-modal__body">
+              <div className="th-grid">
+                {DAYS.map((d) => {
+                  const cells = dayCells[d.num] ?? [];
+                  const dayCount = cells.filter((c) => c.HourTypeId === 1).length;
+                  return (
+                    <div className="th-day" key={d.num}>
+                      <div className="th-day__header">
+                        <span className="th-day__name">{d.label}</span>
+                        <span className="th-day__badge" title="שיבוצי כיתה ביום זה">
+                          {dayCount}
+                        </span>
+                      </div>
+                      <div className="th-day__body" id={`dv${d.num}`}>
+                        {SLOTS_PER_DAY(d.num).map((seq) => {
+                          const hourId = `${d.num}${seq}`;
+                          const cell = cells.find((c) => c.seq === seq);
+                          if (cell) {
+                            const variant = hourTypeVariant(cell.HourTypeId);
                             return (
                               <div
-                                key={`empty-${hourId}`}
-                                id={hourId}
-                                className="dv_empty"
-                                style={{
-                                  userSelect: 'none',
-                                  cursor: 'pointer',
-                                  color: '#aaa',
-                                  fontStyle: 'italic',
-                                }}
-                                onMouseDown={(e) => onCellMouseDown(e, hourId)}
-                                onMouseEnter={() => onCellMouseEnter(hourId)}
+                                key={cell.hourId}
+                                id={cell.hourId}
+                                className={`th-cell th-cell--${variant} dv_HourTypeId_${cell.HourTypeId} selected`}
+                                onMouseDown={(e) => onCellMouseDown(e, cell.hourId)}
+                                onMouseEnter={() => onCellMouseEnter(cell.hourId)}
+                                onContextMenu={(e) => onCellContextMenu(e, cell)}
                               >
-                                <span className="spSeqNumber">{seq})</span>&nbsp;
+                                <div className="th-cell__meta">
+                                  <span className="th-cell__seq">{seq}</span>
+                                  <span className="th-cell__time">{HOUR_TIME_RANGES[seq]}</span>
+                                </div>
+                                <div className="th-cell__label" id={`spHourType_${hourId}`}>
+                                  {cell.label}
+                                </div>
                               </div>
                             );
-                          })}
-                        </div>
+                          }
+                          return (
+                            <div
+                              key={`empty-${hourId}`}
+                              id={hourId}
+                              className="th-cell th-cell--empty dv_empty"
+                              onMouseDown={(e) => onCellMouseDown(e, hourId)}
+                              onMouseEnter={() => onCellMouseEnter(hourId)}
+                            >
+                              <div className="th-cell__meta">
+                                <span className="th-cell__seq">{seq}</span>
+                                <span className="th-cell__time">{HOUR_TIME_RANGES[seq]}</span>
+                              </div>
+                              <div className="th-cell__plus">
+                                <i className="fa fa-plus" />
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
-                  ))}
-                  <div className="clear">&nbsp;</div>
-                </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -687,4 +728,23 @@ function SLOTS_PER_DAY(day: number): number[] {
   // יום שישי - 6 שעות, שאר הימים - 9 שעות (תואם ל-SchoolHours.aspx המקורי)
   const max = day === 6 ? 6 : 9;
   return Array.from({ length: max }, (_, i) => i + 1);
+}
+
+const HOUR_TIME_RANGES: Record<number, string> = {
+  1: '08:00 – 09:00',
+  2: '09:00 – 09:40',
+  3: '10:05 – 10:55',
+  4: '10:56 – 11:40',
+  5: '12:00 – 12:45',
+  6: '12:46 – 13:30',
+  7: '13:45 – 14:30',
+  8: '14:31 – 15:15',
+  9: '15:16 – 16:00',
+};
+
+function hourTypeVariant(id: number): string {
+  if (id === 1) return 'regular';
+  if (id === 2) return 'shehya';
+  if (id === 3) return 'partani';
+  return 'other';
 }
