@@ -220,7 +220,6 @@ export default function SchoolHours() {
                           userSelect: 'none',
                           cursor: 'pointer',
                         };
-                        if (isActive) style.backgroundColor = '#B8C0DC';
                         return (
                           <div
                             key={id}
