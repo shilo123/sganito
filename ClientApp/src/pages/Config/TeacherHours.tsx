@@ -135,6 +135,7 @@ export default function TeacherHours() {
   const [filterName, setFilterName] = useState('');
   const [filterTafkid, setFilterTafkid] = useState<string>('');
   const [filterClass, setFilterClass] = useState<string>('');
+  const [initialLoading, setInitialLoading] = useState(true);
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
     x: 0,
@@ -158,13 +159,18 @@ export default function TeacherHours() {
   }, []);
 
   useEffect(() => {
-    loadTeachers();
-    ajax<Array<{ TafkidId: number; Name: string }>>('Gen_GetTable', { TableName: 'Tafkid', Condition: '' })
-      .then((rows) => setTafkidOptions(Array.isArray(rows) ? rows : []))
-      .catch(() => setTafkidOptions([]));
-    ajax<Array<{ ClassId: number; ClassName: string; LayerId?: number }>>('Class_GetAllClass')
-      .then((rows) => setClassOptions(Array.isArray(rows) ? rows : []))
-      .catch(() => setClassOptions([]));
+    let cancelled = false;
+    setInitialLoading(true);
+    Promise.allSettled([
+      loadTeachers(),
+      ajax<Array<{ TafkidId: number; Name: string }>>('Gen_GetTable', { TableName: 'Tafkid', Condition: '' })
+        .then((rows) => { if (!cancelled) setTafkidOptions(Array.isArray(rows) ? rows : []); }),
+      ajax<Array<{ ClassId: number; ClassName: string; LayerId?: number }>>('Class_GetAllClass')
+        .then((rows) => { if (!cancelled) setClassOptions(Array.isArray(rows) ? rows : []); }),
+    ]).finally(() => {
+      if (!cancelled) setInitialLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [loadTeachers]);
 
   const sortedTeachers = useMemo(() => {
@@ -368,6 +374,18 @@ export default function TeacherHours() {
 
   return (
     <>
+      {initialLoading && (
+        <div className="page-loading-overlay" role="status" aria-live="polite" aria-label="טוען">
+          <div className="page-loading-overlay__card">
+            <div className="page-loading-overlay__orb">
+              <span /><span /><span />
+            </div>
+            <div className="page-loading-overlay__title">טוען הגדרות מורים</div>
+            <div className="page-loading-overlay__subtitle">מאחזר רשימת מורים, תפקידים וכיתות...</div>
+            <div className="page-loading-overlay__bar"><div /></div>
+          </div>
+        </div>
+      )}
       <div className="col-md-12">
         <div className="row dvWeek">
           <div className="panel panel-info">
