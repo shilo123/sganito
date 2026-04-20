@@ -555,6 +555,8 @@ hr {
   box-shadow: var(--shadow-sm);
   transition: box-shadow 0.25s var(--ease-out), transform 0.25s var(--ease-out);
   animation: slideUp 0.35s var(--ease-out);
+  width: 100%;
+  min-width: 0;
 }
 .panel:hover { box-shadow: var(--shadow); }
 
@@ -1427,6 +1429,298 @@ input[type='radio'] {
   0% { inset-inline-start: -35%; }
   100% { inset-inline-start: 100%; }
 }
+
+/* ============================================================
+   TEACHER-CLASS PAGE — two-pane layout + styled layer bar
+   ============================================================ */
+.tc-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 1.25rem;
+  align-items: start;
+}
+.tc-page > .col-md-9.tc-page__classes,
+.tc-page > .col-md-3.tc-page__teachers {
+  width: 100% !important;
+  max-width: 100% !important;
+  padding: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+/* Layer tabs bar — replaces the plain radios */
+.tc-layer-bar {
+  display: flex !important;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.85rem 1.1rem !important;
+  background: linear-gradient(180deg, var(--surface) 0%, var(--canvas-soft) 100%) !important;
+}
+.tc-layer-tabs {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  padding: 0.25rem;
+  background: var(--canvas-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.tc-layer-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--r-sm);
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: all 0.15s var(--ease-out);
+  margin: 0;
+  user-select: none;
+  background: transparent;
+  border: 1px solid transparent;
+}
+.tc-layer-tab:hover {
+  color: var(--ink);
+  background: color-mix(in oklab, var(--primary) 10%, transparent);
+}
+.tc-layer-tab input[type='radio'] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.tc-layer-tab.is-active {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-hover) 100%);
+  color: white;
+  border-color: var(--primary-deep);
+  box-shadow: 0 2px 6px -2px rgba(124, 58, 237, 0.45);
+}
+
+.tc-add-class {
+  margin-inline-start: auto;
+  white-space: nowrap;
+  background: linear-gradient(135deg, var(--success) 0%, #047857 100%);
+  color: white;
+  font-weight: 600;
+  box-shadow: 0 2px 6px -2px rgba(5, 150, 105, 0.4);
+}
+.tc-add-class i { margin-inline-end: 0.3rem; }
+
+/* Classes grid — responsive auto-fill */
+.tc-page__classes .panel-info > .panel-body {
+  padding: 1rem !important;
+}
+.tc-page__classes .panel-info > .panel-body > .droppable {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 1rem;
+  min-height: 200px;
+}
+.tc-page__classes .panel-info > .panel-body > .droppable > .col-md-3 {
+  width: 100% !important;
+  max-width: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+.tc-page__classes .panel-info > .panel-body > .droppable > .col-md-3 > div > .row {
+  margin: 0;
+}
+
+/* Each class card */
+.tc-page__classes .panel-primary {
+  border: 1px solid color-mix(in oklab, var(--primary) 20%, var(--line));
+  margin: 0;
+  overflow: hidden;
+}
+.tc-page__classes .panel-primary .panel-heading {
+  background: linear-gradient(135deg, var(--primary) 0%, #a855f7 100%);
+  padding: 0.7rem 0.85rem;
+}
+.tc-page__classes .panel-primary .panel-heading::before { background: rgba(255, 255, 255, 0.4); }
+.tc-page__classes .panel-primary .panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  color: white;
+  font-size: 0.98rem;
+  font-family: var(--font-display);
+  width: 100%;
+}
+.tc-page__classes .panel-primary .panel-title > .btn {
+  padding: 0.2rem 0.55rem !important;
+  font-size: 0.72rem !important;
+  border-radius: 999px !important;
+  float: none !important;
+  margin: 0 0 0 0.2rem !important;
+  line-height: 1 !important;
+  min-width: auto !important;
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(4px);
+}
+.tc-page__classes .panel-primary .panel-title > .btn.btn-danger {
+  background: rgba(225, 29, 72, 0.35) !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+}
+.tc-page__classes .panel-primary .panel-title > .btn:hover {
+  background: rgba(255, 255, 255, 0.35) !important;
+  transform: translateY(-1px);
+}
+.tc-page__classes .panel-primary .panel-body {
+  padding: 0.5rem !important;
+  height: auto !important;
+  min-height: 160px;
+  max-height: 520px;
+  overflow-y: auto;
+  background: var(--canvas-soft);
+}
+
+/* "total hours" line above each class card */
+.tc-page__classes .droppable > .col-md-3 > div:first-child {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-mute);
+  margin-bottom: 0.35rem;
+  padding: 0.1rem 0.15rem;
+  text-align: start;
+  letter-spacing: 0.02em;
+}
+.tc-page__classes .droppable > .col-md-3 > div:first-child .spTotal {
+  color: var(--primary);
+  font-weight: 800;
+  font-family: var(--font-display);
+  margin-inline-start: 0.25rem;
+}
+
+/* Teachers sidebar panel */
+.tc-page__teachers {
+  position: sticky;
+  top: 80px;
+}
+.tc-teachers-panel { margin: 0; }
+.tc-teachers-panel .panel-heading {
+  padding: 0.85rem 1rem !important;
+  background: linear-gradient(135deg, var(--teal) 0%, #0e7490 100%) !important;
+  border-bottom: none;
+}
+.tc-teachers-panel .panel-heading::before { background: rgba(255, 255, 255, 0.5); }
+.tc-teachers-panel__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 700;
+  color: white;
+}
+.tc-teachers-panel__heading > .btn {
+  background: rgba(255, 255, 255, 0.25) !important;
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  box-shadow: none !important;
+  padding: 0.3rem 0.7rem !important;
+  font-size: 0.78rem !important;
+  border-radius: var(--r) !important;
+}
+.tc-teachers-panel__heading > .btn:hover {
+  background: rgba(255, 255, 255, 0.4) !important;
+  transform: translateY(-1px);
+}
+.tc-teachers-panel > .panel-body {
+  background: var(--canvas-soft) !important;
+  padding: 0.8rem !important;
+}
+
+/* Responsive */
+@media (max-width: 1100px) {
+  .tc-page { grid-template-columns: 1fr; }
+  .tc-page__teachers { position: static; }
+}
+@media (max-width: 700px) {
+  .tc-page__classes .panel-info > .panel-body > .droppable {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
+   PROFESSIONAL & fake-table pages
+   Pattern: <.panel-body> has plain <div> wrapping (1) header cols +
+   (2) a .clear container of row wrappers, where each row wrapper
+   is a plain <div> containing col-md-* cells. We force the outer
+   wrapper to flex + full-width, the header row to flex, and each
+   row inside .clear to flex.
+   ============================================================ */
+.panel-body > div:has(> .dvRequireTitle) {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.panel-body > div:has(> .dvRequireTitle) > .dvRequireTitle {
+  border-bottom: 2px solid var(--line);
+}
+.panel-body > div:has(> .dvRequireTitle) > .clear {
+  width: 100%;
+  flex-basis: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+.panel-body .clear[style*="overflow: auto"] > div {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+  border-bottom: 1px solid var(--line-soft);
+  transition: background 0.12s;
+  align-items: stretch;
+}
+.panel-body .clear[style*="overflow: auto"] > div:last-child { border-bottom: 0; }
+.panel-body .clear[style*="overflow: auto"] > div:hover { background: var(--primary-50); }
+.panel-body .clear[style*="overflow: auto"] > div:nth-child(even) { background: var(--line-soft); }
+.panel-body .clear[style*="overflow: auto"] > div:nth-child(even):hover { background: var(--primary-50); }
+.panel-body .clear[style*="overflow: auto"] > div > .dvRequireDetails {
+  border-bottom: 0 !important;
+  background: transparent !important;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.95rem;
+}
+.panel-body .clear[style*="overflow: auto"] .dvRequireDetails > .btn {
+  padding: 0.35rem 0.85rem !important;
+  font-size: 0.78rem !important;
+  border-radius: var(--r) !important;
+  min-width: 64px;
+  margin: 0 0 0 0.3rem !important;
+  height: auto !important;
+  line-height: 1.2 !important;
+}
+
+/* "+ הוסף מקצוע חדש" row on Professional */
+.col-md-12 > .row[style*="padding: 4"] {
+  margin: 0.75rem 0 0;
+}
+.col-md-12 > .row[style*="padding: 4"] > .btn {
+  padding: 0.55rem 1.1rem !important;
+  font-size: 0.9rem !important;
+  background: linear-gradient(135deg, var(--success) 0%, #047857 100%);
+  color: white;
+  box-shadow: 0 2px 6px -2px rgba(5, 150, 105, 0.4);
+  border-radius: var(--r) !important;
+  height: auto !important;
+}
+.col-md-12 > .row[style*="padding: 4"] > .btn:hover {
+  background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+  color: white;
+  transform: translateY(-1px);
+}
+.col-md-12 > .row[style*="padding: 4"] > .btn i { margin-inline-end: 0.35rem; }
 
 /* ============================================================
    TEACHER-HOURS MODAL — fullscreen week scheduler

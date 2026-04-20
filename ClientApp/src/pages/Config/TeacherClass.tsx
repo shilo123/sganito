@@ -629,30 +629,35 @@ export default function TeacherClass() {
   }
 
   return (
-    <>
-      <div className="col-md-9">
+    <div className="tc-page">
+      <div className="col-md-9 tc-page__classes">
         <div className="row dvWeek">
           <div className="panel panel-info">
-            <div className="panel-heading">
-              {LAYERS.map((layer) => (
-                <label className="radio-inline" key={layer.id}>
-                  <input
-                    type="radio"
-                    name="layer"
-                    value={layer.id}
-                    checked={layerId === layer.id}
-                    onChange={() => setLayerId(layer.id)}
-                  />
-                  {layer.label}
-                </label>
-              ))}
-              <div
-                className="btn btn-success btn-round btn-xs"
-                style={{ float: 'left', marginRight: 2 }}
+            <div className="panel-heading tc-layer-bar">
+              <div className="tc-layer-tabs" role="tablist" aria-label="בחירת שכבה">
+                {LAYERS.map((layer) => (
+                  <label
+                    className={`tc-layer-tab${layerId === layer.id ? ' is-active' : ''}`}
+                    key={layer.id}
+                  >
+                    <input
+                      type="radio"
+                      name="layer"
+                      value={layer.id}
+                      checked={layerId === layer.id}
+                      onChange={() => setLayerId(layer.id)}
+                    />
+                    <span>{layer.label}</span>
+                  </label>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="btn btn-success btn-sm tc-add-class"
                 onClick={() => openClassWindow('', '', '', 1)}
               >
-                הוסף כיתה לשכבה המסומנת
-              </div>
+                <i className="fa fa-plus" /> הוסף כיתה לשכבה המסומנת
+              </button>
             </div>
             <div className="panel-body" style={{ overflow: 'auto' }}>
               <div
@@ -754,19 +759,19 @@ export default function TeacherClass() {
         </div>
       </div>
 
-      <div className="col-md-3">
+      <div className="col-md-3 tc-page__teachers">
         <div className="row dvWeek">
-          <div className="panel panel-info">
+          <div className="panel panel-info tc-teachers-panel">
             <div className="panel-heading">
-              <div style={{ padding: 1 }}>
-                מורים
-                <div
-                  className="btn btn-success btn-round btn-xs"
-                  style={{ float: 'left', marginRight: 2 }}
+              <div className="tc-teachers-panel__heading">
+                <span><i className="fa fa-users" /> מורים</span>
+                <button
+                  type="button"
+                  className="btn btn-success btn-sm"
                   onClick={() => openTeacherModal(2)}
                 >
-                  הוסף מורה
-                </div>
+                  <i className="fa fa-plus" /> הוסף מורה
+                </button>
               </div>
             </div>
             <div
@@ -1156,6 +1161,6 @@ export default function TeacherClass() {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }
