@@ -1574,9 +1574,119 @@ input[type='radio'] {
   padding: 0.5rem !important;
   height: auto !important;
   min-height: 160px;
-  max-height: 520px;
+  max-height: 560px;
   overflow-y: auto;
   background: var(--canvas-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+/* Teacher-in-class row: pill + hour input */
+.tc-page__classes .panel-primary .panel-body > .draggable {
+  display: flex !important;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  flex: 0 0 auto !important;
+  width: 100% !important;
+}
+.tc-page__classes .panel-primary .panel-body > .draggable > .btn {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  margin: 0 !important;
+  min-height: 36px;
+  padding: 0.45rem 0.8rem !important;
+  font-size: 0.82rem !important;
+  font-weight: 600 !important;
+  text-align: center;
+  justify-content: center;
+  display: inline-flex !important;
+  align-items: center;
+  border-radius: 999px !important;
+  white-space: normal;
+  line-height: 1.25;
+  cursor: grab;
+  letter-spacing: 0.01em;
+  transform: none !important;
+}
+.tc-page__classes .panel-primary .panel-body > .draggable > .btn br { display: none; }
+.tc-page__classes .panel-primary .panel-body > .draggable > .btn u {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 2px;
+}
+.tc-page__classes .panel-primary .panel-body > .draggable > .btn:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 3px 10px -2px rgba(12, 14, 21, 0.2);
+}
+.tc-page__classes .panel-primary .panel-body > .draggable > input {
+  flex: 0 0 52px !important;
+  width: 52px !important;
+  float: none !important;
+  text-align: center !important;
+  font-weight: 700 !important;
+  font-variant-numeric: tabular-nums;
+  padding: 0.4rem 0.4rem !important;
+  font-size: 0.95rem !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--r-sm) !important;
+  min-height: 36px;
+  color: var(--ink) !important;
+  direction: ltr;
+  box-shadow: var(--shadow-sm);
+}
+.tc-page__classes .panel-primary .panel-body > .draggable > input:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px var(--primary-100) !important;
+  outline: none;
+}
+.tc-page__classes .panel-primary .panel-body > .draggable > input::placeholder {
+  color: var(--ink-faint);
+}
+
+/* Teacher sidebar chips (left panel) */
+.tc-teachers-panel .panel-body .draggable.btn,
+.tc-teachers-panel .panel-body .btn.draggable {
+  margin: 0.2rem !important;
+  padding: 0.45rem 0.85rem !important;
+  font-size: 0.82rem !important;
+  font-weight: 600 !important;
+  border-radius: 999px !important;
+  box-shadow: 0 2px 6px -2px rgba(12, 14, 21, 0.18) !important;
+  cursor: grab;
+  transition: transform 0.15s var(--spring), box-shadow 0.15s;
+  min-height: 30px;
+}
+.tc-teachers-panel .panel-body .draggable.btn:hover,
+.tc-teachers-panel .panel-body .btn.draggable:hover {
+  transform: translateY(-2px) scale(1.03);
+}
+
+/* Better "total hours - NN" line above each class card */
+.tc-page__classes .droppable > .col-md-3 > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--primary-50);
+  border: 1px solid color-mix(in oklab, var(--primary) 15%, var(--primary-50));
+  color: var(--primary-deep);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  width: fit-content;
+  margin: 0 auto 0.45rem !important;
+  text-align: center !important;
+}
+.tc-page__classes .droppable > .col-md-3 > div:first-child .spTotal {
+  font-size: 0.9rem;
+  color: var(--primary);
 }
 
 /* "total hours" line above each class card */
