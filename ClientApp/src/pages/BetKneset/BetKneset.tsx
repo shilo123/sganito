@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ajax } from '../../api/client';
+import PageLoader from '../../lib/PageLoader';
 
 interface BetKnesetRow {
   BetHTML: string;
@@ -98,7 +99,7 @@ export default function BetKneset() {
         <span style={{ color: '#888' }}>גודל גופן: {fontSize}px</span>
       </div>
 
-      {loading && <p>טעינה...</p>}
+      {loading && <PageLoader title="טוען לוח בית כנסת" subtitle="מאחזר את מעגלי התפילה..." />}
       {error && <div className="alert alert-danger">{error}</div>}
 
       {!loading && !error && (

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ajax } from '../../api/client';
+import { useToast } from '../../lib/toast';
 
 // ---- Types ----
 
@@ -23,6 +24,7 @@ const DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמיש
 // ---- Component ----
 
 export default function AssignAuto() {
+  const toast = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [loadingTitle, setLoadingTitle] = useState<string>('מבצע שיבוץ אוטומטי');
 
@@ -34,6 +36,7 @@ export default function AssignAuto() {
   const [successAlert, setSuccessAlert] = useState(false);
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [confirmDeletion, setConfirmDeletion] = useState<DeleteType>(-1);
 
   async function fetchShibutzErrors(): Promise<{
     errors: ShibutzErrorRow[];
@@ -87,7 +90,7 @@ export default function AssignAuto() {
       handleResult(result);
     } catch (e) {
       console.error('Assign_ShibutzAuto failed', e);
-      alert('אירעה שגיאה בזמן ביצוע השיבוץ. אנא נסה שוב.');
+      toast.error('אירעה שגיאה בזמן ביצוע השיבוץ האוטומטי. אנא נסה שוב.');
     } finally {
       setIsLoading(false);
     }
@@ -105,7 +108,7 @@ export default function AssignAuto() {
       handleResult(result);
     } catch (e) {
       console.error('Assign_ShibutzFixMissing failed', e);
-      alert('אירעה שגיאה בזמן תיקון חוסרים. אנא נסה שוב.');
+      toast.error('אירעה שגיאה בזמן תיקון חוסרים. אנא נסה שוב.');
     } finally {
       setIsLoading(false);
     }
@@ -121,15 +124,20 @@ export default function AssignAuto() {
       setShowResults(true);
     } catch (e) {
       console.error(e);
-      alert('לא ניתן לטעון את דוח השגיאות האחרון');
+      toast.error('לא ניתן לטעון את דוח השגיאות האחרון');
     }
   }
 
-  async function deleteType(action: DeleteType) {
+  function deleteType(action: DeleteType) {
     setShowDeleteModal(false);
     if (action === -1) return;
-    const addAlert = action === 1 ? ' האוטמטי ' : ' כולל הגדרות שהייה פרטני ונעיצה ';
-    if (!window.confirm('שים לב, לחיצה על כפתור אישור תמחק את כל נתוני השיבוץ ' + addAlert)) return;
+    setConfirmDeletion(action);
+  }
+
+  async function executeDeletion() {
+    const action = confirmDeletion;
+    setConfirmDeletion(-1);
+    if (action === -1) return;
     try {
       await ajax('Assign_DeleteAssignAuto', { IsAuto: action });
       setSuccessAlert(false);
@@ -137,9 +145,10 @@ export default function AssignAuto() {
       setErrors([]);
       setSavedCount(0);
       setErrorCount(0);
+      toast.success('השיבוץ נמחק בהצלחה');
     } catch (e) {
       console.error('Assign_DeleteAssignAuto failed', e);
-      alert('שגיאה במחיקת השיבוץ');
+      toast.error('שגיאה במחיקת השיבוץ');
     }
   }
 
@@ -478,6 +487,47 @@ export default function AssignAuto() {
                   סגור
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeletion !== -1 && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmDeletion(-1);
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon">
+              <i className="fa fa-exclamation-triangle" />
+            </div>
+            <h3 className="confirm-modal__title">מחיקת שיבוץ</h3>
+            <p className="confirm-modal__text">
+              {confirmDeletion === 1
+                ? <>פעולה זו תמחק את <strong>כל נתוני השיבוץ האוטומטי</strong>. האם להמשיך?</>
+                : <>פעולה זו תמחק את <strong>כל נתוני השיבוץ</strong>, כולל הגדרות שהייה, פרטני ונעיצה. האם להמשיך?</>
+              }
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setConfirmDeletion(-1)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={executeDeletion}
+                autoFocus
+              >
+                <i className="fa fa-trash" /> מחק לצמיתות
+              </button>
             </div>
           </div>
         </div>

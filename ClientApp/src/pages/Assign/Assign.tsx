@@ -12,6 +12,7 @@ import {
 } from '@dnd-kit/core';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
+import PageLoader from '../../lib/PageLoader';
 
 // ============================================================================
 // Types
@@ -732,6 +733,7 @@ export default function Assign() {
   const [selectedClassId, setSelectedClassId] = useState<string>('');
   const [activeDrag, setActiveDrag] = useState<DragPayload | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [initialLoading, setInitialLoading] = useState(true);
 
   // highlight
   const [highlightTeacherId, setHighlightTeacherId] = useState<string>('');
@@ -779,9 +781,12 @@ export default function Assign() {
 
   useEffect(() => {
     if (!configurationId) return;
-    loadProfessionals();
-    loadFreeTeachers('');
-    loadAssignments('0');
+    setInitialLoading(true);
+    Promise.allSettled([
+      loadProfessionals(),
+      loadFreeTeachers(''),
+      loadAssignments('0'),
+    ]).finally(() => setInitialLoading(false));
   }, [configurationId, loadProfessionals, loadFreeTeachers, loadAssignments]);
 
   useEffect(() => {
@@ -977,68 +982,82 @@ export default function Assign() {
       onDragEnd={handleDragEnd}
       onDragCancel={() => setActiveDrag(null)}
     >
-      <div className="col-md-12" style={{ paddingBottom: 180 }}>
+      <div className="assign-page">
+      {initialLoading && <PageLoader title="טוען מערכת בית הספר" subtitle="מאחזר כיתות, מורים ומקצועות..." />}
+      <div className="col-md-12 assign-page__main" style={{ paddingBottom: 180 }}>
         <div className="row dvWeek">
           <div className="panel panel-info">
-            <div className="panel-heading">
-              {LAYERS.map((l) => (
-                <label key={l.id} className="radio-inline">
-                  <input
-                    type="radio"
-                    name="layer"
-                    value={l.id}
-                    checked={layerId === l.id}
-                    onChange={() => setLayerId(l.id)}
-                  />
-                  {l.label}
-                </label>
-              ))}
-              <div
-                className="btn btn-primary btn-round btn-xs"
-                style={{ float: 'left', marginRight: 2 }}
+            <div className="panel-heading assign-layer-bar">
+              <div className="assign-layer-tabs" role="tablist">
+                {LAYERS.map((l) => (
+                  <label
+                    key={l.id}
+                    className={`assign-layer-tab${layerId === l.id ? ' is-active' : ''}`}
+                  >
+                    <input
+                      type="radio"
+                      name="layer"
+                      value={l.id}
+                      checked={layerId === l.id}
+                      onChange={() => setLayerId(l.id)}
+                    />
+                    <span>{l.label}</span>
+                  </label>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="btn btn-info btn-sm assign-print-btn"
                 onClick={doPrint}
               >
-                הדפס מערכת <i className="fa fa-print" />
-              </div>
+                <i className="fa fa-print" /> הדפס מערכת
+              </button>
             </div>
-            <div className="panel-body">
+            <div className="panel-body assign-grid">
+              {grid.classes.length === 0 && (
+                <div className="assign-grid__empty">
+                  <i className="fa fa-info-circle" />
+                  <div>בחר שכבה כדי להציג את מערכת הכיתות</div>
+                </div>
+              )}
               {grid.classes.map((cls) => (
-                <div key={cls.ClassId}>
-                  <div className="col-md-12">
-                    <div
-                      className="btn btn-primary btn-round"
+                <div key={cls.ClassId} className="assign-class-row">
+                  <div className="assign-class-row__header">
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-round assign-class-row__chip"
                       onClick={() => loadFreeTeachers(cls.ClassId)}
                     >
-                      <b>{cls.ClassName}</b>
-                    </div>
+                      <i className="fa fa-users" /> {cls.ClassName}
+                    </button>
                   </div>
-                  {[1, 2, 3, 4, 5, 6].map((dayId) => {
-                    const key = `${cls.ClassId}_${dayId}`;
-                    const slots = grid.cells.get(key) ?? [];
-                    return (
-                      <div key={dayId} className="col-md-2">
-                        <div className="panel panel-info">
-                          <div className="panel-heading dvClassDayTitle">
-                            <h3 className="panel-title">
-                              <b>{DAY_NAMES[dayId]}</b>
-                            </h3>
-                          </div>
-                          <div className="panel-body dvClassDayBody">
-                            {slots.map((slot, i) => (
-                              <AssignBadge
-                                key={`${slot.primary.AssignmentId ?? 'e'}-${slot.primary.HourId}-${i}`}
-                                slot={slot}
-                                highlightTeacherId={highlightTeacherId}
-                                highlightClassId={highlightClassId}
-                                onBadgeClick={handleBadgeClick}
-                                onTeacherRightClick={handleTeacherRightClick}
-                              />
-                            ))}
+                  <div className="assign-class-row__days">
+                    {[1, 2, 3, 4, 5, 6].map((dayId) => {
+                      const key = `${cls.ClassId}_${dayId}`;
+                      const slots = grid.cells.get(key) ?? [];
+                      return (
+                        <div key={dayId} className="assign-day col-md-2">
+                          <div className="panel panel-info">
+                            <div className="panel-heading dvClassDayTitle">
+                              <h3 className="panel-title">{DAY_NAMES[dayId]}</h3>
+                            </div>
+                            <div className="panel-body dvClassDayBody">
+                              {slots.map((slot, i) => (
+                                <AssignBadge
+                                  key={`${slot.primary.AssignmentId ?? 'e'}-${slot.primary.HourId}-${i}`}
+                                  slot={slot}
+                                  highlightTeacherId={highlightTeacherId}
+                                  highlightClassId={highlightClassId}
+                                  onBadgeClick={handleBadgeClick}
+                                  onTeacherRightClick={handleTeacherRightClick}
+                                />
+                              ))}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1047,51 +1066,46 @@ export default function Assign() {
       </div>
 
       {/* ---- bottom fixed: free teachers + professionals ---- */}
-      <div
-        style={{
-          position: 'fixed',
-          bottom: 0,
-          width: '100%',
-          marginRight: 10,
-          zIndex: 1000,
-          background: '#f5f5f5',
-        }}
-      >
-        <div className="col-md-4">
-          <div className="row">
-            <div className="panel panel-primary" style={{ padding: 1, marginBottom: 0 }}>
-              <div className="panel-heading">
-                <h3 className="panel-title">
-                  <b>מורים פנויים - ניתן לגרור מורים לשעות ללא מורה.</b>{' '}
-                  <a style={{ cursor: 'pointer' }} onClick={() => loadFreeTeachers('')}>
-                    הצג הכל...
-                  </a>
-                </h3>
-              </div>
-              <FreeTeacherDropZone>
-                {freeTeachers.map((t) => (
-                  <DraggableFreeTeacher key={t.TeacherId} teacher={t} />
-                ))}
-              </FreeTeacherDropZone>
+      <div className="assign-dockbar">
+        <div className="assign-dockbar__col assign-dockbar__col--teachers">
+          <div className="panel panel-primary">
+            <div className="panel-heading">
+              <h3 className="panel-title">
+                <i className="fa fa-user-plus" /> מורים פנויים{' '}
+                <a
+                  className="assign-dockbar__link"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => loadFreeTeachers('')}
+                >
+                  הצג הכל
+                </a>
+              </h3>
             </div>
+            <FreeTeacherDropZone>
+              {freeTeachers.length === 0 && (
+                <div className="assign-dockbar__empty">גרור מורים לכיתה או לחץ על "הצג הכל"</div>
+              )}
+              {freeTeachers.map((t) => (
+                <DraggableFreeTeacher key={t.TeacherId} teacher={t} />
+              ))}
+            </FreeTeacherDropZone>
           </div>
         </div>
-        <div className="col-md-6">
-          <div className="row">
-            <div className="panel panel-primary" style={{ padding: 1, marginBottom: 0 }}>
-              <div className="panel-heading">
-                <h3 className="panel-title">
-                  <b>מקצועות - ניתן לגרור מקצועות לשעות ללא מקצוע.</b>
-                </h3>
-              </div>
-              <ProDropZone>
-                {professionals.map((p) => (
-                  <DraggableProfessional key={p.ProfessionalId} pro={p} />
-                ))}
-              </ProDropZone>
+        <div className="assign-dockbar__col assign-dockbar__col--pros">
+          <div className="panel panel-primary">
+            <div className="panel-heading">
+              <h3 className="panel-title">
+                <i className="fa fa-book" /> מקצועות
+              </h3>
             </div>
+            <ProDropZone>
+              {professionals.map((p) => (
+                <DraggableProfessional key={p.ProfessionalId} pro={p} />
+              ))}
+            </ProDropZone>
           </div>
         </div>
+      </div>
       </div>
 
       {/* Drag overlay ghost */}

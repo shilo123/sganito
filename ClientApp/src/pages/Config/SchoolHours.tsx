@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
+import PageLoader from '../../lib/PageLoader';
 
 interface SchoolHourRow {
   HourId: string | number;
@@ -55,6 +56,7 @@ export default function SchoolHours() {
   // מפה: HourId -> האם נבחר, האם פרטני/שהייה בלבד
   const [activeMap, setActiveMap] = useState<Record<string, boolean>>({});
   const [shehyaOnlyMap, setShehyaOnlyMap] = useState<Record<string, boolean>>({});
+  const [initialLoading, setInitialLoading] = useState(true);
   const [menu, setMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, hourId: '' });
 
   // גרירה לבחירה
@@ -63,21 +65,25 @@ export default function SchoolHours() {
 
   const loadData = useCallback(async () => {
     if (!configurationId) return;
-    const data = await ajax<SchoolHourRow[]>('Gen_GetTable', {
-      TableName: 'SchoolHours',
-      Condition: `ConfigurationId=${configurationId}`,
-    });
-    setRows(Array.isArray(data) ? data : []);
+    try {
+      const data = await ajax<SchoolHourRow[]>('Gen_GetTable', {
+        TableName: 'SchoolHours',
+        Condition: `ConfigurationId=${configurationId}`,
+      });
+      setRows(Array.isArray(data) ? data : []);
 
-    const active: Record<string, boolean> = {};
-    const shehya: Record<string, boolean> = {};
-    for (const r of data || []) {
-      const id = String(r.HourId);
-      active[id] = true; // השורות שחוזרות הן השעות המוגדרות
-      if (String(r.IsOnlyShehya ?? '') === '1') shehya[id] = true;
+      const active: Record<string, boolean> = {};
+      const shehya: Record<string, boolean> = {};
+      for (const r of data || []) {
+        const id = String(r.HourId);
+        active[id] = true;
+        if (String(r.IsOnlyShehya ?? '') === '1') shehya[id] = true;
+      }
+      setActiveMap(active);
+      setShehyaOnlyMap(shehya);
+    } finally {
+      setInitialLoading(false);
     }
-    setActiveMap(active);
-    setShehyaOnlyMap(shehya);
   }, [configurationId]);
 
   useEffect(() => {
@@ -184,6 +190,8 @@ export default function SchoolHours() {
   };
 
   return (
+    <>
+      {initialLoading && <PageLoader title="טוען שעות בית ספר" subtitle="מאחזר את מצבת השעות..." />}
     <div className="col-md-12">
       <div className="row dvWeek">
         <div className="panel panel-info">
@@ -311,5 +319,6 @@ export default function SchoolHours() {
       {/* שומר שדה גולמי לצורך debug בעתיד - rows.length: {rows.length} */}
       <span style={{ display: 'none' }}>{rows.length}</span>
     </div>
+    </>
   );
 }

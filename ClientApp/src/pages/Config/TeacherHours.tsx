@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
+import { useToast } from '../../lib/toast';
 
 interface Teacher {
   TeacherId: number | string;
@@ -65,6 +66,8 @@ interface HourCell {
   seq: number;
   HourTypeId: number;
   label: string;
+  teacherHas: boolean;     // האם המורה משובץ/סימן שעה זו
+  schoolHasHour: boolean;  // האם השעה קיימת כלל בבית הספר
 }
 
 function buildHourCellsForDay(day: number, rawRows: TeacherHourRow[]): HourCell[] {
@@ -108,6 +111,8 @@ function buildHourCellsForDay(day: number, rawRows: TeacherHourRow[]): HourCell[
       seq,
       HourTypeId,
       label,
+      teacherHas: row.TeacherId != null,
+      schoolHasHour: true,
     });
   }
 
@@ -124,6 +129,7 @@ type ContextMenuState = {
 
 export default function TeacherHours() {
   const { user } = useAuth();
+  const toast = useToast();
   const configurationId = user?.ConfigurationId ?? '';
 
   const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -136,6 +142,8 @@ export default function TeacherHours() {
   const [filterTafkid, setFilterTafkid] = useState<string>('');
   const [filterClass, setFilterClass] = useState<string>('');
   const [initialLoading, setInitialLoading] = useState(true);
+  const [classPicker, setClassPicker] = useState<{ hourId: string; day: number; seq: number } | null>(null);
+  const [pickerBusy, setPickerBusy] = useState(false);
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
     x: 0,
@@ -245,50 +253,99 @@ export default function TeacherHours() {
     return out;
   }, [teacherHours]);
 
-  const setHour = useCallback(
-    async (hourId: string, type: 1 | 2) => {
-      if (!selectedTeacher) return;
-      try {
-        await ajax('Teacher_SetTeacherHours', {
-          TeacherId: selectedTeacher.TeacherId,
-          HourId: hourId,
-          Type: type,
-        });
-        await loadTeacherHours(selectedTeacher.TeacherId);
-      } catch (e) {
-        console.error('Teacher_SetTeacherHours failed', e);
-      }
-    },
-    [selectedTeacher, loadTeacherHours],
-  );
 
   const onCellMouseDown = (e: React.MouseEvent, hourId: string) => {
     if (e.button !== 0 || !selectedTeacher) return;
     const existing = hourMap[hourId];
-    dragStarted.current = true;
-    if (existing) {
-      // CallBackRemove: אם יש טקסט מקצוע/כיתה (כלומר HourTypeId==1 עם שיבוץ), אל תסיר
-      if (Number(existing.HourTypeId) === 1 && existing.ClassNameAssign) {
-        dragMode.current = null;
-        return;
-      }
-      dragMode.current = 'remove';
-      setHour(hourId, 2);
-    } else {
-      dragMode.current = 'add';
-      setHour(hourId, 1);
+    // אם השעה כבר משובצת לכיתה (HourTypeId==1) - לא פותחים picker; נשאיר לקליק-ימני
+    if (existing && Number(existing.HourTypeId) === 1 && existing.ClassNameAssign) {
+      return;
     }
+    // אם המורה מחנך/ת כיתה - שיבוץ אוטומטי לכיתה שלו/ה בלי popup
+    const manageClassId = Number((selectedTeacher as { ManageClassId?: unknown }).ManageClassId ?? 0);
+    if (manageClassId > 0) {
+      assignHourToClass(hourId, manageClassId);
+      return;
+    }
+    // אחרת - פתיחת popup לבחירת כיתה
+    const day = Number(hourId.charAt(0));
+    const seq = Number(hourId.slice(1));
+    setClassPicker({ hourId, day, seq });
   };
 
-  const onCellMouseEnter = (hourId: string) => {
-    if (!dragStarted.current || !dragMode.current || !selectedTeacher) return;
-    const existing = hourMap[hourId];
-    if (dragMode.current === 'add' && !existing) setHour(hourId, 1);
-    else if (dragMode.current === 'remove' && existing) {
-      if (Number(existing.HourTypeId) === 1 && existing.ClassNameAssign) return;
-      setHour(hourId, 2);
-    }
+  const onCellMouseEnter = () => {
+    // drag-to-multi-select disabled — the single-click now opens the class picker
   };
+
+  async function assignHourToClass(hourId: string, classId: number) {
+    if (!selectedTeacher) return;
+    setPickerBusy(true);
+    try {
+      // מוודאים שהמורה מסומן/ת בשעה. אם השורה כבר קיימת השרת יחזיר 500
+      // (PK duplicate) - נתעלם כי זה בדיוק המצב שאנחנו רוצים.
+      try {
+        await ajax('Teacher_SetTeacherHours', {
+          TeacherId: selectedTeacher.TeacherId,
+          HourId: hourId,
+          Type: 1,
+        });
+      } catch {
+        /* row already exists - proceed */
+      }
+      // Type=1 ב-SP בודק `TeacherId = @SourceId` - לכן `SourceId` חייב להיות TeacherId
+      const result = await ajax<Array<{ res: number }>>('Assign_SetAssignManual', {
+        Type: 1,
+        SourceId: selectedTeacher.TeacherId,
+        SourceTeacherId: selectedTeacher.TeacherId,
+        SourceClassId: '',
+        SourceHourId: '',
+        SourceProfessionalId: '',
+        SourceHakbatza: '',
+        SourceIhud: '',
+        TargetId: '',
+        TargetTeacherId: '',
+        TargetClassId: classId,
+        TargetHourId: hourId,
+        TargetProfessionalId: '',
+        TargetHakbatza: '',
+        TargetIhud: '',
+      });
+      const res = Array.isArray(result) && result[0] ? Number(result[0].res ?? 0) : 0;
+      if (res !== 0 && res !== 1) {
+        if (res === 2) toast.warning('השעה כבר משובצת לכיתה אחרת', { title: 'שיבוץ נכשל' });
+        else if (res === 3) toast.warning('יש לקשר את המורה לכיתה תחילה במסך "הגדרות כיתות ומורים"', { title: 'שיבוץ נכשל' });
+        else if (res === 4) toast.warning('לא ניתן לשבץ — חריגה ממגבלות המערכת', { title: 'שיבוץ נכשל' });
+        else toast.error(`שיבוץ נכשל (קוד ${res})`);
+      } else {
+        await loadTeacherHours(selectedTeacher.TeacherId);
+        toast.success('השעה שובצה לכיתה בהצלחה');
+        setClassPicker(null);
+      }
+    } catch (err) {
+      console.error('assignHourToClass failed', err);
+      toast.error('שיבוץ נכשל — בעיית רשת או שרת');
+    } finally {
+      setPickerBusy(false);
+    }
+  }
+
+  async function removeAssignment(hourId: string) {
+    if (!selectedTeacher) return;
+    setPickerBusy(true);
+    try {
+      await ajax('Teacher_SetTeacherHours', {
+        TeacherId: selectedTeacher.TeacherId,
+        HourId: hourId,
+        Type: 2,
+      });
+      await loadTeacherHours(selectedTeacher.TeacherId);
+      setClassPicker(null);
+    } catch (err) {
+      console.error('removeAssignment failed', err);
+    } finally {
+      setPickerBusy(false);
+    }
+  }
 
   useEffect(() => {
     const stop = () => {
@@ -338,9 +395,9 @@ export default function TeacherHours() {
         });
         const code = Number(res?.[0]?.res ?? 0);
         if (code === 1) {
-          alert('מורה משובץ לשעה זו');
+          toast.info('המורה כבר משובץ לשעה זו');
         } else if (code === 2) {
-          alert('נגמרה הקצאת שעות פרטני למורה');
+          toast.warning('נגמרה הקצאת שעות פרטני למורה');
         } else {
           await loadTeacherHours(selectedTeacher.TeacherId);
         }
@@ -356,7 +413,7 @@ export default function TeacherHours() {
     // השארנו כאן הודעה שמציינת שדרושה הגדרת שהייה מלאה; ניתן להרחיב בהמשך.
     const id = menu.hourId;
     setMenu((m) => ({ ...m, visible: false }));
-    alert('הגדרת שהייה - חלון מודלי של קבוצות שהייה עדיין לא הותמר. יש להוסיף אותו בנפרד.');
+    toast.info('הגדרת שהייה — החלון המלא עדיין לא מומש', { title: 'בפיתוח' });
     void id;
   };
 
@@ -492,9 +549,11 @@ export default function TeacherHours() {
             </div>
             <div className="th-modal__legend">
               <span className="th-legend__item th-legend__item--regular"><i /> שיבוץ כיתה</span>
+              <span className="th-legend__item th-legend__item--marked"><i /> מסומן למורה</span>
               <span className="th-legend__item th-legend__item--shehya"><i /> שהייה</span>
               <span className="th-legend__item th-legend__item--partani"><i /> פרטני</span>
-              <span className="th-legend__item th-legend__item--empty"><i /> פנוי</span>
+              <span className="th-legend__item th-legend__item--available"><i /> פנוי בבי"ס</span>
+              <span className="th-legend__item th-legend__item--empty"><i /> אין שעה בבי"ס</span>
             </div>
             <div className="th-modal__body">
               <div className="th-grid">
@@ -514,14 +573,14 @@ export default function TeacherHours() {
                           const hourId = `${d.num}${seq}`;
                           const cell = cells.find((c) => c.seq === seq);
                           if (cell) {
-                            const variant = hourTypeVariant(cell.HourTypeId);
+                            const variant = hourTypeVariant(cell.HourTypeId, cell.teacherHas);
                             return (
                               <div
                                 key={cell.hourId}
                                 id={cell.hourId}
                                 className={`th-cell th-cell--${variant} dv_HourTypeId_${cell.HourTypeId} selected`}
-                                onMouseDown={(e) => onCellMouseDown(e, cell.hourId)}
-                                onMouseEnter={() => onCellMouseEnter(cell.hourId)}
+                                onClick={(e) => onCellMouseDown(e, cell.hourId)}
+                                onMouseEnter={() => onCellMouseEnter()}
                                 onContextMenu={(e) => onCellContextMenu(e, cell)}
                               >
                                 <div className="th-cell__meta">
@@ -539,8 +598,8 @@ export default function TeacherHours() {
                               key={`empty-${hourId}`}
                               id={hourId}
                               className="th-cell th-cell--empty dv_empty"
-                              onMouseDown={(e) => onCellMouseDown(e, hourId)}
-                              onMouseEnter={() => onCellMouseEnter(hourId)}
+                              onClick={(e) => onCellMouseDown(e, hourId)}
+                              onMouseEnter={() => onCellMouseEnter()}
                             >
                               <div className="th-cell__meta">
                                 <span className="th-cell__seq">{seq}</span>
@@ -720,6 +779,76 @@ export default function TeacherHours() {
           </li>
         </ul>
       )}
+
+      {classPicker && (
+        <div
+          className="class-picker"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !pickerBusy) setClassPicker(null);
+          }}
+        >
+          <div className="class-picker__card">
+            <div className="class-picker__header">
+              <div>
+                <div className="class-picker__kicker">שיבוץ לכיתה</div>
+                <h3 className="class-picker__title">
+                  {teacherFullName} · יום {['', 'ראשון','שני','שלישי','רביעי','חמישי','שישי'][classPicker.day]} · שעה {classPicker.seq}
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="class-picker__close"
+                onClick={() => !pickerBusy && setClassPicker(null)}
+                aria-label="סגור"
+              >
+                <i className="fa fa-times" />
+              </button>
+            </div>
+            <div className="class-picker__body">
+              {classOptions.length === 0 ? (
+                <div className="class-picker__empty">לא נמצאו כיתות להצגה</div>
+              ) : (
+                <div className="class-picker__grid">
+                  {classOptions.map((c) => (
+                    <button
+                      key={c.ClassId}
+                      type="button"
+                      className="class-picker__chip"
+                      disabled={pickerBusy}
+                      onClick={() => classPicker && assignHourToClass(classPicker.hourId, c.ClassId)}
+                    >
+                      <i className="fa fa-users" /> {c.ClassName}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="class-picker__footer">
+              {hourMap[classPicker.hourId] && (
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={pickerBusy}
+                  onClick={() => removeAssignment(classPicker.hourId)}
+                >
+                  <i className="fa fa-trash" /> הסר שיבוץ
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-default"
+                disabled={pickerBusy}
+                onClick={() => setClassPicker(null)}
+              >
+                ביטול
+              </button>
+              {pickerBusy && <span className="class-picker__busy"><span className="spinner" /> מעדכן…</span>}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -742,9 +871,9 @@ const HOUR_TIME_RANGES: Record<number, string> = {
   9: '15:16 – 16:00',
 };
 
-function hourTypeVariant(id: number): string {
+function hourTypeVariant(id: number, teacherHas: boolean): string {
   if (id === 1) return 'regular';
   if (id === 2) return 'shehya';
   if (id === 3) return 'partani';
-  return 'other';
+  return teacherHas ? 'marked' : 'available';
 }

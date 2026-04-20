@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ajax } from '../../api/client';
+import PageLoader from '../../lib/PageLoader';
 
 interface BetKnesetRow {
   BetHTML: string;
@@ -101,7 +102,7 @@ export default function BetKnesetEdit() {
         </button>
       </div>
 
-      {loading && <p>טעינה...</p>}
+      {loading && <PageLoader title="טוען לוח לעריכה" subtitle="מאחזר את תוכן המעגלים..." />}
       {error && <div className="alert alert-danger">{error}</div>}
       {message && <div className="alert alert-success">{message}</div>}
 

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ajax } from '../../api/client';
+import { useToast } from '../../lib/toast';
+import PageLoader from '../../lib/PageLoader';
 
 // Rows returned by Professional_DML (Type=0) / Gen_GetTable("Professional",...)
 // IsTwo is returned by the SP as a Hebrew string "כן" / "לא"
@@ -10,12 +12,15 @@ interface ProfessionalRow {
 }
 
 export default function Professional() {
+  const toast = useToast();
   const [rows, setRows] = useState<ProfessionalRow[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [selectedId, setSelectedId] = useState<number | ''>('');
   const [name, setName] = useState('');
   const [isTwo, setIsTwo] = useState(false);
   const [modalTitle, setModalTitle] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState<{ id: number; name: string } | null>(null);
 
   const fillData = useCallback(async () => {
     try {
@@ -29,6 +34,8 @@ export default function Professional() {
     } catch (err) {
       console.error('Professional_DML load failed', err);
       setRows([]);
+    } finally {
+      setInitialLoading(false);
     }
   }, []);
 
@@ -53,7 +60,7 @@ export default function Professional() {
 
   async function saveData() {
     if (!name) {
-      alert('שם מקצוע שדה חובה!!');
+      toast.warning('שם המקצוע הוא שדה חובה', { title: 'חסר שדה' });
       return;
     }
     try {
@@ -67,12 +74,17 @@ export default function Professional() {
       fillData();
     } catch (err) {
       console.error('Professional_DML save failed', err);
-      alert('שגיאה בשמירה');
+      toast.error('שגיאה בשמירת המקצוע');
     }
   }
 
-  async function deleteRow(id: number) {
-    if (!confirm('האם אתה בטוח שברצונך למחוק את המקצוע?')) return;
+  function requestDelete(id: number, rowName: string) {
+    setConfirmDelete({ id, name: rowName });
+  }
+  async function confirmDeleteRow() {
+    if (!confirmDelete) return;
+    const id = confirmDelete.id;
+    setConfirmDelete(null);
     try {
       await ajax('Professional_DML', {
         Type: 2, // delete
@@ -83,12 +95,13 @@ export default function Professional() {
       fillData();
     } catch (err) {
       console.error('Professional_DML delete failed', err);
-      alert('שגיאה במחיקה');
+      toast.error('שגיאה במחיקת המקצוע');
     }
   }
 
   return (
-    <>
+    <div className="pro-page">
+      {initialLoading && <PageLoader title="טוען מקצועות" subtitle="מאחזר את רשימת המקצועות..." />}
       <div className="col-md-12">
         <div className="row">
           <div className="panel panel-info" style={{ margin: 2 }}>
@@ -118,7 +131,7 @@ export default function Professional() {
                         </div>
                         <div
                           className="btn btn-danger"
-                          onClick={() => deleteRow(row.ProfessionalId)}
+                          onClick={() => requestDelete(row.ProfessionalId, row.Name)}
                           style={{ marginRight: 4 }}
                         >
                           מחק
@@ -207,6 +220,50 @@ export default function Professional() {
           </div>
         </div>
       )}
-    </>
+
+      {confirmDelete && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirmDeleteProfTitle"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmDelete(null);
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon">
+              <i className="fa fa-exclamation-triangle" />
+            </div>
+            <h3 className="confirm-modal__title" id="confirmDeleteProfTitle">
+              מחיקת מקצוע
+            </h3>
+            <p className="confirm-modal__text">
+              האם אתה בטוח שברצונך למחוק את המקצוע{' '}
+              <strong>{confirmDelete.name}</strong>?
+              <br />
+              פעולה זו אינה ניתנת לביטול.
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setConfirmDelete(null)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={confirmDeleteRow}
+                autoFocus
+              >
+                <i className="fa fa-trash" /> מחק לצמיתות
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

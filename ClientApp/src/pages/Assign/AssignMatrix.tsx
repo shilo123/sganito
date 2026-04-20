@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
+import PageLoader from '../../lib/PageLoader';
 
 // ---- Types ----
 
@@ -164,11 +165,7 @@ export default function AssignMatrix() {
   }
 
   if (loading) {
-    return (
-      <div style={{ padding: 20, direction: 'rtl' }}>
-        <p>טוען מטריצת שיבוץ...</p>
-      </div>
-    );
+    return <PageLoader title="טוען מטריצת שיבוץ" subtitle="מאחזר את כל השיבוצים, הכיתות והמורים..." />;
   }
 
   if (error) {

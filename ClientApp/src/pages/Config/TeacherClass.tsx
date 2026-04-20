@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ajax } from '../../api/client';
+import { useToast } from '../../lib/toast';
 
 // ---------- types returned by backend SPs ----------
 interface TafkidRow {
@@ -81,12 +82,15 @@ function tafkidTheme(tafkidId: number | string | null | undefined): string {
 }
 
 export default function TeacherClass() {
+  const toast = useToast();
   const [layerId, setLayerId] = useState<number>(1);
   const [tafkidOpts, setTafkidOpts] = useState<TafkidRow[]>([]);
   const [professionalOpts, setProfessionalOpts] = useState<ProfessionalOption[]>([]);
   const [teachers, setTeachers] = useState<TeacherRow[]>([]);
   const [classes, setClasses] = useState<ClassRow[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState<{ classId: number; className: string } | null>(null);
+  const [confirmDeleteTeacher, setConfirmDeleteTeacher] = useState(false);
 
   // teacher modal
   const [showTeacherModal, setShowTeacherModal] = useState(false);
@@ -263,7 +267,7 @@ export default function TeacherClass() {
   async function saveTeacher(type: 1 | 2 | 3) {
     const { Tafkid, FirstName, LastName, Frontaly } = teacherForm;
     if (type !== 3 && (Tafkid === '0' || !FirstName || !LastName || !Frontaly)) {
-      alert('בחירת תפקיד שם ושם משפחה והגדרות שעות פרונטלי הינם שדות חובה');
+      toast.warning('יש למלא תפקיד, שם, שם משפחה ושעות פרונטלי', { title: 'חסרים שדות חובה' });
       return;
     }
     try {
@@ -286,12 +290,15 @@ export default function TeacherClass() {
       loadClasses(layerId);
     } catch (err) {
       console.error('Teacher_DML failed', err);
-      alert('שגיאה בשמירת המורה');
+      toast.error('שגיאה בשמירת המורה');
     }
   }
 
   function deleteTeacher() {
-    if (!confirm('האם אתה בטוח שברצונך למחוק מורה עם השיבוצים שלו?')) return;
+    setConfirmDeleteTeacher(true);
+  }
+  function executeDeleteTeacher() {
+    setConfirmDeleteTeacher(false);
     saveTeacher(3);
   }
 
@@ -307,11 +314,11 @@ export default function TeacherClass() {
     const classId = classIdOverride ?? (classForm.ClassId === '' ? '' : classForm.ClassId);
     if (mode !== 3) {
       if (!classForm.ClassName) {
-        alert('לא ניתן לעדכן כיתה ללא שם');
+        toast.warning('שם הכיתה הוא שדה חובה', { title: 'חסר שדה' });
         return;
       }
       if (!classForm.Seq || isNaN(Number(classForm.Seq))) {
-        alert('לא ניתן לעדכן כיתה ללא מספר');
+        toast.warning('מספר הכיתה הוא שדה חובה', { title: 'חסר שדה' });
         return;
       }
     }
@@ -327,13 +334,17 @@ export default function TeacherClass() {
       loadClasses(layerId);
     } catch (err) {
       console.error('Class_SetClassData failed', err);
-      alert('שגיאה בשמירת הכיתה');
+      toast.error('שגיאה בשמירת הכיתה');
     }
   }
 
-  function deleteClass(classId: number) {
-    if (!confirm('האם אתה בטוח שברצונך למחוק כיתה עם כל המורים המשוייכים לה?')) return;
-    saveClass(3, classId);
+  function requestDeleteClass(classId: number, className: string) {
+    setConfirmDelete({ classId, className });
+  }
+  function confirmDeleteClass() {
+    if (!confirmDelete) return;
+    saveClass(3, confirmDelete.classId);
+    setConfirmDelete(null);
   }
 
   // ---------- teacher-hour modal ----------
@@ -513,7 +524,7 @@ export default function TeacherClass() {
     hakbatza: string | null
   ) {
     if (!/^-?\d+(\.\d+)?$/.test(hour)) {
-      alert('שדה רק למספרים');
+      toast.warning('יש להזין מספרים בלבד', { title: 'קלט לא תקין' });
       return;
     }
     try {
@@ -530,7 +541,7 @@ export default function TeacherClass() {
         Type: 4,
       });
       if (res && res[0] && res[0].res === 1) {
-        alert('לא ניתן להוסיף שעות מעבר לשעות המוגדרות למורה');
+        toast.warning('חריגה: המספר עולה על השעות המוגדרות למורה');
       }
       loadClasses(layerId);
     } catch (err) {
@@ -693,24 +704,26 @@ export default function TeacherClass() {
                     <div className="row dvWeek" style={{ width: '100%' }}>
                       <div className="panel panel-primary">
                         <div className="panel-heading">
+                          <button
+                            type="button"
+                            className="tc-class-close"
+                            onClick={() => requestDeleteClass(panel.ClassId, panel.ClassName)}
+                            title="מחק כיתה"
+                            aria-label="מחק כיתה"
+                          >
+                            <i className="fa fa-times" />
+                          </button>
                           <h3 className="panel-title">
-                            {panel.ClassName}
-                            <div
-                              className="btn btn-danger btn-round btn-xs"
-                              style={{ float: 'left', marginRight: 2 }}
-                              onClick={() => deleteClass(panel.ClassId)}
-                            >
-                              X
-                            </div>
-                            <div
-                              className="btn btn-success btn-round btn-xs"
-                              style={{ float: 'left' }}
+                            <span className="tc-class-name">{panel.ClassName}</span>
+                            <button
+                              type="button"
+                              className="btn btn-xs tc-class-edit"
                               onClick={() =>
                                 openClassWindow(panel.ClassId, panel.ClassFOREdit, panel.Seq, 2)
                               }
                             >
-                              ערוך
-                            </div>
+                              <i className="fa fa-pencil" /> ערוך
+                            </button>
                           </h3>
                         </div>
                         <div
@@ -1178,6 +1191,90 @@ export default function TeacherClass() {
                   סגור
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteTeacher && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmDeleteTeacher(false);
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon">
+              <i className="fa fa-exclamation-triangle" />
+            </div>
+            <h3 className="confirm-modal__title">מחיקת מורה</h3>
+            <p className="confirm-modal__text">
+              האם אתה בטוח שברצונך למחוק את המורה <strong>{teacherForm.FirstName} {teacherForm.LastName}</strong>?
+              <br />
+              כל השיבוצים של המורה ימחקו.
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setConfirmDeleteTeacher(false)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={executeDeleteTeacher}
+                autoFocus
+              >
+                <i className="fa fa-trash" /> מחק לצמיתות
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirmDeleteTitle"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmDelete(null);
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon">
+              <i className="fa fa-exclamation-triangle" />
+            </div>
+            <h3 className="confirm-modal__title" id="confirmDeleteTitle">
+              מחיקת כיתה
+            </h3>
+            <p className="confirm-modal__text">
+              האם אתה בטוח שברצונך למחוק את הכיתה{' '}
+              <strong>{confirmDelete.className}</strong>?
+              <br />
+              כל המורים המשובצים לכיתה זו יתפנו.
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setConfirmDelete(null)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={confirmDeleteClass}
+                autoFocus
+              >
+                <i className="fa fa-trash" /> מחק לצמיתות
+              </button>
             </div>
           </div>
         </div>

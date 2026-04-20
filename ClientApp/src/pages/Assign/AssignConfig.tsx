@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
+import { useToast } from '../../lib/toast';
+import PageLoader from '../../lib/PageLoader';
 
 // ---- Types ----
 
@@ -15,12 +17,12 @@ interface ConfigurationRow {
 
 export default function AssignConfig() {
   const { user } = useAuth();
+  const toast = useToast();
 
   const [maxHourInShibutz, setMaxHourInShibutz] = useState<string>('');
   const [minForPitzul, setMinForPitzul] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [savedMessage, setSavedMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -51,36 +53,27 @@ export default function AssignConfig() {
 
   async function handleSave() {
     if (isNaN(Number(minForPitzul)) || isNaN(Number(maxHourInShibutz))) {
-      alert('לא ניתן לעדכן מספר');
+      toast.warning('יש להזין ערכים מספריים בלבד', { title: 'קלט לא תקין' });
       return;
     }
     setSaving(true);
-    setSavedMessage(null);
     try {
       await ajax('Assign_SetConfiguration', {
         MaxHourInShibutz: maxHourInShibutz,
         MinForPitzul: minForPitzul,
       });
-      setSavedMessage('המידע נשמר בהצלחה');
-      setTimeout(() => setSavedMessage(null), 2500);
+      toast.success('ההגדרות נשמרו בהצלחה');
     } catch (e) {
       console.error('Assign_SetConfiguration failed', e);
-      alert('אירעה שגיאה בשמירת ההגדרות');
+      toast.error('אירעה שגיאה בשמירת ההגדרות');
     } finally {
       setSaving(false);
     }
   }
 
-  if (loading) {
-    return (
-      <div style={{ padding: 20, direction: 'rtl' }}>
-        <p>טוען הגדרות...</p>
-      </div>
-    );
-  }
-
   return (
     <div style={{ direction: 'rtl' }}>
+      {loading && <PageLoader title="טוען הגדרות" subtitle="מאחזר את הגדרות השיבוץ האוטומטי..." />}
       <div className="col-md-12">
         <div className="row dvWeek">
           <div className="panel panel-info">
@@ -125,11 +118,6 @@ export default function AssignConfig() {
                   <i className="glyphicon glyphicon-edit" />
                   &nbsp; <span>{saving ? 'שומר...' : 'שמור'}</span>
                 </button>
-                {savedMessage && (
-                  <span style={{ marginRight: 10, color: 'green', fontWeight: 'bold' }}>
-                    {savedMessage}
-                  </span>
-                )}
               </div>
             </div>
           </div>
