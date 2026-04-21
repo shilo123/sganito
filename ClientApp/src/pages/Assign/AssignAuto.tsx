@@ -15,6 +15,22 @@ interface ShibutzErrorRow {
   ErrorCount: number;
 }
 
+interface DiagnosticRow {
+  ClassId: number;
+  ClassName: string;
+  TeacherId: number;
+  TeacherName: string;
+  Required: number;
+  Assigned: number;
+  Missing: number;
+  Hakbatza: number;
+  Ihud: number;
+  FreeDay: number;
+  IsHomeroom: number;
+  TotalRequiredAllClasses: number;
+  AvailableHourSlots: number;
+}
+
 type DeleteType = -1 | 0 | 1;
 
 // ---- Constants ----
@@ -37,6 +53,9 @@ export default function AssignAuto() {
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [confirmDeletion, setConfirmDeletion] = useState<DeleteType>(-1);
+
+  const [diagnostic, setDiagnostic] = useState<DiagnosticRow[]>([]);
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
 
   async function fetchShibutzErrors(): Promise<{
     errors: ShibutzErrorRow[];
@@ -77,20 +96,69 @@ export default function AssignAuto() {
     setSuccessAlert(true);
   }
 
+  async function fetchDiagnostic(): Promise<DiagnosticRow[]> {
+    try {
+      const data = await ajax<DiagnosticRow[]>('Assign_GetShibutzDiagnostic');
+      if (!Array.isArray(data)) return [];
+      return data.filter(
+        (r) => (r?.ClassId ?? 0) > 0 && (r?.TeacherId ?? 0) > 0 && (r?.Missing ?? 0) > 0,
+      );
+    } catch (e) {
+      console.error('Assign_GetShibutzDiagnostic failed', e);
+      return [];
+    }
+  }
+
   async function doAssign() {
     setSuccessAlert(false);
     setShowResults(false);
+    setShowDiagnostic(false);
+    setDiagnostic([]);
     setLoadingTitle('מבצע שיבוץ אוטומטי');
     setIsLoading(true);
     try {
       await ajax('Assign_ShibutzAuto');
-      // Small delay to allow session to settle, mirroring original 500ms setTimeout
       await new Promise((r) => setTimeout(r, 500));
       const result = await fetchShibutzErrors();
-      handleResult(result);
+      const diag = await fetchDiagnostic();
+      setDiagnostic(diag);
+      if (diag.length > 0) {
+        // Override: if we have diagnostic data, show it instead of the generic errors modal
+        setSavedCount(result.savedCount);
+        setErrorCount(diag.length);
+        setShowDiagnostic(true);
+        setSuccessAlert(true);
+      } else {
+        handleResult(result);
+      }
     } catch (e) {
       console.error('Assign_ShibutzAuto failed', e);
       toast.error('אירעה שגיאה בזמן ביצוע השיבוץ האוטומטי. אנא נסה שוב.');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function doForceAssign() {
+    setLoadingTitle('משבץ בכפייה את החוסרים');
+    setIsLoading(true);
+    try {
+      await ajax('Assign_ShibutzForce');
+      await new Promise((r) => setTimeout(r, 300));
+      const diag = await fetchDiagnostic();
+      setDiagnostic(diag);
+      if (diag.length === 0) {
+        setShowDiagnostic(false);
+        setResultMode('success');
+        setShowResults(true);
+        setSuccessAlert(true);
+        toast.success('כל החוסרים שובצו בכפייה בהצלחה');
+      } else {
+        toast.success('שובצו בכפייה. נותרו ' + diag.length + ' חוסרים שאי אפשר לשבץ');
+      }
+    } catch (e) {
+      console.error('Assign_ShibutzForce failed', e);
+      toast.error('שגיאה בשיבוץ בכפייה');
     } finally {
       setIsLoading(false);
     }
@@ -164,135 +232,218 @@ export default function AssignAuto() {
 
   return (
     <div style={{ direction: 'rtl' }}>
-      {/* Loading overlay */}
       {isLoading && (
+        <div className="action-loading" role="status" aria-live="polite">
+          <div className="action-loading__card">
+            <div className="action-loading__title">{loadingTitle}...</div>
+            <div className="action-loading__sub">אנא המתן, התהליך עשוי לקחת מספר שניות</div>
+            <div className="action-loading__bar" />
+          </div>
+        </div>
+      )}
+
+      <div className="assign-auto">
+        <div className="assign-auto__card">
+          <div className="assign-auto__header">
+            <div>
+              <div className="assign-auto__kicker">פעולת שיבוץ</div>
+              <h2 className="assign-auto__title">שיבוץ אוטומטי</h2>
+            </div>
+            <div className="assign-auto__warning">
+              <i className="fa fa-exclamation-triangle" />
+              <span>שיבוץ אוטומטי מוחק את כל השיבוצים שנעשו עד כה.</span>
+            </div>
+          </div>
+
+          <div className="assign-auto__actions">
+            <button
+              type="button"
+              className="assign-auto__btn assign-auto__btn--primary"
+              onClick={doAssign}
+            >
+              <i className="fa fa-magic" />
+              <span>שבץ אוטומטית</span>
+            </button>
+            <button
+              type="button"
+              className="assign-auto__btn assign-auto__btn--warning"
+              onClick={doFixMissing}
+            >
+              <i className="fa fa-wrench" />
+              <span>תקן חוסרים (הזזות)</span>
+            </button>
+            <button
+              type="button"
+              className="assign-auto__btn assign-auto__btn--danger"
+              onClick={() => setShowDeleteModal(true)}
+            >
+              <i className="fa fa-trash" />
+              <span>מחק שיבוץ</span>
+            </button>
+            <button
+              type="button"
+              className="assign-auto__btn assign-auto__btn--info"
+              onClick={showLastErrorsReport}
+            >
+              <i className="fa fa-file-text-o" />
+              <span>הצג דוח שגיאות אחרון</span>
+            </button>
+          </div>
+
+          {successAlert && (
+            <div className="assign-auto__success">
+              <i className="fa fa-check-circle" />
+              <span>שיבוץ אוטומטי לשכבה בוצע בהצלחה!</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Diagnostic modal (new) */}
+      {showDiagnostic && (
         <div
+          className="modal"
           style={{
+            display: 'block',
+            background: 'rgba(0,0,0,0.5)',
             position: 'fixed',
             top: 0,
             left: 0,
             width: '100%',
             height: '100%',
-            background: 'rgba(0,0,0,0.65)',
-            zIndex: 9999,
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
+            zIndex: 1050,
+            overflow: 'auto',
           }}
+          onClick={() => setShowDiagnostic(false)}
         >
           <div
-            style={{
-              background: 'linear-gradient(135deg,#fff 0%,#f8fbff 100%)',
-              borderRadius: 16,
-              padding: '45px 55px',
-              textAlign: 'center',
-              boxShadow: '0 15px 50px rgba(0,0,0,0.25)',
-              maxWidth: 420,
-              direction: 'rtl',
-            }}
+            className="modal-dialog modal-lg"
+            style={{ direction: 'rtl', maxWidth: 900 }}
+            onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#1565C0', marginBottom: 10 }}>
-              {loadingTitle}...
-            </div>
-            <div style={{ fontSize: 14, color: '#607D8B', marginBottom: 18 }}>
-              אנא המתן, התהליך עשוי לקחת מספר שניות
-            </div>
-            <div
-              style={{
-                height: 4,
-                background: '#e0e0e0',
-                borderRadius: 2,
-                overflow: 'hidden',
-              }}
-            >
+            <div className="modal-content">
               <div
-                style={{
-                  height: '100%',
-                  width: '40%',
-                  background: 'linear-gradient(90deg,#2196F3,#00BCD4)',
-                  borderRadius: 2,
-                }}
-              />
+                className="modal-header"
+                style={{ background: '#fff8e1', borderBottom: '2px solid #ffb74d' }}
+              >
+                <button
+                  type="button"
+                  className="close"
+                  onClick={() => setShowDiagnostic(false)}
+                  aria-label="Close"
+                >
+                  &times;
+                </button>
+                <h4 className="modal-title" style={{ color: '#e65100' }}>
+                  <i className="fa fa-exclamation-triangle" /> השיבוץ הושלם חלקית - חוסרים
+                </h4>
+              </div>
+              <div className="modal-body">
+                <div className="alert alert-warning" style={{ marginBottom: 15 }}>
+                  <strong>שובצו {savedCount} שעות.</strong> לא ניתן היה לשבץ את{' '}
+                  <strong>{diagnostic.length}</strong> השעות הבאות. בדוק את ההמלצות מטה.
+                </div>
+                <table className="table table-bordered table-hover table-striped">
+                  <thead>
+                    <tr className="warning">
+                      <th style={{ textAlign: 'center' }}>כיתה</th>
+                      <th style={{ textAlign: 'center' }}>מורה</th>
+                      <th style={{ textAlign: 'center' }}>דרוש</th>
+                      <th style={{ textAlign: 'center' }}>שובץ</th>
+                      <th style={{ textAlign: 'center' }}>חסר</th>
+                      <th>המלצה</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {diagnostic.map((r, i) => {
+                      const tips: string[] = [];
+                      if (r.Hakbatza > 0) {
+                        tips.push(
+                          `המורה חלק/ה מהקבצה ${r.Hakbatza} - בדוק שכל המורים בהקבצה זמינים באותן שעות`,
+                        );
+                      }
+                      if (r.Ihud > 0) {
+                        tips.push(
+                          `המורה חלק/ה מאיחוד ${r.Ihud} עם כיתות אחרות - בדוק זמינות בכיתות השותפות`,
+                        );
+                      }
+                      if (r.IsHomeroom === 1) {
+                        tips.push('המורה היא המחנכת של כיתה זו - לרוב נעולה בשעה הראשונה');
+                      }
+                      if (r.FreeDay > 0) {
+                        tips.push(
+                          `יום חופשי של המורה: יום ${DAY_NAMES[r.FreeDay - 1] || r.FreeDay} - יתכן חוסם שעות`,
+                        );
+                      }
+                      if (r.TotalRequiredAllClasses > r.AvailableHourSlots) {
+                        tips.push(
+                          `למורה ${r.TotalRequiredAllClasses} שעות שבועיות נדרשות, אך רק ${r.AvailableHourSlots} שעות עבודה זמינות - הוסף שעות עבודה למורה`,
+                        );
+                      }
+                      if (tips.length === 0) {
+                        tips.push('התנגשות שעות - המורה תפוסה בשעות אחרות בכיתות אחרות');
+                      }
+                      return (
+                        <tr key={i}>
+                          <td style={{ textAlign: 'center' }}>
+                            <strong>{r.ClassName}</strong>
+                          </td>
+                          <td style={{ textAlign: 'right' }}>{r.TeacherName}</td>
+                          <td style={{ textAlign: 'center' }}>{r.Required}</td>
+                          <td style={{ textAlign: 'center' }}>{r.Assigned}</td>
+                          <td style={{ textAlign: 'center', color: '#d32f2f', fontWeight: 'bold' }}>
+                            {r.Missing}
+                          </td>
+                          <td>
+                            <ul style={{ margin: 0, paddingRight: 18 }}>
+                              {tips.map((t, k) => (
+                                <li key={k}>{t}</li>
+                              ))}
+                            </ul>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ marginTop: 15, padding: 10, background: '#f5f5f5', borderRadius: 4 }}>
+                  <strong>סיכום כולל:</strong>
+                  <ul style={{ marginTop: 8, marginBottom: 0 }}>
+                    <li>
+                      שובצו {savedCount} שעות מתוך{' '}
+                      {savedCount + diagnostic.reduce((a, r) => a + r.Missing, 0)} שעות דרושות
+                    </li>
+                    <li>
+                      ניתן ללחוץ "שבץ בכל זאת" כדי לנסות לשבץ את החוסרים בכפייה (תתכן התנגשות
+                      במערכת)
+                    </li>
+                  </ul>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn btn-warning"
+                  onClick={() => {
+                    setShowDiagnostic(false);
+                    doForceAssign();
+                  }}
+                  style={{ marginLeft: 8 }}
+                >
+                  <i className="fa fa-bolt" /> שבץ בכל זאת
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-info"
+                  onClick={() => setShowDiagnostic(false)}
+                >
+                  סגור
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
-
-      <div className="col-md-12">
-        <div className="row dvWeek">
-          <div className="panel panel-info">
-            <div className="panel-heading">
-              <h3 className="panel-title">&nbsp;שיבוץ אוטמטי</h3>
-            </div>
-            <div className="panel-body">
-              <div
-                className="col-md-12"
-                style={{ fontSize: 18, color: 'brown', fontWeight: 'bold' }}
-              >
-                שים לב!!! שיבוץ אוטמטי מוחק את כל השיבוצים שנעשו עד כה.
-                <br />
-                <br />
-              </div>
-
-              <div className="col-md-3">
-                <div
-                  className="btn btn-primary btn-round"
-                  style={{ width: '100%', fontSize: 20, fontWeight: 'bold' }}
-                  onClick={doAssign}
-                >
-                  שבץ אוטמטית
-                </div>
-              </div>
-
-              <div className="col-md-3">
-                <div
-                  className="btn btn-warning btn-round"
-                  style={{ width: '100%', fontSize: 18, fontWeight: 'bold', color: '#fff' }}
-                  onClick={doFixMissing}
-                >
-                  תקן חוסרים (הזזות)
-                </div>
-              </div>
-
-              <div className="col-md-2">
-                <div
-                  className="btn btn-danger btn-round"
-                  style={{ width: '100%', fontSize: 20, fontWeight: 'bold' }}
-                  onClick={() => setShowDeleteModal(true)}
-                >
-                  מחק שיבוץ!!!
-                </div>
-              </div>
-
-              <div className="col-md-2">
-                <div
-                  className="btn btn-info btn-round"
-                  style={{ width: '100%', fontSize: 18, fontWeight: 'bold' }}
-                  onClick={showLastErrorsReport}
-                >
-                  הצג דוח שגיאות אחרון
-                </div>
-              </div>
-
-              {successAlert && (
-                <div
-                  className="col-md-12"
-                  style={{
-                    fontSize: 28,
-                    color: 'brown',
-                    fontWeight: 'bold',
-                    textAlign: 'center',
-                  }}
-                >
-                  שיבוץ אוטמטי לשכבה בוצע בהצלחה!!
-                  <br />
-                  <br />
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
 
       {/* Results modal */}
       {showResults && (

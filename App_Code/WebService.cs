@@ -727,6 +727,31 @@ public class WebService : System.Web.Services.WebService
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
     }
 
+    // שליפה מהירה של שיבוצי מורה ספציפית - חלופה ל-Assign_GetAssignment
+    // שמחזירה את כל שיבוצי בית הספר (איטי ~25 שניות).
+    [WebMethod]
+    public void Teacher_GetAssignmentsForTeacher()
+    {
+        string TeacherIdRaw = GetParams("TeacherId");
+        int teacherId;
+        if (!int.TryParse(TeacherIdRaw, out teacherId))
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        int configurationId;
+        if (!int.TryParse(HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"], out configurationId))
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        string sql = "SELECT AssignmentId, HourId, ClassId, TeacherId, ProfessionalId, Hakbatza, Ihud "
+                   + "FROM TeacherAssignment "
+                   + "WHERE TeacherId = " + teacherId + " AND ConfigurationId = " + configurationId;
+        DataTable dt = Dal.GetDataTable(sql);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
 
 
 
@@ -1284,6 +1309,162 @@ public class WebService : System.Web.Services.WebService
    
 
     
+    // =========================================================
+    // Report-style diagnostic: returns missing teacher/class assignments
+    // directly from the DB without relying on session state. Used by
+    // AssignAuto.tsx to show a user-facing diagnostic after a run.
+    // Returns: ClassId, ClassName, TeacherId, TeacherName, Required, Assigned, Missing,
+    //          Hakbatza, Ihud, FreeDay, IsHomeroom, Reason
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_GetShibutzDiagnostic()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            string sql = @"
+SELECT
+  ct.ClassId,
+  c.Name AS ClassName,
+  ct.TeacherId,
+  ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ct.Hour AS Required,
+  ISNULL(ta.Assigned, 0) AS Assigned,
+  (ct.Hour - ISNULL(ta.Assigned, 0)) AS Missing,
+  ISNULL(ct.Hakbatza, 0) AS Hakbatza,
+  ISNULL(ct.Ihud, 0) AS Ihud,
+  ISNULL(t.FreeDay, 0) AS FreeDay,
+  CASE WHEN t.ManageClassId = ct.ClassId THEN 1 ELSE 0 END AS IsHomeroom,
+  (SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + Helper.ConvertToInt(configId) + @") AS TotalRequiredAllClasses,
+  (SELECT COUNT(*) FROM TeacherHours WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + Helper.ConvertToInt(configId) + @") AS AvailableHourSlots
+FROM ClassTeacher ct
+LEFT JOIN (
+  SELECT ClassId, TeacherId, COUNT(*) AS Assigned
+  FROM TeacherAssignment
+  WHERE ConfigurationId=" + Helper.ConvertToInt(configId) + @" AND HourTypeId=1
+  GROUP BY ClassId, TeacherId
+) ta ON ta.ClassId=ct.ClassId AND ta.TeacherId=ct.TeacherId
+LEFT JOIN Teacher t ON t.TeacherId=ct.TeacherId
+LEFT JOIN Class c ON c.ClassId=ct.ClassId
+WHERE ct.ConfigurationId=" + Helper.ConvertToInt(configId) + @"
+  AND (ct.Hour - ISNULL(ta.Assigned, 0)) > 0
+ORDER BY Missing DESC, ct.ClassId, ct.TeacherId
+";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Charset = "utf-8";
+            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            DataTable dt = new DataTable();
+            dt.Columns.Add("ErrorMessage", typeof(string));
+            DataRow r = dt.NewRow();
+            r["ErrorMessage"] = ex.Message;
+            dt.Rows.Add(r);
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+    }
+
+    // =========================================================
+    // Force-assign: relaxed version that tries to stuff any remaining
+    // missing teacher/class pair into the first free (teacher-hour, class-slot)
+    // without respecting consecutive / lock constraints.
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_ShibutzForce()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+
+            // Find all (ClassId, TeacherId) that still need hours
+            string sql = @"
+SELECT ct.ClassId, ct.TeacherId, (ct.Hour - ISNULL(ta.Assigned, 0)) AS Missing
+FROM ClassTeacher ct
+LEFT JOIN (
+  SELECT ClassId, TeacherId, COUNT(*) AS Assigned
+  FROM TeacherAssignment
+  WHERE ConfigurationId=" + cId + @" AND HourTypeId=1
+  GROUP BY ClassId, TeacherId
+) ta ON ta.ClassId=ct.ClassId AND ta.TeacherId=ct.TeacherId
+WHERE ct.ConfigurationId=" + cId + @"
+  AND (ct.Hour - ISNULL(ta.Assigned, 0)) > 0";
+            DataTable dtMissing = Dal.GetDataTable(sql);
+
+            int forced = 0;
+            SqlConnection con = Dal.OpenConnection();
+            try
+            {
+                for (int i = 0; i < dtMissing.Rows.Count; i++)
+                {
+                    int classId = Helper.ConvertToInt(dtMissing.Rows[i]["ClassId"].ToString());
+                    int teacherId = Helper.ConvertToInt(dtMissing.Rows[i]["TeacherId"].ToString());
+                    int missing = Helper.ConvertToInt(dtMissing.Rows[i]["Missing"].ToString());
+
+                    // Find hours this teacher works AND class has a slot, and class is not already assigned
+                    string sqlSlots = @"
+SELECT TOP " + missing + @" sh.HourId
+FROM SchoolHours sh
+INNER JOIN TeacherHours th ON th.HourId = sh.HourId AND th.TeacherId = " + teacherId + @" AND th.ConfigurationId = " + cId + @"
+WHERE sh.ConfigurationId = " + cId + @"
+  AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+  AND NOT EXISTS (
+    SELECT 1 FROM TeacherAssignment ta
+    WHERE ta.ConfigurationId = " + cId + @"
+      AND ta.HourId = sh.HourId
+      AND ta.ClassId = " + classId + @"
+      AND ta.HourTypeId = 1
+      AND ta.TeacherId = " + teacherId + @"
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM TeacherAssignment ta2
+    WHERE ta2.ConfigurationId = " + cId + @"
+      AND ta2.HourId = sh.HourId
+      AND ta2.ClassId = " + classId + @"
+      AND ta2.HourTypeId = 1
+  )
+ORDER BY sh.HourId";
+                    DataTable dtSlots = Dal.GetDataTable(sqlSlots);
+                    for (int s = 0; s < dtSlots.Rows.Count; s++)
+                    {
+                        int hourId = Helper.ConvertToInt(dtSlots.Rows[s]["HourId"].ToString());
+                        // Get ProfessionalId/Hakbatza/Ihud from ClassTeacher if possible
+                        string sqlInfo = "SELECT TOP 1 Hakbatza, Ihud FROM ClassTeacher WHERE ClassId=" + classId + " AND TeacherId=" + teacherId + " AND ConfigurationId=" + cId;
+                        DataTable dtInfo = Dal.GetDataTable(sqlInfo);
+                        int hak = 0, ihu = 0;
+                        if (dtInfo.Rows.Count > 0)
+                        {
+                            hak = Helper.ConvertToInt(dtInfo.Rows[0]["Hakbatza"].ToString());
+                            ihu = Helper.ConvertToInt(dtInfo.Rows[0]["Ihud"].ToString());
+                        }
+                        string sqlProf = "SELECT TOP 1 ProfessionalId FROM Teacher WHERE TeacherId=" + teacherId;
+                        DataTable dtProf = Dal.GetDataTable(sqlProf);
+                        int prof = 0;
+                        if (dtProf.Rows.Count > 0) prof = Helper.ConvertToInt(dtProf.Rows[0]["ProfessionalId"].ToString());
+
+                        Dal.ExeSpBig(con, "Assign_SetAssignAuto", cId, teacherId, hourId, 1, classId, prof, hak, ihu);
+                        forced++;
+                    }
+                }
+            }
+            finally { Dal.CloseConnection(con); }
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Forced\":" + forced + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
     [WebMethod]
     public void Assign_GetDataForAssignAuto()
     {

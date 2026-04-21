@@ -44,6 +44,17 @@ public class Shibutz
     // Flag: When true, protect homeroom teachers at hour 1 from being moved
     private bool _protectHomeroomHour1 = false;
 
+    // Hakbatza/Ihud groups - key = "classId_hak_ihud" OR "hak_ihud" (for Ihud across classes)
+    // Value = list of (TeacherId, ClassId, ProfessionalId, LastTeacherHoursInClass) in the group
+    private readonly Dictionary<string, List<ClassTeacher>> _hakbatzaGroups = new Dictionary<string, List<ClassTeacher>>();
+
+    // Extra assignments to write to DB for Hakbatza/Ihud partners
+    // Key = "classId_hourId_teacherId" to avoid duplicates
+    private readonly Dictionary<string, ExtraAssignment> _extraAssignments = new Dictionary<string, ExtraAssignment>();
+
+    // When true, assign even when normal constraints fail (FORCE mode)
+    private bool _forceMode = false;
+
     public readonly List<ShibutzError> Errors = new List<ShibutzError>();
 
     public Shibutz(DataSet ds, int configurationId)
@@ -182,6 +193,23 @@ public class Shibutz
             if (redsAfter >= redsBefore) break;  // No progress - stop
         }
 
+        // Hakbatza/Ihud post-process - add co-teachers at same time
+        ExpandHakbatzaIhudAssignments();
+
+        // Additional fix pass for unassigned slots now that busy flags are accurate
+        for (int i = 0; i < timeKeys.Count; i++)
+        {
+            List<HourSlot> slots = byTime[timeKeys[i]];
+            TryCrossTimeSwapsForBatch(slots);
+            DirectFill(slots);
+            FindAvailableTeachersFill(slots);
+            SmartSwapFill(slots);
+            LocalSwapFill(slots);
+            DeepChainFill(slots, CHAIN_DEPTH);
+        }
+        CrossTimeSwapFill();
+        ExpandHakbatzaIhudAssignments();
+
         // Build detailed errors for remaining reds
         Errors.Clear();
         for (int i = 0; i < _allSlots.Count; i++)
@@ -193,6 +221,9 @@ public class Shibutz
             }
         }
 
+        // Also build errors for teachers who still have remaining hours (group partners missing)
+        BuildMissingTeacherErrors();
+
         // Save always (only assigned)
         int saved = SaveAssignmentsToDatabase_ReturnCount();
 
@@ -200,6 +231,167 @@ public class Shibutz
         r.SavedCount = saved;
         r.ErrorCount = Errors.Count;
         return r;
+    }
+
+    // =========================================================
+    // HAKBATZA / IHUD: Add co-teachers at same slots as their group partner
+    // =========================================================
+    private void ExpandHakbatzaIhudAssignments()
+    {
+        // For each slot that was assigned with a Hakbatza/Ihud group, add the other members
+        for (int i = 0; i < _allSlots.Count; i++)
+        {
+            HourSlot s = _allSlots[i];
+            if (s.AssignedTeacherId <= 0) continue;
+            if (s.AssignedHakbatza <= 0 && s.AssignedIhud <= 0) continue;
+
+            string gkey = GetGroupKey(s.ClassId, s.AssignedHakbatza, s.AssignedIhud);
+            if (gkey == null) continue;
+
+            List<ClassTeacher> group;
+            if (!_hakbatzaGroups.TryGetValue(gkey, out group)) continue;
+            if (group == null || group.Count <= 1) continue;
+
+            for (int j = 0; j < group.Count; j++)
+            {
+                ClassTeacher ct = group[j];
+                if (ct == null) continue;
+                if (ct.TeacherId == s.AssignedTeacherId && ct.ClassId == s.ClassId) continue;
+
+                // For Hakbatza - partners teach the SAME class at same time
+                // For Ihud - partners teach their OWN class at same time
+                int targetClassId;
+                if (s.AssignedIhud > 0)
+                {
+                    targetClassId = ct.ClassId;  // Each partner stays in their own class
+                }
+                else
+                {
+                    targetClassId = s.ClassId;  // Hakbatza - same class as main
+                }
+
+                // Skip if already assigned in this slot or extra assignment exists
+                string extraKey = targetClassId + "_" + s.HourId + "_" + ct.TeacherId;
+                if (_extraAssignments.ContainsKey(extraKey)) continue;
+
+                // Check if there's a regular slot that's already assigned to this teacher here
+                HourSlot existingSlot = FindSlot(targetClassId, s.Day, s.Hour);
+                if (existingSlot != null && existingSlot.AssignedTeacherId == ct.TeacherId) continue;
+
+                // CRITICAL: Check remaining hours - don't over-assign
+                string rkCheck = Key(targetClassId, ct.TeacherId);
+                int remCheck;
+                if (!_remaining.TryGetValue(rkCheck, out remCheck) || remCheck <= 0) continue;
+
+                // Check if teacher is free at this time
+                // Exception: If teacher is busy with a DIFFERENT group, try to free them
+                if (IsBusy(ct.TeacherId, s.Day, s.Hour))
+                {
+                    HourSlot busySlot = GetBusySlot(ct.TeacherId, s.Day, s.Hour);
+                    if (busySlot != null && busySlot.AssignedTeacherId == ct.TeacherId)
+                    {
+                        // If busy with same (hak,ihud) group member - already co-teaching, skip
+                        if (s.AssignedIhud > 0 && busySlot.AssignedIhud == s.AssignedIhud) continue;
+                        if (s.AssignedHakbatza > 0 && busySlot.ClassId == s.ClassId && busySlot.AssignedHakbatza == s.AssignedHakbatza) continue;
+
+                        // Busy in an UNRELATED slot - try to move them out (group priority!)
+                        if (busySlot.ClassId != targetClassId)
+                        {
+                            // Save state
+                            int oldT = busySlot.AssignedTeacherId;
+                            int oldP = busySlot.AssignedProfessionalId;
+                            int oldH = busySlot.AssignedHakbatza;
+                            int oldI = busySlot.AssignedIhud;
+
+                            // Try to find replacement for busySlot from its candidates
+                            ClassTeacher replacement = null;
+                            if (busySlot.Candidates != null)
+                            {
+                                for (int r = 0; r < busySlot.Candidates.Count; r++)
+                                {
+                                    ClassTeacher candR = busySlot.Candidates[r];
+                                    if (candR == null || candR.TeacherId <= 0) continue;
+                                    if (candR.TeacherId == ct.TeacherId) continue;
+                                    if (IsBusy(candR.TeacherId, busySlot.Day, busySlot.Hour)) continue;
+                                    if (!CanAssign(busySlot, candR)) continue;
+                                    replacement = candR;
+                                    break;
+                                }
+                            }
+
+                            UndoAssign(busySlot);
+                            if (replacement != null)
+                            {
+                                ApplyAssign(busySlot, replacement);
+                            }
+                            // busySlot may stay red - DirectFill later will try again
+                        }
+                        else
+                        {
+                            continue;  // same class, don't bump
+                        }
+                    }
+
+                    // Re-check after potential free
+                    if (IsBusy(ct.TeacherId, s.Day, s.Hour)) continue;
+                }
+
+                ExtraAssignment ea = new ExtraAssignment();
+                ea.ClassId = targetClassId;
+                ea.HourId = s.HourId;
+                ea.Day = s.Day;
+                ea.Hour = s.Hour;
+                ea.TeacherId = ct.TeacherId;
+                ea.ProfessionalId = ct.ProfessionalId;
+                ea.Hakbatza = s.AssignedHakbatza;
+                ea.Ihud = s.AssignedIhud;
+
+                _extraAssignments[extraKey] = ea;
+
+                // Mark as busy so other slots won't claim this teacher
+                SetBusy(ct.TeacherId, s.Day, s.Hour, s);
+                GetDaySet(ct.TeacherId, s.Day).Add(s.Hour);
+
+                // Reduce remaining for this teacher/class
+                string rk = Key(targetClassId, ct.TeacherId);
+                if (_remaining.ContainsKey(rk) && _remaining[rk] > 0)
+                {
+                    _remaining[rk] = _remaining[rk] - 1;
+                }
+            }
+        }
+    }
+
+    // Build errors for teachers who have remaining hours but were never placed
+    // This happens when Hakbatza/Ihud partner prevented placement
+    private void BuildMissingTeacherErrors()
+    {
+        Dictionary<string, int> missingPerTeacher = new Dictionary<string, int>();
+        foreach (var kv in _remaining)
+        {
+            if (kv.Value <= 0) continue;
+            missingPerTeacher[kv.Key] = kv.Value;
+        }
+
+        foreach (var kv in missingPerTeacher)
+        {
+            string[] parts = kv.Key.Split('_');
+            if (parts.Length < 2) continue;
+            int classId, teacherId;
+            if (!int.TryParse(parts[0], out classId)) continue;
+            if (!int.TryParse(parts[1], out teacherId)) continue;
+
+            string cname = _classNames.ContainsKey(classId) ? _classNames[classId] : ("כיתה " + classId);
+            string tname = _teacherNames.ContainsKey(teacherId) ? _teacherNames[teacherId] : ("מורה " + teacherId);
+
+            ShibutzError e = new ShibutzError();
+            e.ClassId = classId;
+            e.Day = 0;
+            e.Hour = 0;
+            e.Message = "למורה " + tname + " חסרות " + kv.Value + " שעות בכיתה " + cname + ". ייתכן שיש התנגשות בהקבצה/איחוד או יום חופשי שחוסם.";
+            e.TeachersMissingHours = new List<int> { teacherId };
+            Errors.Add(e);
+        }
     }
 
     private int CountRedSlots()
@@ -602,6 +794,65 @@ public class Shibutz
                     _homeClassByTeacher[tafkid1Best[cid]] = cid;
             }
         }
+
+        BuildHakbatzaIhudGroups();
+    }
+
+    // =========================================================
+    // HAKBATZA / IHUD GROUPS
+    // Collect all teachers that must co-teach at the same (ClassId, HourId)
+    // Hakbatza: same class, same hakbatza number -> teach together
+    // Ihud: different classes, same ihud number -> teach at same time across classes
+    // =========================================================
+    private void BuildHakbatzaIhudGroups()
+    {
+        _hakbatzaGroups.Clear();
+
+        HashSet<string> seenTeacherPerGroup = new HashSet<string>();
+
+        for (int i = 0; i < _allSlots.Count; i++)
+        {
+            HourSlot s = _allSlots[i];
+            if (s.Candidates == null) continue;
+
+            for (int j = 0; j < s.Candidates.Count; j++)
+            {
+                ClassTeacher ct = s.Candidates[j];
+                if (ct == null || ct.TeacherId <= 0) continue;
+                if (ct.Hakbatza <= 0 && ct.Ihud <= 0) continue;
+
+                string gkey = GetGroupKey(ct);
+                string dedupeKey = gkey + "|" + ct.ClassId + "|" + ct.TeacherId;
+                if (seenTeacherPerGroup.Contains(dedupeKey)) continue;
+                seenTeacherPerGroup.Add(dedupeKey);
+
+                List<ClassTeacher> list;
+                if (!_hakbatzaGroups.TryGetValue(gkey, out list))
+                {
+                    list = new List<ClassTeacher>();
+                    _hakbatzaGroups[gkey] = list;
+                }
+                list.Add(ct);
+            }
+        }
+    }
+
+    private string GetGroupKey(ClassTeacher ct)
+    {
+        // Ihud: spans across classes -> key only on ihud number
+        if (ct.Ihud > 0)
+        {
+            return "I_" + ct.Ihud;
+        }
+        // Hakbatza: same class -> key includes class
+        return "H_" + ct.ClassId + "_" + ct.Hakbatza;
+    }
+
+    private string GetGroupKey(int classId, int hak, int ihud)
+    {
+        if (ihud > 0) return "I_" + ihud;
+        if (hak > 0) return "H_" + classId + "_" + hak;
+        return null;
     }
 
     private void ResolveDayHour(int hourId, out int day, out int hour)
@@ -3609,6 +3860,9 @@ public class Shibutz
     {
         int saved = 0;
 
+        // Track what we've saved to avoid duplicates (ClassId_HourId_TeacherId)
+        HashSet<string> savedKeys = new HashSet<string>();
+
         SqlConnection con = Dal.OpenConnection();
         try
         {
@@ -3616,6 +3870,10 @@ public class Shibutz
             {
                 HourSlot s = _allSlots[i];
                 if (s.AssignedTeacherId <= 0) continue;
+
+                string key = s.ClassId + "_" + s.HourId + "_" + s.AssignedTeacherId;
+                if (savedKeys.Contains(key)) continue;
+                savedKeys.Add(key);
 
                 Dal.ExeSpBig(
                     con,
@@ -3628,6 +3886,30 @@ public class Shibutz
                     s.AssignedProfessionalId,
                     s.AssignedHakbatza,
                     s.AssignedIhud
+                );
+
+                saved++;
+            }
+
+            // Also save extras from Hakbatza/Ihud expansion
+            foreach (var kv in _extraAssignments)
+            {
+                ExtraAssignment ea = kv.Value;
+                string key = ea.ClassId + "_" + ea.HourId + "_" + ea.TeacherId;
+                if (savedKeys.Contains(key)) continue;
+                savedKeys.Add(key);
+
+                Dal.ExeSpBig(
+                    con,
+                    "Assign_SetAssignAuto",
+                    _configurationId,
+                    ea.TeacherId,
+                    ea.HourId,
+                    1,
+                    ea.ClassId,
+                    ea.ProfessionalId,
+                    ea.Hakbatza,
+                    ea.Ihud
                 );
 
                 saved++;
@@ -3981,6 +4263,18 @@ public class ShibutzRunResult
 {
     public int SavedCount;
     public int ErrorCount;
+}
+
+public class ExtraAssignment
+{
+    public int ClassId;
+    public int HourId;
+    public int Day;
+    public int Hour;
+    public int TeacherId;
+    public int ProfessionalId;
+    public int Hakbatza;
+    public int Ihud;
 }
 
 // =====================================================
