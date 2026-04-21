@@ -16,6 +16,72 @@ public class Shibutz
     private System.Diagnostics.Stopwatch _sw;
     private int _lastLoggedRed = -1;
 
+    // Shared in-memory progress store (NOT in Session, to avoid lock contention
+    // with the long-running assign request). Keyed by ConfigurationId.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, ShibutzLiveStatus>
+        _liveStatus = new System.Collections.Concurrent.ConcurrentDictionary<int, ShibutzLiveStatus>();
+
+    public static ShibutzLiveStatus GetLiveStatus(int configurationId)
+    {
+        ShibutzLiveStatus s;
+        if (_liveStatus.TryGetValue(configurationId, out s)) return s;
+        return null;
+    }
+
+    public static void ResetLiveStatus(int configurationId)
+    {
+        ShibutzLiveStatus s = new ShibutzLiveStatus();
+        s.StartedAt = DateTime.UtcNow;
+        s.IsRunning = true;
+        s.CurrentStep = "מתחיל שיבוץ...";
+        _liveStatus[configurationId] = s;
+    }
+
+    private void UpdateLiveStatus(string currentStep, int totalSlots, int totalReds)
+    {
+        ShibutzLiveStatus s;
+        if (!_liveStatus.TryGetValue(_configurationId, out s)) return;
+        s.CurrentStep = currentStep;
+        s.TotalSlots = totalSlots;
+        s.RedSlots = totalReds;
+        s.ElapsedMs = _sw != null ? _sw.ElapsedMilliseconds : 0;
+
+        // Per-class progress: how many slots in each class are filled/total
+        if (_allSlots != null)
+        {
+            Dictionary<int, int[]> perClass = new Dictionary<int, int[]>();
+            for (int i = 0; i < _allSlots.Count; i++)
+            {
+                HourSlot sl = _allSlots[i];
+                int[] stats;
+                if (!perClass.TryGetValue(sl.ClassId, out stats)) { stats = new int[2]; perClass[sl.ClassId] = stats; }
+                stats[0]++;                                   // total
+                if (sl.AssignedTeacherId > 0) stats[1]++;     // filled
+            }
+            List<ClassProgress> list = new List<ClassProgress>();
+            foreach (var kv in perClass)
+            {
+                ClassProgress cp = new ClassProgress();
+                cp.ClassId = kv.Key;
+                cp.ClassName = _classNames.ContainsKey(kv.Key) ? _classNames[kv.Key] : ("כיתה " + kv.Key);
+                cp.TotalSlots = kv.Value[0];
+                cp.FilledSlots = kv.Value[1];
+                list.Add(cp);
+            }
+            s.Classes = list;
+        }
+    }
+
+    public static void MarkLiveDone(int configurationId)
+    {
+        ShibutzLiveStatus s;
+        if (_liveStatus.TryGetValue(configurationId, out s))
+        {
+            s.IsRunning = false;
+            s.CurrentStep = "הסתיים";
+        }
+    }
+
     private void LogStep(string step)
     {
         if (_sw == null) return;
@@ -23,6 +89,9 @@ public class Shibutz
         long ms = _sw.ElapsedMilliseconds;
         ProgressLog.Add(ms + "ms | reds=" + reds + " | " + step);
         _lastLoggedRed = reds;
+
+        // Update live shared status
+        UpdateLiveStatus(step, _allSlots != null ? _allSlots.Count : 0, reds);
     }
 
     private readonly int _configurationId;
@@ -4237,6 +4306,25 @@ public class ShibutzRunResult
 {
     public int SavedCount;
     public int ErrorCount;
+}
+
+public class ShibutzLiveStatus
+{
+    public DateTime StartedAt;
+    public long ElapsedMs;
+    public bool IsRunning;
+    public string CurrentStep;
+    public int TotalSlots;
+    public int RedSlots;
+    public List<ClassProgress> Classes = new List<ClassProgress>();
+}
+
+public class ClassProgress
+{
+    public int ClassId;
+    public string ClassName;
+    public int TotalSlots;
+    public int FilledSlots;
 }
 
 public class ExtraAssignment

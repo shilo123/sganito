@@ -235,7 +235,26 @@ export default function TeacherHours() {
   const loadTeachers = useCallback(async () => {
     if (!configurationId) return;
     const data = await ajax<Teacher[]>('Teacher_GetTeacherList', { TeacherId: '' });
-    setTeachers(Array.isArray(data) ? data : []);
+    const list = Array.isArray(data) ? data : [];
+    setTeachers(list);
+
+    // If URL has ?teacherId=X, auto-open that teacher's hours modal
+    try {
+      const url = new URL(window.location.href);
+      const tid = url.searchParams.get('teacherId');
+      if (tid) {
+        const found = list.find((t) => String(t.TeacherId) === String(tid));
+        if (found) {
+          setSelectedTeacher(found);
+          setSearch(String(found.FullText ?? `${found.FirstName ?? ''} ${found.LastName ?? ''}`));
+          // Remove the param so it doesn't re-apply on next navigation
+          url.searchParams.delete('teacherId');
+          window.history.replaceState(null, '', url.pathname + (url.search || ''));
+        }
+      }
+    } catch {
+      /* ignore URL parsing errors */
+    }
   }, [configurationId]);
 
   const loadTeacherHours = useCallback(async (teacherId: Teacher['TeacherId']) => {

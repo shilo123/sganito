@@ -28,7 +28,23 @@ interface DiagnosticRow {
   FreeDay: number;
   IsHomeroom: number;
   TotalRequiredAllClasses: number;
-  AvailableHourSlots: number;
+  DefinedHourSlots: number;        // total TeacherHours rows (may include hours not in SchoolHours)
+  AvailableHourSlots: number;      // actual hours usable for teaching (SchoolHours intersection)
+}
+
+interface LiveStatusClass {
+  ClassId: number;
+  ClassName: string;
+  TotalSlots: number;
+  FilledSlots: number;
+}
+interface LiveStatus {
+  IsRunning: boolean;
+  ElapsedMs: number;
+  TotalSlots: number;
+  RedSlots: number;
+  CurrentStep: string;
+  Classes: LiveStatusClass[];
 }
 
 type DeleteType = -1 | 0 | 1;
@@ -57,8 +73,7 @@ export default function AssignAuto() {
   const [diagnostic, setDiagnostic] = useState<DiagnosticRow[]>([]);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
 
-  const [progressLog, setProgressLog] = useState<Array<{ Step: number; Message: string }>>([]);
-  const [showProgress, setShowProgress] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
 
   async function fetchShibutzErrors(): Promise<{
     errors: ShibutzErrorRow[];
@@ -99,13 +114,19 @@ export default function AssignAuto() {
     setSuccessAlert(true);
   }
 
-  async function fetchProgressLog() {
+  async function fetchLiveStatus(): Promise<LiveStatus | null> {
     try {
-      const data = await ajax<Array<{ Step: number; Message: string }>>('Assign_GetShibutzProgress');
-      setProgressLog(Array.isArray(data) ? data : []);
-    } catch (e) {
-      console.error('Assign_GetShibutzProgress failed', e);
-      setProgressLog([]);
+      const raw = await fetch('/WebService.asmx/Assign_GetShibutzLiveStatus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
+        body: '',
+        credentials: 'include',
+      });
+      if (!raw.ok) return null;
+      const data = await raw.json();
+      return (data && typeof data === 'object') ? (data as LiveStatus) : null;
+    } catch {
+      return null;
     }
   }
 
@@ -127,17 +148,31 @@ export default function AssignAuto() {
     setShowResults(false);
     setShowDiagnostic(false);
     setDiagnostic([]);
+    setLiveStatus(null);
     setLoadingTitle('מבצע שיבוץ אוטומטי');
     setIsLoading(true);
+
+    // Start live polling every 1s while the main call runs
+    let pollHandle: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      pollHandle = setInterval(async () => {
+        const st = await fetchLiveStatus();
+        if (st) setLiveStatus(st);
+      }, 1000);
+    };
+    startPolling();
+
     try {
       await ajax('Assign_ShibutzAuto');
-      await new Promise((r) => setTimeout(r, 500));
+      if (pollHandle) clearInterval(pollHandle);
+      // Final snapshot once done
+      const finalSt = await fetchLiveStatus();
+      if (finalSt) setLiveStatus(finalSt);
+      await new Promise((r) => setTimeout(r, 300));
       const result = await fetchShibutzErrors();
       const diag = await fetchDiagnostic();
-      await fetchProgressLog();
       setDiagnostic(diag);
       if (diag.length > 0) {
-        // Override: if we have diagnostic data, show it instead of the generic errors modal
         setSavedCount(result.savedCount);
         setErrorCount(diag.length);
         setShowDiagnostic(true);
@@ -146,9 +181,11 @@ export default function AssignAuto() {
         handleResult(result);
       }
     } catch (e) {
+      if (pollHandle) clearInterval(pollHandle);
       console.error('Assign_ShibutzAuto failed', e);
       toast.error('אירעה שגיאה בזמן ביצוע השיבוץ האוטומטי. אנא נסה שוב.');
     } finally {
+      if (pollHandle) clearInterval(pollHandle);
       setIsLoading(false);
     }
   }
@@ -253,10 +290,95 @@ export default function AssignAuto() {
     <div style={{ direction: 'rtl' }}>
       {isLoading && (
         <div className="action-loading" role="status" aria-live="polite">
-          <div className="action-loading__card">
+          <div className="action-loading__card" style={{ maxWidth: 720, width: '90%' }}>
             <div className="action-loading__title">{loadingTitle}...</div>
-            <div className="action-loading__sub">אנא המתן, התהליך עשוי לקחת מספר שניות</div>
-            <div className="action-loading__bar" />
+            {liveStatus ? (
+              <>
+                <div className="action-loading__sub">
+                  {liveStatus.CurrentStep || 'מעבד...'}
+                  {liveStatus.ElapsedMs > 0 && ` • ${Math.round(liveStatus.ElapsedMs / 1000)}s`}
+                </div>
+                {liveStatus.TotalSlots > 0 && (
+                  <div style={{ margin: '12px 0', fontSize: 14, textAlign: 'center' }}>
+                    <strong style={{ color: '#2e7d32' }}>
+                      {liveStatus.TotalSlots - liveStatus.RedSlots}
+                    </strong>{' '}
+                    משבצות שובצו מתוך <strong>{liveStatus.TotalSlots}</strong>
+                    {liveStatus.RedSlots > 0 && (
+                      <>
+                        {' '}· נותרו <strong style={{ color: '#d32f2f' }}>{liveStatus.RedSlots}</strong>
+                      </>
+                    )}
+                  </div>
+                )}
+                {liveStatus.Classes && liveStatus.Classes.length > 0 && (
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))',
+                      gap: 6,
+                      marginTop: 10,
+                      maxHeight: 220,
+                      overflowY: 'auto',
+                      padding: 4,
+                    }}
+                  >
+                    {[...liveStatus.Classes]
+                      .sort((a, b) => a.ClassName.localeCompare(b.ClassName, 'he'))
+                      .map((c) => {
+                        const pct = c.TotalSlots > 0 ? (c.FilledSlots / c.TotalSlots) * 100 : 0;
+                        const done = c.FilledSlots === c.TotalSlots;
+                        return (
+                          <div
+                            key={c.ClassId}
+                            style={{
+                              padding: '6px 8px',
+                              borderRadius: 6,
+                              background: done
+                                ? 'linear-gradient(135deg, #a5d6a7, #66bb6a)'
+                                : 'linear-gradient(135deg, #fff3e0, #ffcc80)',
+                              color: done ? '#1b5e20' : '#e65100',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              textAlign: 'center',
+                              position: 'relative',
+                              overflow: 'hidden',
+                            }}
+                            title={`${c.FilledSlots}/${c.TotalSlots}`}
+                          >
+                            <div style={{ position: 'relative', zIndex: 2 }}>
+                              {c.ClassName}
+                              <br />
+                              <span style={{ fontSize: 10, fontWeight: 400 }}>
+                                {c.FilledSlots}/{c.TotalSlots}
+                              </span>
+                            </div>
+                            {!done && (
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  bottom: 0,
+                                  left: 0,
+                                  right: 0,
+                                  height: 3,
+                                  background: '#4caf50',
+                                  width: `${pct}%`,
+                                  transition: 'width 0.4s ease',
+                                }}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="action-loading__sub">אנא המתן, התהליך עשוי לקחת מספר שניות</div>
+                <div className="action-loading__bar" />
+              </>
+            )}
           </div>
         </div>
       )}
@@ -307,17 +429,6 @@ export default function AssignAuto() {
               <i className="fa fa-file-text-o" />
               <span>הצג דוח שגיאות אחרון</span>
             </button>
-            <button
-              type="button"
-              className="assign-auto__btn assign-auto__btn--info"
-              onClick={async () => {
-                await fetchProgressLog();
-                setShowProgress(true);
-              }}
-            >
-              <i className="fa fa-list-ol" />
-              <span>הצג חישוב</span>
-            </button>
           </div>
 
           {successAlert && (
@@ -328,90 +439,6 @@ export default function AssignAuto() {
           )}
         </div>
       </div>
-
-      {/* Progress log modal */}
-      {showProgress && (
-        <div
-          className="modal"
-          style={{
-            display: 'block',
-            background: 'rgba(0,0,0,0.5)',
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            zIndex: 1050,
-            overflow: 'auto',
-          }}
-          onClick={() => setShowProgress(false)}
-        >
-          <div
-            className="modal-dialog modal-lg"
-            style={{ direction: 'rtl', maxWidth: 900 }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="modal-content">
-              <div className="modal-header" style={{ background: '#e3f2fd', borderBottom: '2px solid #1976d2' }}>
-                <button type="button" className="close" onClick={() => setShowProgress(false)} aria-label="Close">
-                  &times;
-                </button>
-                <h4 className="modal-title" style={{ color: '#0d47a1' }}>
-                  <i className="fa fa-list-ol" /> חישוב השיבוץ - מה המערכת עשתה
-                </h4>
-              </div>
-              <div className="modal-body" style={{ maxHeight: 480, overflowY: 'auto' }}>
-                {progressLog.length === 0 ? (
-                  <div className="alert alert-warning" style={{ textAlign: 'center' }}>
-                    אין יומן חישוב זמין. הרץ קודם שיבוץ אוטומטי.
-                  </div>
-                ) : (
-                  <table className="table table-bordered table-striped" style={{ marginBottom: 0 }}>
-                    <thead>
-                      <tr className="info">
-                        <th style={{ textAlign: 'center', width: 60 }}>#</th>
-                        <th>שלב</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {progressLog.map((r) => {
-                        const parts = String(r.Message || '').split(' | ');
-                        const time = parts[0] || '';
-                        const reds = parts[1] || '';
-                        const step = parts[2] || r.Message;
-                        return (
-                          <tr key={r.Step}>
-                            <td style={{ textAlign: 'center', fontWeight: 'bold', color: '#1976d2' }}>
-                              {r.Step}
-                            </td>
-                            <td>
-                              <code style={{ fontSize: 11, color: '#666', marginLeft: 8 }}>{time}</code>
-                              <code style={{ fontSize: 11, color: '#d32f2f', marginLeft: 8 }}>{reds}</code>
-                              <span>{step}</span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
-                <div style={{ marginTop: 12, padding: 10, background: '#f5f5f5', borderRadius: 4, fontSize: 13 }}>
-                  <strong>איך לקרוא:</strong> כל שורה היא שלב בחישוב.
-                  <code style={{ fontSize: 11, color: '#666', margin: '0 4px' }}>1234ms</code>
-                  הוא זמן מצטבר מתחילת הריצה.
-                  <code style={{ fontSize: 11, color: '#d32f2f', margin: '0 4px' }}>reds=X</code>
-                  הוא כמה שעות חסרות נותרו באותו רגע.
-                </div>
-              </div>
-              <div className="modal-footer">
-                <button type="button" className="btn btn-info" onClick={() => setShowProgress(false)}>
-                  סגור
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Diagnostic modal (new) */}
       {showDiagnostic && (
@@ -477,17 +504,35 @@ export default function AssignAuto() {
                       <ul style={{ marginBottom: 0, marginTop: 6 }}>
                         {uniqueTeachers.map((r) => {
                           const gap = r.TotalRequiredAllClasses - r.AvailableHourSlots;
+                          const ghostHours = r.DefinedHourSlots - r.AvailableHourSlots;
                           return (
-                            <li key={r.TeacherId}>
+                            <li key={r.TeacherId} style={{ marginBottom: 8 }}>
                               <strong>{r.TeacherName}</strong>: דרושות{' '}
-                              {r.TotalRequiredAllClasses} שעות שבועיות אך יש רק{' '}
-                              {r.AvailableHourSlots} שעות עבודה מוגדרות (חסרות{' '}
-                              <strong>{gap}</strong> שעות).
+                              <strong>{r.TotalRequiredAllClasses}</strong> שעות שבועיות בכיתות.{' '}
+                              מוגדרות <strong>{r.DefinedHourSlots}</strong> שעות עבודה,{' '}
+                              {ghostHours > 0 ? (
+                                <>
+                                  אבל <strong>{ghostHours}</strong> מהן בשעות שלא קיימות בבית
+                                  הספר — בפועל רק <strong>{r.AvailableHourSlots}</strong> שעות אמיתיות (חסרות{' '}
+                                  <strong>{gap}</strong>).
+                                </>
+                              ) : (
+                                <>
+                                  יש <strong>{r.AvailableHourSlots}</strong> שעות אמיתיות (חסרות{' '}
+                                  <strong>{gap}</strong>).
+                                </>
+                              )}
                               <br />
-                              <span style={{ fontSize: 13, color: '#555' }}>
-                                פעולה נדרשת: עבור ל"מערכת מורים" והוסף למורה עוד {gap} שעות
-                                עבודה, או הקטן את דרישות השעות בכיתות.
-                              </span>
+                              <button
+                                type="button"
+                                className="btn btn-xs btn-warning"
+                                style={{ marginTop: 4 }}
+                                onClick={() => {
+                                  window.location.href = `/Config/TeacherHours?teacherId=${r.TeacherId}`;
+                                }}
+                              >
+                                <i className="fa fa-edit" /> פתח הגדרת שעות של {r.TeacherName}
+                              </button>
                             </li>
                           );
                         })}
@@ -504,6 +549,7 @@ export default function AssignAuto() {
                       <th style={{ textAlign: 'center' }}>שובץ</th>
                       <th style={{ textAlign: 'center' }}>חסר</th>
                       <th>המלצה</th>
+                      <th style={{ textAlign: 'center', width: 130 }}>פעולה</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -552,6 +598,19 @@ export default function AssignAuto() {
                                 <li key={k}>{t}</li>
                               ))}
                             </ul>
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              className="btn btn-xs btn-warning"
+                              style={{ whiteSpace: 'nowrap' }}
+                              onClick={() => {
+                                window.location.href = `/Config/TeacherHours?teacherId=${r.TeacherId}`;
+                              }}
+                              title="פתח את מסך שעות המורה כדי לתקן"
+                            >
+                              <i className="fa fa-edit" /> הגדר שעות
+                            </button>
                           </td>
                         </tr>
                       );

@@ -970,6 +970,9 @@ public class WebService : System.Web.Services.WebService
         HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]
       );
 
+        // Reset live progress status at the very beginning
+        Shibutz.ResetLiveStatus(configurationId);
+
         // CRITICAL: Delete existing auto-assignments BEFORE running - prevents duplicates
         Dal.ExeSp("Assign_DeleteAssignAuto", "1", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
 
@@ -978,6 +981,7 @@ public class WebService : System.Web.Services.WebService
         Shibutz sh = new Shibutz(ds, configurationId);
 
         ShibutzRunResult r = sh.StartShibutz_SaveAlways();
+        Shibutz.MarkLiveDone(configurationId);
         int saved = r.SavedCount;
         int reds = r.ErrorCount;
 
@@ -1320,6 +1324,63 @@ public class WebService : System.Web.Services.WebService
 
     
     // =========================================================
+    // Live progress polling (no Session) - used while Assign_ShibutzAuto
+    // is still running. Returns a snapshot: elapsed, current step,
+    // total/red slot counts, per-class fill progress.
+    // SessionState=Disabled so this doesn't block on the long-running request.
+    // =========================================================
+    [WebMethod]
+    public void Assign_GetShibutzLiveStatus()
+    {
+        try
+        {
+            int cId = Helper.ConvertToInt(HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+            ShibutzLiveStatus s = Shibutz.GetLiveStatus(cId);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
+            if (s == null)
+            {
+                HttpContext.Current.Response.Write("{\"IsRunning\":false}");
+                return;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("{");
+            sb.Append("\"IsRunning\":").Append(s.IsRunning ? "true" : "false");
+            sb.Append(",\"ElapsedMs\":").Append(s.ElapsedMs);
+            sb.Append(",\"TotalSlots\":").Append(s.TotalSlots);
+            sb.Append(",\"RedSlots\":").Append(s.RedSlots);
+            string step = s.CurrentStep ?? "";
+            sb.Append(",\"CurrentStep\":\"").Append(step.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
+            sb.Append(",\"Classes\":[");
+            if (s.Classes != null)
+            {
+                for (int i = 0; i < s.Classes.Count; i++)
+                {
+                    ClassProgress cp = s.Classes[i];
+                    if (i > 0) sb.Append(",");
+                    sb.Append("{");
+                    sb.Append("\"ClassId\":").Append(cp.ClassId);
+                    string cn = cp.ClassName ?? "";
+                    sb.Append(",\"ClassName\":\"").Append(cn.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
+                    sb.Append(",\"TotalSlots\":").Append(cp.TotalSlots);
+                    sb.Append(",\"FilledSlots\":").Append(cp.FilledSlots);
+                    sb.Append("}");
+                }
+            }
+            sb.Append("]}");
+            HttpContext.Current.Response.Write(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // =========================================================
     // Shibutz progress log - returns step-by-step activity from the
     // last run for the UI to display to the admin ("איך זה עבד")
     // =========================================================
@@ -1385,6 +1446,8 @@ SELECT
   ISNULL(t.FreeDay, 0) AS FreeDay,
   CASE WHEN t.ManageClassId = ct.ClassId THEN 1 ELSE 0 END AS IsHomeroom,
   (SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + cIdForDiag + @") AS TotalRequiredAllClasses,
+  -- Total work hours defined in TeacherHours (including hours that don't exist in SchoolHours)
+  (SELECT COUNT(*) FROM TeacherHours WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + cIdForDiag + @") AS DefinedHourSlots,
   -- Only count hours that EXIST in SchoolHours (and aren't shehya-only)
   (SELECT COUNT(*) FROM TeacherHours th
      INNER JOIN SchoolHours sh ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
