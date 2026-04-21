@@ -962,14 +962,40 @@ export default function TeacherHours() {
                 <div className="th-modal__kicker">הגדרת שעות שבועיות</div>
                 <h2 className="th-modal__title">{teacherFullName}</h2>
               </div>
-              <div className="th-modal__stats">
+              <div
+                className="th-modal__stats"
+                style={{
+                  display: 'flex',
+                  gap: 10,
+                  alignItems: 'stretch',
+                  flexWrap: 'wrap',
+                }}
+              >
                 <div
                   className="th-stat th-stat--primary"
-                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    padding: '10px 14px',
+                    minWidth: 170,
+                  }}
                 >
-                  <span className="th-stat__val" style={{ fontSize: 28, lineHeight: 1 }}>
-                    <strong>{frontalCount}</strong>
-                    <span style={{ fontSize: 16, opacity: 0.8, margin: '0 4px' }}>/</span>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      lineHeight: 1,
+                    }}
+                  >
+                    <strong style={{ fontSize: 32, minWidth: 36, textAlign: 'center' }}>
+                      {frontalCount}
+                    </strong>
+                    <span style={{ fontSize: 22, opacity: 0.8 }}>/</span>
                     <input
                       type="number"
                       min={1}
@@ -992,32 +1018,46 @@ export default function TeacherHours() {
                         }
                       }}
                       style={{
-                        width: 62,
+                        width: 56,
+                        height: 36,
                         fontSize: 22,
                         fontWeight: 700,
+                        lineHeight: 1,
                         textAlign: 'center',
-                        padding: '2px 4px',
-                        border: '1px solid #fff',
-                        borderRadius: 4,
-                        background: maxHoursBusy ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.95)',
+                        padding: '0 4px',
+                        border: '1px solid rgba(255,255,255,0.45)',
+                        borderRadius: 6,
+                        background: maxHoursBusy ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.95)',
                         color: '#1f2937',
+                        boxSizing: 'border-box',
                       }}
                       title="לחץ כדי לערוך את מקסימום השעות"
                     />
+                  </div>
+                  <span
+                    className="th-stat__label"
+                    style={{ whiteSpace: 'nowrap', fontSize: 12, opacity: 0.95 }}
+                  >
+                    שובצו / מקסימום
                   </span>
-                  <span className="th-stat__label">שובצו / מקסימום</span>
                 </div>
+
                 <div
                   className="th-stat"
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'stretch',
-                    gap: 4,
-                    minWidth: 160,
+                    justifyContent: 'center',
+                    gap: 6,
+                    padding: '10px 14px',
+                    minWidth: 170,
                   }}
                 >
-                  <span className="th-stat__label" style={{ textAlign: 'center' }}>
+                  <span
+                    className="th-stat__label"
+                    style={{ textAlign: 'center', whiteSpace: 'nowrap', fontSize: 12, opacity: 0.95 }}
+                  >
                     יום חופשי
                   </span>
                   <select
@@ -1032,15 +1072,16 @@ export default function TeacherHours() {
                       updateFreeDay(v === '' ? '' : Number(v));
                     }}
                     style={{
-                      padding: '4px 8px',
+                      height: 36,
+                      padding: '0 8px',
                       borderRadius: 6,
-                      border: '1px solid #ccc',
-                      fontSize: 13,
-                      background: freeDayBusy ? '#f5f5f5' : '#fff',
+                      border: '1px solid rgba(255,255,255,0.45)',
+                      fontSize: 14,
+                      background: freeDayBusy ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.95)',
                       color: '#1f2937',
                       cursor: freeDayBusy ? 'wait' : 'pointer',
-                      minWidth: 150,
                       fontWeight: 600,
+                      boxSizing: 'border-box',
                     }}
                   >
                     <option value="" style={{ color: '#1f2937' }}>
