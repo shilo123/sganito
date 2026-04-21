@@ -143,6 +143,10 @@ export default function AssignAuto() {
     setLoadingTitle('משבץ בכפייה את החוסרים');
     setIsLoading(true);
     try {
+      // Smart force first: tries to displace other teachers from conflicting slots
+      await ajax('Assign_ShibutzForceSmart');
+      await new Promise((r) => setTimeout(r, 300));
+      // Fallback: simple force for whatever couldn't be displaced
       await ajax('Assign_ShibutzForce');
       await new Promise((r) => setTimeout(r, 300));
       const diag = await fetchDiagnostic();
@@ -154,7 +158,8 @@ export default function AssignAuto() {
         setSuccessAlert(true);
         toast.success('כל החוסרים שובצו בכפייה בהצלחה');
       } else {
-        toast.success('שובצו בכפייה. נותרו ' + diag.length + ' חוסרים שאי אפשר לשבץ');
+        toast.success('שובצו בכפייה. נותרו ' + diag.length + ' חוסרים שאי אפשר לשבץ פיזית');
+        setShowDiagnostic(true);
       }
     } catch (e) {
       console.error('Assign_ShibutzForce failed', e);
@@ -343,6 +348,44 @@ export default function AssignAuto() {
                   <strong>שובצו {savedCount} שעות.</strong> לא ניתן היה לשבץ את{' '}
                   <strong>{diagnostic.length}</strong> השעות הבאות. בדוק את ההמלצות מטה.
                 </div>
+
+                {(() => {
+                  const capacityIssues = diagnostic.filter(
+                    (r) => r.TotalRequiredAllClasses > r.AvailableHourSlots,
+                  );
+                  const uniqueTeachers = Array.from(
+                    new Map(capacityIssues.map((r) => [r.TeacherId, r])).values(),
+                  );
+                  if (uniqueTeachers.length === 0) return null;
+                  return (
+                    <div
+                      className="alert alert-danger"
+                      style={{ marginBottom: 15, borderLeft: '4px solid #d32f2f' }}
+                    >
+                      <strong>
+                        <i className="fa fa-user-times" /> חסרות שעות עבודה למורים:
+                      </strong>
+                      <ul style={{ marginBottom: 0, marginTop: 6 }}>
+                        {uniqueTeachers.map((r) => {
+                          const gap = r.TotalRequiredAllClasses - r.AvailableHourSlots;
+                          return (
+                            <li key={r.TeacherId}>
+                              <strong>{r.TeacherName}</strong>: דרושות{' '}
+                              {r.TotalRequiredAllClasses} שעות שבועיות אך יש רק{' '}
+                              {r.AvailableHourSlots} שעות עבודה מוגדרות (חסרות{' '}
+                              <strong>{gap}</strong> שעות).
+                              <br />
+                              <span style={{ fontSize: 13, color: '#555' }}>
+                                פעולה נדרשת: עבור ל"מערכת מורים" והוסף למורה עוד {gap} שעות
+                                עבודה, או הקטן את דרישות השעות בכיתות.
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  );
+                })()}
                 <table className="table table-bordered table-hover table-striped">
                   <thead>
                     <tr className="warning">

@@ -1322,6 +1322,7 @@ public class WebService : System.Web.Services.WebService
         try
         {
             string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cIdForDiag = Helper.ConvertToInt(configId);
             string sql = @"
 SELECT
   ct.ClassId,
@@ -1335,18 +1336,23 @@ SELECT
   ISNULL(ct.Ihud, 0) AS Ihud,
   ISNULL(t.FreeDay, 0) AS FreeDay,
   CASE WHEN t.ManageClassId = ct.ClassId THEN 1 ELSE 0 END AS IsHomeroom,
-  (SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + Helper.ConvertToInt(configId) + @") AS TotalRequiredAllClasses,
-  (SELECT COUNT(*) FROM TeacherHours WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + Helper.ConvertToInt(configId) + @") AS AvailableHourSlots
+  (SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + cIdForDiag + @") AS TotalRequiredAllClasses,
+  -- Only count hours that EXIST in SchoolHours (and aren't shehya-only)
+  (SELECT COUNT(*) FROM TeacherHours th
+     INNER JOIN SchoolHours sh ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
+     WHERE th.TeacherId = ct.TeacherId
+       AND th.ConfigurationId = " + cIdForDiag + @"
+       AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)) AS AvailableHourSlots
 FROM ClassTeacher ct
 LEFT JOIN (
   SELECT ClassId, TeacherId, COUNT(*) AS Assigned
   FROM TeacherAssignment
-  WHERE ConfigurationId=" + Helper.ConvertToInt(configId) + @" AND HourTypeId=1
+  WHERE ConfigurationId=" + cIdForDiag + @" AND HourTypeId=1
   GROUP BY ClassId, TeacherId
 ) ta ON ta.ClassId=ct.ClassId AND ta.TeacherId=ct.TeacherId
 LEFT JOIN Teacher t ON t.TeacherId=ct.TeacherId
 LEFT JOIN Class c ON c.ClassId=ct.ClassId
-WHERE ct.ConfigurationId=" + Helper.ConvertToInt(configId) + @"
+WHERE ct.ConfigurationId=" + cIdForDiag + @"
   AND (ct.Hour - ISNULL(ta.Assigned, 0)) > 0
 ORDER BY Missing DESC, ct.ClassId, ct.TeacherId
 ";
@@ -1365,6 +1371,167 @@ ORDER BY Missing DESC, ct.ClassId, ct.TeacherId
             r["ErrorMessage"] = ex.Message;
             dt.Rows.Add(r);
             HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+    }
+
+    // =========================================================
+    // Teacher capacity report: highlights teachers whose required hours
+    // across all classes exceed their available working hours. The admin
+    // must either add working hours OR reduce required hours.
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_GetTeacherCapacityReport()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+            string sql = @"
+SELECT
+  t.TeacherId,
+  ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS TotalRequired,
+  ISNULL((SELECT COUNT(*) FROM TeacherHours WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS AvailableHourSlots,
+  ISNULL(t.FreeDay, 0) AS FreeDay,
+  ISNULL(t.ManageClassId, 0) AS ManageClassId
+FROM Teacher t
+WHERE t.ConfigurationId=" + cId + @"
+  AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) > 0
+  AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) >=
+      ISNULL((SELECT COUNT(*) FROM TeacherHours WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) - 1
+ORDER BY (TotalRequired - AvailableHourSlots) DESC";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            DataTable dt = new DataTable();
+            dt.Columns.Add("ErrorMessage", typeof(string));
+            DataRow r = dt.NewRow();
+            r["ErrorMessage"] = ex.Message;
+            dt.Rows.Add(r);
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+    }
+
+    // =========================================================
+    // Force-assign Smart: tries FIRST to displace another teacher
+    // from a conflicting slot if the missing teacher CAN teach that slot
+    // but an unrelated teacher is currently there. Falls back to the
+    // simple force logic otherwise.
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_ShibutzForceSmart()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+
+            string sqlMissing = @"
+SELECT ct.ClassId, ct.TeacherId, (ct.Hour - ISNULL(ta.Assigned, 0)) AS Missing,
+       ISNULL(ct.Hakbatza, 0) AS Hakbatza, ISNULL(ct.Ihud, 0) AS Ihud
+FROM ClassTeacher ct
+LEFT JOIN (
+  SELECT ClassId, TeacherId, COUNT(*) AS Assigned
+  FROM TeacherAssignment
+  WHERE ConfigurationId=" + cId + @" AND HourTypeId=1
+  GROUP BY ClassId, TeacherId
+) ta ON ta.ClassId=ct.ClassId AND ta.TeacherId=ct.TeacherId
+WHERE ct.ConfigurationId=" + cId + @"
+  AND (ct.Hour - ISNULL(ta.Assigned, 0)) > 0";
+            DataTable dtMissing = Dal.GetDataTable(sqlMissing);
+
+            int forced = 0;
+            int displaced = 0;
+            SqlConnection con = Dal.OpenConnection();
+            try
+            {
+                for (int i = 0; i < dtMissing.Rows.Count; i++)
+                {
+                    int classId = Helper.ConvertToInt(dtMissing.Rows[i]["ClassId"].ToString());
+                    int teacherId = Helper.ConvertToInt(dtMissing.Rows[i]["TeacherId"].ToString());
+                    int missing = Helper.ConvertToInt(dtMissing.Rows[i]["Missing"].ToString());
+                    int hak = Helper.ConvertToInt(dtMissing.Rows[i]["Hakbatza"].ToString());
+                    int ihu = Helper.ConvertToInt(dtMissing.Rows[i]["Ihud"].ToString());
+
+                    // Get teacher's professional id
+                    DataTable dtProf = Dal.GetDataTable("SELECT TOP 1 ProfessionalId FROM Teacher WHERE TeacherId=" + teacherId);
+                    int prof = 0;
+                    if (dtProf.Rows.Count > 0) prof = Helper.ConvertToInt(dtProf.Rows[0]["ProfessionalId"].ToString());
+
+                    int remainingToFill = missing;
+
+                    // Stage 1: simple force (empty slot)
+                    string sqlEmptySlots = @"
+SELECT sh.HourId FROM SchoolHours sh
+INNER JOIN TeacherHours th ON th.HourId=sh.HourId AND th.TeacherId=" + teacherId + @" AND th.ConfigurationId=" + cId + @"
+WHERE sh.ConfigurationId=" + cId + @" AND (sh.IsOnlyShehya=0 OR sh.IsOnlyShehya IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM TeacherAssignment ta WHERE ta.ConfigurationId=" + cId + @" AND ta.HourId=sh.HourId AND ta.ClassId=" + classId + @" AND ta.HourTypeId=1)
+  AND NOT EXISTS (SELECT 1 FROM TeacherAssignment ta2 WHERE ta2.ConfigurationId=" + cId + @" AND ta2.TeacherId=" + teacherId + @" AND ta2.HourId=sh.HourId AND ta2.HourTypeId=1)
+ORDER BY sh.HourId";
+                    DataTable dtEmpty = Dal.GetDataTable(sqlEmptySlots);
+                    for (int s = 0; s < dtEmpty.Rows.Count && remainingToFill > 0; s++)
+                    {
+                        int hourId = Helper.ConvertToInt(dtEmpty.Rows[s]["HourId"].ToString());
+                        Dal.ExeSpBig(con, "Assign_SetAssignAuto", cId, teacherId, hourId, 1, classId, prof, hak, ihu);
+                        forced++;
+                        remainingToFill--;
+                    }
+
+                    if (remainingToFill <= 0) continue;
+
+                    // Stage 2: displace another teacher from a conflicting slot
+                    // Find slots (classId, hourId) where: teacher X works at that hour,
+                    // the slot is filled by a different teacher Y, and teacher Y has
+                    // alternatives.
+                    string sqlConflict = @"
+SELECT sh.HourId, ta.TeacherId AS BusyTeacher, ta.AssignmentId
+FROM SchoolHours sh
+INNER JOIN TeacherHours th ON th.HourId=sh.HourId AND th.TeacherId=" + teacherId + @" AND th.ConfigurationId=" + cId + @"
+INNER JOIN TeacherAssignment ta ON ta.HourId=sh.HourId AND ta.ClassId=" + classId + @" AND ta.ConfigurationId=" + cId + @" AND ta.HourTypeId=1
+WHERE sh.ConfigurationId=" + cId + @"
+  AND ta.TeacherId <> " + teacherId + @"
+  AND NOT EXISTS (SELECT 1 FROM TeacherAssignment ta2 WHERE ta2.ConfigurationId=" + cId + @" AND ta2.TeacherId=" + teacherId + @" AND ta2.HourId=sh.HourId AND ta2.HourTypeId=1)
+ORDER BY sh.HourId";
+                    DataTable dtConflict = Dal.GetDataTable(sqlConflict);
+                    for (int s = 0; s < dtConflict.Rows.Count && remainingToFill > 0; s++)
+                    {
+                        int hourId = Helper.ConvertToInt(dtConflict.Rows[s]["HourId"].ToString());
+                        int busyTeacherId = Helper.ConvertToInt(dtConflict.Rows[s]["BusyTeacher"].ToString());
+                        int assignmentId = Helper.ConvertToInt(dtConflict.Rows[s]["AssignmentId"].ToString());
+
+                        // Don't displace homeroom teacher at hour 1 of own class (sacred)
+                        DataTable dtHomeroom = Dal.GetDataTable("SELECT TOP 1 ManageClassId FROM Teacher WHERE TeacherId=" + busyTeacherId);
+                        if (dtHomeroom.Rows.Count > 0)
+                        {
+                            int mcId = Helper.ConvertToInt(dtHomeroom.Rows[0]["ManageClassId"].ToString());
+                            if (mcId == classId && (hourId % 10) == 1) continue;
+                        }
+
+                        // Delete the blocker
+                        Dal.ExecuteNonQuery("DELETE FROM TeacherAssignment WHERE AssignmentId=" + assignmentId);
+                        // Insert the missing teacher
+                        Dal.ExeSpBig(con, "Assign_SetAssignAuto", cId, teacherId, hourId, 1, classId, prof, hak, ihu);
+                        forced++;
+                        displaced++;
+                        remainingToFill--;
+                    }
+                }
+            }
+            finally { Dal.CloseConnection(con); }
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Forced\":" + forced + ",\"Displaced\":" + displaced + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
         }
     }
 
