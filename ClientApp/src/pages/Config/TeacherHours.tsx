@@ -174,6 +174,7 @@ export default function TeacherHours() {
   } | null>(null);
   const [quotaValue, setQuotaValue] = useState<number>(0);
   const [quotaBusy, setQuotaBusy] = useState(false);
+  const [freeDayBusy, setFreeDayBusy] = useState(false);
   const [busyCells, setBusyCells] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
@@ -619,6 +620,44 @@ export default function TeacherHours() {
     }
   }
 
+  async function updateFreeDay(newFreeDay: number | '') {
+    if (!selectedTeacher) return;
+    if (freeDayBusy) return;
+    setFreeDayBusy(true);
+    try {
+      const t = selectedTeacher;
+      await ajax('Teacher_DML', {
+        TeacherId: t.TeacherId,
+        Tafkid: t.TafkidId ?? '',
+        ProfessionalId: t.ProfessionalId ?? '',
+        FirstName: t.FirstName ?? '',
+        LastName: t.LastName ?? '',
+        Email: t.Email ?? '',
+        Frontaly: t.Frontaly ?? '',
+        FreeDay: newFreeDay === '' ? '' : String(newFreeDay),
+        Tz: t.Tz ?? '',
+        Shehya: t.Shehya ?? '',
+        Partani: t.Partani ?? '',
+        Type: 1,
+      });
+      const updated: Teacher = { ...t, FreeDay: newFreeDay === '' ? null : newFreeDay };
+      setSelectedTeacher(updated);
+      setTeachers((prev) =>
+        prev.map((x) => (String(x.TeacherId) === String(updated.TeacherId) ? updated : x)),
+      );
+      if (newFreeDay === '') {
+        toast.success('בוטל יום חופשי');
+      } else {
+        toast.success(`יום חופשי עודכן ל${DAYS[Number(newFreeDay) - 1]?.label || 'יום ' + newFreeDay}`);
+      }
+    } catch (err) {
+      console.error('updateFreeDay failed', err);
+      toast.error('עדכון יום חופשי נכשל');
+    } finally {
+      setFreeDayBusy(false);
+    }
+  }
+
   async function updateFrontalyQuota(newVal: number) {
     if (!selectedTeacher || !quotaModal) return;
     if (!Number.isFinite(newVal) || newVal <= 0) {
@@ -877,8 +916,53 @@ export default function TeacherHours() {
               </div>
               <div className="th-modal__stats">
                 <div className="th-stat th-stat--primary">
-                  <span className="th-stat__val">{String(frontaly)}</span>
-                  <span className="th-stat__label">שעות פרונטלי</span>
+                  <span className="th-stat__val">
+                    {frontalCount}
+                    <span style={{ fontSize: 18, opacity: 0.7 }}>/{String(frontaly)}</span>
+                  </span>
+                  <span className="th-stat__label">שובצו / נדרשות</span>
+                </div>
+                <div
+                  className="th-stat"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'stretch',
+                    gap: 4,
+                    minWidth: 160,
+                  }}
+                >
+                  <span className="th-stat__label" style={{ textAlign: 'center' }}>
+                    יום חופשי
+                  </span>
+                  <select
+                    value={
+                      selectedTeacher?.FreeDay == null || selectedTeacher.FreeDay === ''
+                        ? ''
+                        : String(selectedTeacher.FreeDay)
+                    }
+                    disabled={freeDayBusy}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      updateFreeDay(v === '' ? '' : Number(v));
+                    }}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 6,
+                      border: '1px solid #ccc',
+                      fontSize: 13,
+                      background: freeDayBusy ? '#f5f5f5' : '#fff',
+                      cursor: freeDayBusy ? 'wait' : 'pointer',
+                      minWidth: 150,
+                    }}
+                  >
+                    <option value="">בלי יום חופשי</option>
+                    {DAYS.map((d) => (
+                      <option key={d.num} value={d.num}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
               <button
@@ -919,8 +1003,35 @@ export default function TeacherHours() {
                 {DAYS.map((d) => {
                   const cells = dayCells[d.num] ?? [];
                   const dayCount = cells.filter((c) => c.HourTypeId === 1).length;
+                  const isFreeDay = Number(selectedTeacher?.FreeDay ?? 0) === d.num;
                   return (
-                    <div className="th-day" key={d.num}>
+                    <div
+                      className={`th-day${isFreeDay ? ' th-day--free' : ''}`}
+                      key={d.num}
+                      style={
+                        isFreeDay
+                          ? { opacity: 0.55, position: 'relative' }
+                          : undefined
+                      }
+                    >
+                      {isFreeDay && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: 4,
+                            left: 4,
+                            background: '#fbc02d',
+                            color: '#000',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: '2px 6px',
+                            borderRadius: 4,
+                            zIndex: 2,
+                          }}
+                        >
+                          יום חופשי
+                        </div>
+                      )}
                       <div className="th-day__header">
                         <span className="th-day__name">{d.label}</span>
                         <span className="th-day__badge" title="שיבוצי כיתה ביום זה">
