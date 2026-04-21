@@ -154,6 +154,10 @@ export default function TeacherHours() {
   const [teacherHours, setTeacherHours] = useState<TeacherHourRow[]>([]);
   const [teacherAssignments, setTeacherAssignments] = useState<AssignmentRow[]>([]);
   const [hoursLoading, setHoursLoading] = useState(false);
+
+  // Which (day*10+seq) IDs exist as actual school hours, and which are shehya-only
+  const [schoolHourIds, setSchoolHourIds] = useState<Set<string>>(new Set());
+  const [shehyaOnlyHourIds, setShehyaOnlyHourIds] = useState<Set<string>>(new Set());
   const [tafkidOptions, setTafkidOptions] = useState<Array<{ TafkidId: number; Name: string }>>([]);
   const [classOptions, setClassOptions] = useState<Array<{ ClassId: number; ClassName: string }>>([]);
   const [filterName, setFilterName] = useState('');
@@ -257,11 +261,27 @@ export default function TeacherHours() {
         .then((rows) => { if (!cancelled) setTafkidOptions(Array.isArray(rows) ? rows : []); }),
       ajax<Array<{ ClassId: number; ClassName: string; LayerId?: number }>>('Class_GetAllClass')
         .then((rows) => { if (!cancelled) setClassOptions(Array.isArray(rows) ? rows : []); }),
+      ajax<Array<{ HourId: number | string; IsOnlyShehya?: number | string | boolean | null }>>(
+        'Gen_GetTable',
+        { TableName: 'SchoolHours', Condition: `ConfigurationId=${configurationId}` },
+      ).then((rows) => {
+        if (cancelled) return;
+        const all = new Set<string>();
+        const shehyaOnly = new Set<string>();
+        for (const r of rows || []) {
+          const id = String(r.HourId);
+          all.add(id);
+          const v = String(r.IsOnlyShehya ?? '');
+          if (v === '1' || v.toLowerCase() === 'true') shehyaOnly.add(id);
+        }
+        setSchoolHourIds(all);
+        setShehyaOnlyHourIds(shehyaOnly);
+      }),
     ]).finally(() => {
       if (!cancelled) setInitialLoading(false);
     });
     return () => { cancelled = true; };
-  }, [loadTeachers]);
+  }, [loadTeachers, configurationId]);
 
   const sortedTeachers = useMemo(() => {
     const toStr = (v: unknown) => (v == null ? '' : String(v));
@@ -479,6 +499,15 @@ export default function TeacherHours() {
   const onCellMouseDown = (e: React.MouseEvent, hourId: string) => {
     if (e.button !== 0 || !selectedTeacher) return;
     if (busyCellsRef.current.has(hourId)) return;
+    // Block interaction on hours that aren't defined in SchoolHours for this config
+    if (schoolHourIds.size > 0 && !schoolHourIds.has(hourId)) {
+      toast.warning('שעה זו אינה מוגדרת כשעת לימוד בבית הספר. הוסף אותה תחילה במסך "שעות בית הספר"', { title: 'שעה לא זמינה' });
+      return;
+    }
+    if (shehyaOnlyHourIds.has(hourId)) {
+      toast.info('שעה זו מוגדרת כ"שהייה בלבד". ניתן להגדיר רק שהייה/פרטני דרך תפריט קליק-ימני');
+      return;
+    }
     const existing = hourMap[hourId];
     // תא נחשב "מסומן" רק אם יש לו HourTypeId (1=שיבוץ, 2=פרטני, 3=שהייה).
     // רשומות ללא HourTypeId הן רק מידע על שעות פתוחות בביה"ס - תא ריק למשתמש.
@@ -527,6 +556,9 @@ export default function TeacherHours() {
     if (!dragActive.current || !dragMode.current || !selectedTeacher) return;
     if (draggedCells.current.has(hourId)) return;
     if (busyCellsRef.current.has(hourId)) return;
+    // Don't drag over non-school-hour or shehya-only cells
+    if (schoolHourIds.size > 0 && !schoolHourIds.has(hourId)) return;
+    if (shehyaOnlyHourIds.has(hourId)) return;
     const existing = hourMap[hourId];
     const existingType = existing ? Number(existing.HourTypeId ?? 0) : 0;
     const isMarked = existingType === 1 || existingType === 2 || existingType === 3;
@@ -881,6 +913,49 @@ export default function TeacherHours() {
                           const hourId = `${d.num}${seq}`;
                           const cell = cells.find((c) => c.seq === seq);
                           const isBusy = busyCells.has(hourId);
+                          const schoolHas = schoolHourIds.size === 0 || schoolHourIds.has(hourId);
+                          const isShehyaOnly = shehyaOnlyHourIds.has(hourId);
+                          if (!schoolHas) {
+                            return (
+                              <div
+                                key={`na-${hourId}`}
+                                id={hourId}
+                                className="th-cell th-cell--empty th-cell--unavailable"
+                                title="שעה זו אינה מוגדרת כשעת לימוד בבית הספר"
+                              >
+                                <div className="th-cell__meta">
+                                  <span className="th-cell__seq">{seq}</span>
+                                  <span className="th-cell__time">{HOUR_TIME_RANGES[seq]}</span>
+                                </div>
+                                <div className="th-cell__na" style={{ fontSize: 11, color: '#999', textAlign: 'center', marginTop: 6 }}>
+                                  לא קיים בבי"ס
+                                </div>
+                              </div>
+                            );
+                          }
+                          if (isShehyaOnly && !cell) {
+                            return (
+                              <div
+                                key={`so-${hourId}`}
+                                id={hourId}
+                                className="th-cell th-cell--empty th-cell--shehya-only"
+                                title='שעה זו מוגדרת כ"שהייה בלבד"'
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  if (!selectedTeacher) return;
+                                  setMenu({ visible: true, x: e.clientX, y: e.clientY, hourId, HourTypeId: 0 });
+                                }}
+                              >
+                                <div className="th-cell__meta">
+                                  <span className="th-cell__seq">{seq}</span>
+                                  <span className="th-cell__time">{HOUR_TIME_RANGES[seq]}</span>
+                                </div>
+                                <div className="th-cell__na" style={{ fontSize: 11, color: '#888', textAlign: 'center', marginTop: 6 }}>
+                                  שהייה בלבד
+                                </div>
+                              </div>
+                            );
+                          }
                           if (cell) {
                             const variant = hourTypeVariant(cell.HourTypeId, cell.teacherHas);
                             return (

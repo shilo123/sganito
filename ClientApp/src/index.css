@@ -4945,6 +4945,42 @@ input[type='radio'] {
   color: var(--primary-deep);
 }
 
+.th-cell--unavailable {
+  background: repeating-linear-gradient(
+    45deg,
+    #e5e5e5,
+    #e5e5e5 4px,
+    #d4d4d4 4px,
+    #d4d4d4 8px
+  ) !important;
+  border: 1px dashed #9ca3af !important;
+  color: #6b7280 !important;
+  cursor: not-allowed !important;
+  opacity: 0.65;
+}
+.th-cell--unavailable:hover {
+  background: repeating-linear-gradient(
+    45deg,
+    #e5e5e5,
+    #e5e5e5 4px,
+    #d4d4d4 4px,
+    #d4d4d4 8px
+  ) !important;
+  border: 1px dashed #9ca3af !important;
+  color: #6b7280 !important;
+}
+
+.th-cell--shehya-only {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%) !important;
+  border: 1px dashed #d97706 !important;
+  color: #92400e !important;
+  cursor: pointer;
+}
+.th-cell--shehya-only:hover {
+  background: linear-gradient(135deg, #fde68a 0%, #fcd34d 100%) !important;
+  border: 1px dashed #b45309 !important;
+}
+
 .th-cell--regular {
   background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
   color: white;
