@@ -952,13 +952,17 @@ export default function TeacherHours() {
                       border: '1px solid #ccc',
                       fontSize: 13,
                       background: freeDayBusy ? '#f5f5f5' : '#fff',
+                      color: '#1f2937',
                       cursor: freeDayBusy ? 'wait' : 'pointer',
                       minWidth: 150,
+                      fontWeight: 600,
                     }}
                   >
-                    <option value="">בלי יום חופשי</option>
+                    <option value="" style={{ color: '#1f2937' }}>
+                      בלי יום חופשי
+                    </option>
                     {DAYS.map((d) => (
-                      <option key={d.num} value={d.num}>
+                      <option key={d.num} value={d.num} style={{ color: '#1f2937' }}>
                         {d.label}
                       </option>
                     ))}
