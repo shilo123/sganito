@@ -1324,6 +1324,186 @@ public class WebService : System.Web.Services.WebService
 
     
     // =========================================================
+    // Summary: how many weekly-schedule slots remain EMPTY.
+    // A slot is (ClassId, HourId) where the class would have a lesson
+    // but no teacher is assigned. This is the only error the admin
+    // actually sees in the schedule grid.
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_GetEmptySlotsCount()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+            string sql = @"
+SELECT COUNT(*) AS EmptySlots FROM (
+  SELECT c.ClassId, sh.HourId
+  FROM Class c
+  CROSS JOIN SchoolHours sh
+  WHERE c.ConfigurationId = " + cId + @"
+    AND sh.ConfigurationId = " + cId + @"
+    AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+  EXCEPT
+  SELECT DISTINCT ClassId, HourId
+  FROM TeacherAssignment
+  WHERE ConfigurationId = " + cId + @" AND HourTypeId = 1
+) e";
+            DataTable dt = Dal.GetDataTable(sql);
+            int empty = 0;
+            if (dt.Rows.Count > 0) empty = Helper.ConvertToInt(dt.Rows[0]["EmptySlots"].ToString());
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"EmptySlots\":" + empty + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // =========================================================
+    // Smart auto-assignment of teacher work hours.
+    // For every teacher:
+    //   - Required = SUM(ClassTeacher.Hour) for that teacher
+    //   - Skip the teacher's FreeDay
+    //   - Skip SchoolHours with IsOnlyShehya=1
+    //   - Homeroom teachers (Tafkid=1 with ManageClassId) get FIRST HOUR
+    //     of every working day before anything else (they start the day
+    //     with their class).
+    //   - Then fill remaining hours from the earliest free SchoolHours.
+    // This is a full re-plan: existing TeacherHours are preserved; only
+    // missing ones are added. We never DELETE existing hours.
+    // Returns { Added: int, Teachers: int, Details: [...] }
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Teacher_AutoAssignHoursSmart()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+
+            // Get every teacher's quota, FreeDay, Tafkid, ManageClassId
+            string sqlTeachers = @"
+SELECT t.TeacherId, ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ISNULL(t.FreeDay, 0) AS FreeDay,
+  ISNULL(t.TafkidId, 0) AS TafkidId,
+  ISNULL(t.ManageClassId, 0) AS ManageClassId,
+  ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS TotalRequired
+FROM Teacher t
+WHERE t.ConfigurationId = " + cId + @"
+  AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) > 0";
+            DataTable dtTeachers = Dal.GetDataTable(sqlTeachers);
+
+            // Load SchoolHours once
+            string sqlHours = "SELECT HourId FROM SchoolHours WHERE ConfigurationId=" + cId + " AND (IsOnlyShehya=0 OR IsOnlyShehya IS NULL) ORDER BY HourId";
+            DataTable dtHours = Dal.GetDataTable(sqlHours);
+            List<int> allSchoolHours = new List<int>();
+            for (int i = 0; i < dtHours.Rows.Count; i++)
+                allSchoolHours.Add(Helper.ConvertToInt(dtHours.Rows[i]["HourId"].ToString()));
+
+            int totalAdded = 0;
+            int teachersTouched = 0;
+            var details = new List<string>();
+
+            for (int i = 0; i < dtTeachers.Rows.Count; i++)
+            {
+                int teacherId = Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString());
+                string teacherName = dtTeachers.Rows[i]["TeacherName"].ToString().Trim();
+                int freeDay = Helper.ConvertToInt(dtTeachers.Rows[i]["FreeDay"].ToString());
+                int tafkid = Helper.ConvertToInt(dtTeachers.Rows[i]["TafkidId"].ToString());
+                int manageClass = Helper.ConvertToInt(dtTeachers.Rows[i]["ManageClassId"].ToString());
+                int totalRequired = Helper.ConvertToInt(dtTeachers.Rows[i]["TotalRequired"].ToString());
+                bool isHomeroom = tafkid == 1 && manageClass > 0;
+
+                // Load current TeacherHours for this teacher
+                DataTable dtCur = Dal.GetDataTable("SELECT HourId FROM TeacherHours WHERE TeacherId=" + teacherId + " AND ConfigurationId=" + cId);
+                HashSet<int> currentHours = new HashSet<int>();
+                for (int j = 0; j < dtCur.Rows.Count; j++)
+                    currentHours.Add(Helper.ConvertToInt(dtCur.Rows[j]["HourId"].ToString()));
+
+                // Pre-plan the ideal slots this teacher should have (in priority order)
+                List<int> desiredSlots = new List<int>();
+
+                // 1. Homeroom - hour 1 of every working day (except FreeDay)
+                if (isHomeroom)
+                {
+                    for (int day = 1; day <= 6; day++)
+                    {
+                        if (day == freeDay) continue;
+                        int hourId = day * 10 + 1;
+                        if (allSchoolHours.Contains(hourId)) desiredSlots.Add(hourId);
+                    }
+                }
+
+                // 2. Fill remaining slots from earliest SchoolHours onwards (skipping FreeDay)
+                foreach (int h in allSchoolHours)
+                {
+                    int day = h / 10;
+                    if (day == freeDay) continue;
+                    if (desiredSlots.Contains(h)) continue;
+                    desiredSlots.Add(h);
+                }
+
+                // Count how many we currently have that already intersect the
+                // valid schoolhours (real available)
+                int realAvailable = 0;
+                foreach (int h in currentHours)
+                    if (allSchoolHours.Contains(h) && (h / 10) != freeDay) realAvailable++;
+
+                int needed = totalRequired - realAvailable;
+                if (needed <= 0) continue;
+
+                int added = 0;
+                foreach (int hourId in desiredSlots)
+                {
+                    if (added >= needed) break;
+                    if (currentHours.Contains(hourId)) continue;
+                    try
+                    {
+                        Dal.ExeSp("Teacher_SetTeacherHours", teacherId.ToString(), hourId.ToString(), "1", configId);
+                        currentHours.Add(hourId);
+                        added++;
+                    }
+                    catch { /* race/duplicate - skip */ }
+                }
+
+                if (added > 0)
+                {
+                    totalAdded += added;
+                    teachersTouched++;
+                    string tag = isHomeroom ? " (מחנך)" : "";
+                    details.Add(teacherName + tag + ": +" + added + " שעות (דרוש " + totalRequired + ")");
+                }
+            }
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
+            var sb = new System.Text.StringBuilder();
+            sb.Append("{\"Added\":").Append(totalAdded);
+            sb.Append(",\"Teachers\":").Append(teachersTouched);
+            sb.Append(",\"Details\":[");
+            for (int d = 0; d < details.Count; d++)
+            {
+                if (d > 0) sb.Append(",");
+                sb.Append("\"").Append(details[d].Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
+            }
+            sb.Append("]}");
+            HttpContext.Current.Response.Write(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // =========================================================
     // Auto-add work hours for teachers who have a required-vs-available gap.
     // For every teacher where SUM(ClassTeacher.Hour) > their real available
     // hours (TeacherHours intersected with SchoolHours, excluding shehya-only

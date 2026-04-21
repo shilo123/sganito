@@ -844,6 +844,58 @@ export default function TeacherHours() {
     [selectedTeacher, loadTeacherHours],
   );
 
+  const [autoAssignBusy, setAutoAssignBusy] = useState(false);
+  const [autoAssignResult, setAutoAssignResult] = useState<{
+    added: number;
+    teachers: number;
+    details: string[];
+  } | null>(null);
+
+  async function runAutoAssignSmart() {
+    if (autoAssignBusy) return;
+    const ok = window.confirm(
+      'פעולה זו תוסיף שעות עבודה לכל המורים שחסרות להם שעות, תוך:\n' +
+        '• התחשבות ביום החופשי של כל מורה\n' +
+        '• מחנכים מקבלים אוטומטית את שעה 1 של כל יום (התחלת יום בכיתתם)\n' +
+        '• כיסוי כל השעות הדרושות לפי הגדרות "הגדרת כיתות ומורים"\n\n' +
+        'להמשיך?',
+    );
+    if (!ok) return;
+    setAutoAssignBusy(true);
+    setAutoAssignResult(null);
+    try {
+      const raw = await fetch('/WebService.asmx/Teacher_AutoAssignHoursSmart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
+        body: '',
+        credentials: 'include',
+      });
+      if (!raw.ok) throw new Error('HTTP ' + raw.status);
+      const data = await raw.json();
+      setAutoAssignResult({
+        added: Number(data?.Added || 0),
+        teachers: Number(data?.Teachers || 0),
+        details: Array.isArray(data?.Details) ? data.Details : [],
+      });
+      if (Number(data?.Added || 0) === 0) {
+        toast.info('לא נמצאו מורים שדורשים הוספת שעות עבודה');
+      } else {
+        toast.success(`הוגדרו ${data.Added} שעות ל-${data.Teachers} מורים`);
+      }
+      // Reload current teacher's hours if any is open
+      if (selectedTeacher) {
+        loadTeacherHours(selectedTeacher.TeacherId);
+      }
+      // Reload teacher list (so FreeDay / Frontaly display is fresh)
+      loadTeachers();
+    } catch (e) {
+      console.error('Teacher_AutoAssignHoursSmart failed', e);
+      toast.error('שיבוץ שעות אוטומטי נכשל');
+    } finally {
+      setAutoAssignBusy(false);
+    }
+  }
+
   const onMenuDefineShehya = () => {
     // במקור OpenShyaPartani(Obj, 1) פותח חלון מודלי לבחירת קבוצה ומורים.
     // השארנו כאן הודעה שמציינת שדרושה הגדרת שהייה מלאה; ניתן להרחיב בהמשך.
@@ -896,10 +948,54 @@ export default function TeacherHours() {
       <div className="col-md-12">
         <div className="row dvWeek">
           <div className="panel panel-info">
-            <div className="panel-heading">
-              <h3 className="panel-title">&nbsp;בחירת מורה</h3>
+            <div
+              className="panel-heading"
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+            >
+              <h3 className="panel-title" style={{ margin: 0 }}>
+                &nbsp;בחירת מורה
+              </h3>
+              <button
+                type="button"
+                className="btn btn-warning btn-sm"
+                onClick={runAutoAssignSmart}
+                disabled={autoAssignBusy}
+                title="הגדר אוטומטית שעות עבודה לכל המורים - מחנכים בשעה 1, תוך התחשבות ביום חופשי והגדרות כיתות-מורים"
+              >
+                {autoAssignBusy ? (
+                  <>
+                    <span className="spinner" /> מגדיר שעות...
+                  </>
+                ) : (
+                  <>
+                    <i className="fa fa-magic" /> שיבוץ שעות אוטומטי
+                  </>
+                )}
+              </button>
             </div>
             <div className="panel-body">
+              {autoAssignResult && autoAssignResult.added > 0 && (
+                <div
+                  className="alert alert-success"
+                  style={{ marginBottom: 10, padding: '8px 12px' }}
+                  onClick={() => setAutoAssignResult(null)}
+                >
+                  <strong>
+                    <i className="fa fa-check-circle" /> הוגדרו {autoAssignResult.added} שעות ל-
+                    {autoAssignResult.teachers} מורים
+                  </strong>
+                  {autoAssignResult.details.length > 0 && (
+                    <ul style={{ marginBottom: 0, marginTop: 6, fontSize: 13 }}>
+                      {autoAssignResult.details.slice(0, 10).map((d, i) => (
+                        <li key={i}>{d}</li>
+                      ))}
+                      {autoAssignResult.details.length > 10 && (
+                        <li>...ועוד {autoAssignResult.details.length - 10} מורים</li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              )}
               <div className="col-md-4">
                 <input
                   type="text"

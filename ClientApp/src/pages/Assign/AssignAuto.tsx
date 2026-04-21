@@ -172,8 +172,33 @@ export default function AssignAuto() {
       const result = await fetchShibutzErrors();
       const diag = await fetchDiagnostic();
       setDiagnostic(diag);
-      if (diag.length > 0) {
-        setSavedCount(result.savedCount);
+
+      // Determine if there are REAL empty cells in the weekly grid
+      let emptyCells = 0;
+      try {
+        const es = await ajax<{ EmptySlots?: number }>('Assign_GetEmptySlotsCount');
+        emptyCells = Number(es?.EmptySlots ?? 0);
+      } catch {
+        // fall through - if the call fails, assume worst case and show diagnostic
+        emptyCells = diag.length;
+      }
+
+      // Use the live-status total-slots minus empty to show the real saved count
+      // (result.savedCount is often 0 because session state doesn't persist
+      // across the long-running request)
+      const totalSlots = finalSt?.TotalSlots ?? 0;
+      const realSaved =
+        totalSlots > 0 ? totalSlots - emptyCells : result.savedCount;
+
+      if (emptyCells === 0) {
+        // Every slot in the grid is filled - show success (even if some
+        // teacher-class hours are not fully counted due to hakbatza partners).
+        setSavedCount(realSaved);
+        setResultMode('success');
+        setShowResults(true);
+        setSuccessAlert(true);
+      } else if (diag.length > 0) {
+        setSavedCount(realSaved);
         setErrorCount(diag.length);
         setShowDiagnostic(true);
         setSuccessAlert(true);
@@ -464,15 +489,6 @@ export default function AssignAuto() {
             >
               <i className="fa fa-wrench" />
               <span>תקן חוסרים (הזזות)</span>
-            </button>
-            <button
-              type="button"
-              className="assign-auto__btn assign-auto__btn--warning"
-              onClick={doAutoSetHoursBtn}
-              title="הוסף אוטומטית שעות עבודה למורים שדרושות להם יותר שעות ממה שמוגדר"
-            >
-              <i className="fa fa-magic" />
-              <span>הגדר שעות אוטומטית</span>
             </button>
             <button
               type="button"
