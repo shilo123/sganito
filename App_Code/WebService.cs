@@ -1324,6 +1324,113 @@ public class WebService : System.Web.Services.WebService
 
     
     // =========================================================
+    // Auto-add work hours for teachers who have a required-vs-available gap.
+    // For every teacher where SUM(ClassTeacher.Hour) > their real available
+    // hours (TeacherHours intersected with SchoolHours, excluding shehya-only
+    // and their FreeDay), add the missing hours from free SchoolHours slots.
+    // Returns { Added: int, Teachers: int, Details: [...] }
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Teacher_AutoAddHours()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+
+            // Find teachers that need more hours
+            string sqlTeachers = @"
+SELECT t.TeacherId, ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ISNULL(t.FreeDay, 0) AS FreeDay,
+  ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS TotalRequired,
+  ISNULL((
+    SELECT COUNT(*) FROM TeacherHours th
+      INNER JOIN SchoolHours sh ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
+    WHERE th.TeacherId = t.TeacherId AND th.ConfigurationId = " + cId + @"
+      AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+  ), 0) AS AvailableReal
+FROM Teacher t
+WHERE t.ConfigurationId = " + cId + @"
+  AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) > 0";
+
+            DataTable dtTeachers = Dal.GetDataTable(sqlTeachers);
+
+            int totalAdded = 0;
+            int teachersTouched = 0;
+            var details = new List<string>();
+
+            for (int i = 0; i < dtTeachers.Rows.Count; i++)
+            {
+                int teacherId = Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString());
+                string teacherName = dtTeachers.Rows[i]["TeacherName"].ToString().Trim();
+                int freeDay = Helper.ConvertToInt(dtTeachers.Rows[i]["FreeDay"].ToString());
+                int totalRequired = Helper.ConvertToInt(dtTeachers.Rows[i]["TotalRequired"].ToString());
+                int availableReal = Helper.ConvertToInt(dtTeachers.Rows[i]["AvailableReal"].ToString());
+
+                int gap = totalRequired - availableReal;
+                if (gap <= 0) continue;
+
+                // Find free school hours for this teacher (not yet in TeacherHours, not shehya-only, not on FreeDay)
+                string sqlFree = @"
+SELECT TOP " + gap + @" sh.HourId
+FROM SchoolHours sh
+WHERE sh.ConfigurationId = " + cId + @"
+  AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+  AND (sh.HourId / 10) <> " + freeDay + @"
+  AND NOT EXISTS (
+    SELECT 1 FROM TeacherHours th
+    WHERE th.TeacherId = " + teacherId + @"
+      AND th.ConfigurationId = " + cId + @"
+      AND th.HourId = sh.HourId
+  )
+ORDER BY sh.HourId";
+
+                DataTable dtFree = Dal.GetDataTable(sqlFree);
+                int added = 0;
+                for (int j = 0; j < dtFree.Rows.Count; j++)
+                {
+                    int hourId = Helper.ConvertToInt(dtFree.Rows[j]["HourId"].ToString());
+                    try
+                    {
+                        // Type=1 inserts or marks the slot for the teacher
+                        Dal.ExeSp("Teacher_SetTeacherHours", teacherId.ToString(), hourId.ToString(), "1", configId);
+                        added++;
+                    }
+                    catch { /* already exists - skip */ }
+                }
+
+                if (added > 0)
+                {
+                    totalAdded += added;
+                    teachersTouched++;
+                    details.Add(teacherName + ": +" + added + " שעות (דרוש " + totalRequired + ", היה " + availableReal + ")");
+                }
+            }
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
+            var sb = new System.Text.StringBuilder();
+            sb.Append("{\"Added\":").Append(totalAdded);
+            sb.Append(",\"Teachers\":").Append(teachersTouched);
+            sb.Append(",\"Details\":[");
+            for (int d = 0; d < details.Count; d++)
+            {
+                if (d > 0) sb.Append(",");
+                sb.Append("\"").Append(details[d].Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
+            }
+            sb.Append("]}");
+            HttpContext.Current.Response.Write(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // =========================================================
     // Live progress polling (no Session) - used while Assign_ShibutzAuto
     // is still running. Returns a snapshot: elapsed, current step,
     // total/red slot counts, per-class fill progress.

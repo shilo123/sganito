@@ -190,6 +190,58 @@ export default function AssignAuto() {
     }
   }
 
+  async function doAutoAddTeacherHours(): Promise<{ added: number; teachers: number; details: string[] } | null> {
+    try {
+      const raw = await fetch('/WebService.asmx/Teacher_AutoAddHours', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
+        body: '',
+        credentials: 'include',
+      });
+      if (!raw.ok) return null;
+      const data = await raw.json();
+      if (!data || typeof data !== 'object') return null;
+      return {
+        added: Number(data.Added || 0),
+        teachers: Number(data.Teachers || 0),
+        details: Array.isArray(data.Details) ? data.Details : [],
+      };
+    } catch (e) {
+      console.error('Teacher_AutoAddHours failed', e);
+      return null;
+    }
+  }
+
+  async function doAutoSetHoursBtn() {
+    setLoadingTitle('מגדיר שעות עבודה אוטומטית למורים');
+    setIsLoading(true);
+    try {
+      const res = await doAutoAddTeacherHours();
+      if (!res) {
+        toast.error('הגדרת שעות אוטומטית נכשלה');
+        return;
+      }
+      if (res.added === 0) {
+        toast.info('לא נמצאו מורים שדורשים הוספת שעות עבודה');
+        return;
+      }
+      toast.success(
+        `הוגדרו ${res.added} שעות עבודה ל-${res.teachers} מורים`,
+      );
+      // Refresh the diagnostic if visible
+      if (showDiagnostic) {
+        const diag = await fetchDiagnostic();
+        setDiagnostic(diag);
+        if (diag.length === 0) setShowDiagnostic(false);
+      }
+    } catch (e) {
+      console.error(e);
+      toast.error('שגיאה בהגדרת שעות אוטומטית');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function doForceAssign() {
     setLoadingTitle('משבץ בכפייה את החוסרים');
     setIsLoading(true);
@@ -415,6 +467,15 @@ export default function AssignAuto() {
             </button>
             <button
               type="button"
+              className="assign-auto__btn assign-auto__btn--warning"
+              onClick={doAutoSetHoursBtn}
+              title="הוסף אוטומטית שעות עבודה למורים שדרושות להם יותר שעות ממה שמוגדר"
+            >
+              <i className="fa fa-magic" />
+              <span>הגדר שעות אוטומטית</span>
+            </button>
+            <button
+              type="button"
               className="assign-auto__btn assign-auto__btn--danger"
               onClick={() => setShowDeleteModal(true)}
             >
@@ -498,9 +559,25 @@ export default function AssignAuto() {
                       className="alert alert-danger"
                       style={{ marginBottom: 15, borderLeft: '4px solid #d32f2f' }}
                     >
-                      <strong>
-                        <i className="fa fa-user-times" /> חסרות שעות עבודה למורים:
-                      </strong>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+                        <strong>
+                          <i className="fa fa-user-times" /> חסרות שעות עבודה למורים:
+                        </strong>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-warning"
+                          onClick={async () => {
+                            await doAutoSetHoursBtn();
+                            // Re-run diagnostic to refresh the view
+                            const diag = await fetchDiagnostic();
+                            setDiagnostic(diag);
+                            if (diag.length === 0) setShowDiagnostic(false);
+                          }}
+                          title="הגדר אוטומטית שעות עבודה לכל המורים שחסרות להם"
+                        >
+                          <i className="fa fa-magic" /> הגדר שעות אוטומטית לכולם
+                        </button>
+                      </div>
                       <ul style={{ marginBottom: 0, marginTop: 6 }}>
                         {uniqueTeachers.map((r) => {
                           const gap = r.TotalRequiredAllClasses - r.AvailableHourSlots;
