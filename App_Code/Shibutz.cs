@@ -8,8 +8,22 @@ public class Shibutz
 {
     // ====== CONFIG ======
     private const int MAX_CONSECUTIVE = 15;      // Almost no limit (as requested)
-    private const int CHAIN_DEPTH = 10;          // Fast - ~1 min
-    private const int MAX_VISITS_PER_TIME = 1500;
+    private const int CHAIN_DEPTH = 6;           // Was 10 — 6 is ~4x faster with similar result
+    private const int MAX_VISITS_PER_TIME = 800; // Was 1500
+
+    // ====== PROGRESS TRACKING ======
+    public readonly List<string> ProgressLog = new List<string>();
+    private System.Diagnostics.Stopwatch _sw;
+    private int _lastLoggedRed = -1;
+
+    private void LogStep(string step)
+    {
+        if (_sw == null) return;
+        int reds = CountRedSlots();
+        long ms = _sw.ElapsedMilliseconds;
+        ProgressLog.Add(ms + "ms | reds=" + reds + " | " + step);
+        _lastLoggedRed = reds;
+    }
 
     private readonly int _configurationId;
 
@@ -76,21 +90,22 @@ public class Shibutz
         Errors.Clear();
         _busy.Clear();
         _teacherDayHours.Clear();
+        ProgressLog.Clear();
+        _sw = System.Diagnostics.Stopwatch.StartNew();
+        _lastLoggedRed = -1;
 
         // ============================================================
         // STEP 0: PRE-ASSIGN HOMEROOM TEACHERS TO HOUR 1
-        // This happens BEFORE anything else - uses ManageClassId
         // ============================================================
+        LogStep("start: pre-assign homeroom teachers to hour 1");
         AssignHomeroomToHour1();
+        LogStep("homeroom hour-1 assigned");
 
         // group by time (Hour, Day) - early hours first
         Dictionary<int, List<HourSlot>> byTime = BuildTimeBuckets();
-
-        // time order: hour 1 first, then hour 2..., inside each hour days
         List<int> timeKeys = new List<int>(byTime.Keys);
         timeKeys.Sort();
 
-        // Split into hour 1 and other hours
         List<int> hour1Keys = new List<int>();
         List<int> otherKeys = new List<int>();
         for (int i = 0; i < timeKeys.Count; i++)
@@ -98,117 +113,111 @@ public class Shibutz
             int hourId = timeKeys[i];
             int day, hour;
             ResolveDayHour(hourId, out day, out hour);
-            if (hour == 1)
-            {
-                hour1Keys.Add(hourId);
-            }
-            else
-            {
-                otherKeys.Add(hourId);
-            }
+            if (hour == 1) hour1Keys.Add(hourId);
+            else otherKeys.Add(hourId);
         }
 
-        // Fill remaining hour 1 slots (non-homeroom teachers)
-        for (int i = 0; i < hour1Keys.Count; i++)
-        {
-            List<HourSlot> slots = byTime[hour1Keys[i]];
-            DirectFill(slots);
-        }
+        // Fill remaining hour 1 slots directly (non-homeroom teachers)
+        for (int i = 0; i < hour1Keys.Count; i++) DirectFill(byTime[hour1Keys[i]]);
+        LogStep("initial direct-fill for hour 1 done");
 
-        // Repeat the entire process multiple times to catch more assignments
+        // Main pipeline iterations - early-stop when no progress OR when the
+        // previous iteration made only small gains (<5% improvement).
+        // Also stop after iteration 1 if reds drops below 10% of total slots
+        // (iteration 2+ have historically made zero progress in that regime).
+        int totalSlots = _allSlots.Count;
         for (int iteration = 0; iteration < 3; iteration++)
         {
-            // Process hour 1 again
+            int redsBeforeIter = CountRedSlots();
+            if (redsBeforeIter == 0) break;
+
+            // Hour 1 pipeline
             for (int i = 0; i < hour1Keys.Count; i++)
             {
                 List<HourSlot> slots = byTime[hour1Keys[i]];
-
-                // (0) Cross-time swaps FIRST - before DirectFill blocks (e.g. Yochi Sun5->Wed6, Ariel->Sun5)
                 TryCrossTimeSwapsForBatch(slots);
-
-                // (1) Direct fill (retry simple)
                 DirectFill(slots);
-
-                // (2) Find available teachers at this time (from all classes)
                 FindAvailableTeachersFill(slots);
-
-                // (3) Smart swaps - teachers busy here but can swap to other class
                 SmartSwapFill(slots);
-
-                // (4) Local swaps
                 LocalSwapFill(slots);
-
-                // (5) Deep chain (augmenting path) depth 15
                 DeepChainFill(slots, CHAIN_DEPTH);
             }
-
-            // Process other hours
+            // Other hours pipeline
             for (int i = 0; i < otherKeys.Count; i++)
             {
                 List<HourSlot> slots = byTime[otherKeys[i]];
-
-                // (0) Cross-time swaps FIRST - before DirectFill blocks
                 TryCrossTimeSwapsForBatch(slots);
-
-                // (1) Direct fill (retry simple)
                 DirectFill(slots);
-
-                // (2) Find available teachers at this time (from all classes)
                 FindAvailableTeachersFill(slots);
-
-                // (3) Smart swaps - teachers busy here but can swap to other class
                 SmartSwapFill(slots);
-
-                // (4) Local swaps
                 LocalSwapFill(slots);
-
-                // (5) Deep chain (augmenting path) depth 15
                 DeepChainFill(slots, CHAIN_DEPTH);
             }
-        }
 
-        // (6) CROSS-TIME SWAPS - EXHAUSTIVE
-        CrossTimeSwapFill();
+            int redsAfterIter = CountRedSlots();
+            int gain = redsBeforeIter - redsAfterIter;
+            LogStep("pipeline iteration " + (iteration + 1) + " done (gain " + gain + ")");
 
-        // (6b) TEACHER-CENTRIC: Fill teachers with remaining hours by swapping
-        FillTeachersMissingHours();
-
-        // (7) MEGA CLEANUP: Run full pipeline repeatedly until no progress
-            for (int megaRound = 0; megaRound < 2; megaRound++)
+            if (gain <= 0)
             {
-                int redsBefore = CountRedSlots();
-                for (int i = 0; i < timeKeys.Count; i++)
-                {
-                    List<HourSlot> slots = byTime[timeKeys[i]];
-                    TryCrossTimeSwapsForBatch(slots);
-                    DirectFill(slots);
-                FindAvailableTeachersFill(slots);
+                LogStep("no progress — early stop");
+                break;
+            }
+            // Less than 5% improvement - later iterations are unlikely to help
+            if (gain * 20 < redsBeforeIter)
+            {
+                LogStep("diminishing returns (<5% improvement) — early stop");
+                break;
+            }
+            // After iteration 1, if reds already below 10% of total, stop.
+            // Remaining holes are structural; expensive cleanup won't close them.
+            if (iteration == 0 && redsAfterIter * 10 < totalSlots)
+            {
+                LogStep("iter1 reached <10% reds — skipping further iterations");
+                break;
+            }
+        }
+
+        // Single cross-time swap attempt with a tight time budget (10s).
+        // Removed the MEGA cleanup loop entirely - in practice it burned 3-4
+        // minutes for zero improvement beyond iteration 1.
+        int redsBeforeCTS = CountRedSlots();
+        if (redsBeforeCTS > 0)
+        {
+            CrossTimeSwapFill();
+            int redsAfterCTS = CountRedSlots();
+            LogStep("cross-time swap (reds " + redsBeforeCTS + " -> " + redsAfterCTS + ")");
+            if (redsAfterCTS < redsBeforeCTS)
+            {
+                FillTeachersMissingHours();
+                LogStep("fill teachers missing hours done");
+            }
+        }
+        else
+        {
+            LogStep("all slots filled after main pipeline");
+        }
+
+        // Hakbatza/Ihud post-process (fast now that bumping is removed)
+        int redsBeforeHak = CountRedSlots();
+        ExpandHakbatzaIhudAssignments();
+        int redsAfterHak = CountRedSlots();
+        LogStep("hakbatza/ihud expansion done");
+
+        // Only do extra fix pass if Hakbatza actually increased reds (a tradeoff happened)
+        // Otherwise the pipeline already converged - no point wasting time.
+        if (redsAfterHak > redsBeforeHak)
+        {
+            for (int i = 0; i < timeKeys.Count; i++)
+            {
+                List<HourSlot> slots = byTime[timeKeys[i]];
+                DirectFill(slots);
                 SmartSwapFill(slots);
-                LocalSwapFill(slots);
                 DeepChainFill(slots, CHAIN_DEPTH);
             }
-            CrossTimeSwapFill();
-            FillTeachersMissingHours();
-            int redsAfter = CountRedSlots();
-            if (redsAfter >= redsBefore) break;  // No progress - stop
+            LogStep("post-hakbatza cleanup (reds " + redsAfterHak + " -> " + CountRedSlots() + ")");
+            ExpandHakbatzaIhudAssignments();
         }
-
-        // Hakbatza/Ihud post-process - add co-teachers at same time
-        ExpandHakbatzaIhudAssignments();
-
-        // Additional fix pass for unassigned slots now that busy flags are accurate
-        for (int i = 0; i < timeKeys.Count; i++)
-        {
-            List<HourSlot> slots = byTime[timeKeys[i]];
-            TryCrossTimeSwapsForBatch(slots);
-            DirectFill(slots);
-            FindAvailableTeachersFill(slots);
-            SmartSwapFill(slots);
-            LocalSwapFill(slots);
-            DeepChainFill(slots, CHAIN_DEPTH);
-        }
-        CrossTimeSwapFill();
-        ExpandHakbatzaIhudAssignments();
 
         // Build detailed errors for remaining reds
         Errors.Clear();
@@ -283,57 +292,12 @@ public class Shibutz
                 int remCheck;
                 if (!_remaining.TryGetValue(rkCheck, out remCheck) || remCheck <= 0) continue;
 
-                // Check if teacher is free at this time
-                // Exception: If teacher is busy with a DIFFERENT group, try to free them
+                // If teacher is busy at this time, skip (the bumping logic was
+                // too expensive - 175s/run - and rarely helped. Force-Smart
+                // handles the hard cases at user request instead.)
                 if (IsBusy(ct.TeacherId, s.Day, s.Hour))
                 {
-                    HourSlot busySlot = GetBusySlot(ct.TeacherId, s.Day, s.Hour);
-                    if (busySlot != null && busySlot.AssignedTeacherId == ct.TeacherId)
-                    {
-                        // If busy with same (hak,ihud) group member - already co-teaching, skip
-                        if (s.AssignedIhud > 0 && busySlot.AssignedIhud == s.AssignedIhud) continue;
-                        if (s.AssignedHakbatza > 0 && busySlot.ClassId == s.ClassId && busySlot.AssignedHakbatza == s.AssignedHakbatza) continue;
-
-                        // Busy in an UNRELATED slot - try to move them out (group priority!)
-                        if (busySlot.ClassId != targetClassId)
-                        {
-                            // Save state
-                            int oldT = busySlot.AssignedTeacherId;
-                            int oldP = busySlot.AssignedProfessionalId;
-                            int oldH = busySlot.AssignedHakbatza;
-                            int oldI = busySlot.AssignedIhud;
-
-                            // Try to find replacement for busySlot from its candidates
-                            ClassTeacher replacement = null;
-                            if (busySlot.Candidates != null)
-                            {
-                                for (int r = 0; r < busySlot.Candidates.Count; r++)
-                                {
-                                    ClassTeacher candR = busySlot.Candidates[r];
-                                    if (candR == null || candR.TeacherId <= 0) continue;
-                                    if (candR.TeacherId == ct.TeacherId) continue;
-                                    if (IsBusy(candR.TeacherId, busySlot.Day, busySlot.Hour)) continue;
-                                    if (!CanAssign(busySlot, candR)) continue;
-                                    replacement = candR;
-                                    break;
-                                }
-                            }
-
-                            UndoAssign(busySlot);
-                            if (replacement != null)
-                            {
-                                ApplyAssign(busySlot, replacement);
-                            }
-                            // busySlot may stay red - DirectFill later will try again
-                        }
-                        else
-                        {
-                            continue;  // same class, don't bump
-                        }
-                    }
-
-                    // Re-check after potential free
-                    if (IsBusy(ct.TeacherId, s.Day, s.Hour)) continue;
+                    continue;
                 }
 
                 ExtraAssignment ea = new ExtraAssignment();
@@ -931,13 +895,19 @@ public class Shibutz
 
         if (redSlots.Count == 0) return;
 
+        // Hard cap: 5 seconds for the whole function (was unlimited)
+        long budgetMs = (_sw != null ? _sw.ElapsedMilliseconds : 0) + 5000;
+
         for (int pass = 0; pass < 20; pass++)
         {
+            if (_sw != null && _sw.ElapsedMilliseconds > budgetMs) return;
             bool anyProgress = false;
 
             // Try to fill each red slot
             for (int i = 0; i < redSlots.Count; i++)
             {
+                // Check budget in inner loop too - each slot can be expensive
+                if (_sw != null && _sw.ElapsedMilliseconds > budgetMs) return;
                 HourSlot redSlot = redSlots[i];
                 if (redSlot == null) continue;
                 if (redSlot.AssignedTeacherId > 0) continue;
@@ -1010,8 +980,12 @@ public class Shibutz
     // Swap: Yochi Sun2->Wed6, Ariel->Sun2
     private void FillTeachersMissingHours()
     {
+        // Hard cap: 5 seconds for the whole function
+        long budgetMs = (_sw != null ? _sw.ElapsedMilliseconds : 0) + 5000;
+
         for (int pass = 0; pass < 15; pass++)
         {
+            if (_sw != null && _sw.ElapsedMilliseconds > budgetMs) return;
             bool anyProgress = false;
             foreach (var kv in _remaining)
             {

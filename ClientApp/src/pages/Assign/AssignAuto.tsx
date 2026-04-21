@@ -57,6 +57,9 @@ export default function AssignAuto() {
   const [diagnostic, setDiagnostic] = useState<DiagnosticRow[]>([]);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
 
+  const [progressLog, setProgressLog] = useState<Array<{ Step: number; Message: string }>>([]);
+  const [showProgress, setShowProgress] = useState(false);
+
   async function fetchShibutzErrors(): Promise<{
     errors: ShibutzErrorRow[];
     savedCount: number;
@@ -96,6 +99,16 @@ export default function AssignAuto() {
     setSuccessAlert(true);
   }
 
+  async function fetchProgressLog() {
+    try {
+      const data = await ajax<Array<{ Step: number; Message: string }>>('Assign_GetShibutzProgress');
+      setProgressLog(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error('Assign_GetShibutzProgress failed', e);
+      setProgressLog([]);
+    }
+  }
+
   async function fetchDiagnostic(): Promise<DiagnosticRow[]> {
     try {
       const data = await ajax<DiagnosticRow[]>('Assign_GetShibutzDiagnostic');
@@ -121,6 +134,7 @@ export default function AssignAuto() {
       await new Promise((r) => setTimeout(r, 500));
       const result = await fetchShibutzErrors();
       const diag = await fetchDiagnostic();
+      await fetchProgressLog();
       setDiagnostic(diag);
       if (diag.length > 0) {
         // Override: if we have diagnostic data, show it instead of the generic errors modal
@@ -293,6 +307,17 @@ export default function AssignAuto() {
               <i className="fa fa-file-text-o" />
               <span>הצג דוח שגיאות אחרון</span>
             </button>
+            <button
+              type="button"
+              className="assign-auto__btn assign-auto__btn--info"
+              onClick={async () => {
+                await fetchProgressLog();
+                setShowProgress(true);
+              }}
+            >
+              <i className="fa fa-list-ol" />
+              <span>הצג חישוב</span>
+            </button>
           </div>
 
           {successAlert && (
@@ -303,6 +328,90 @@ export default function AssignAuto() {
           )}
         </div>
       </div>
+
+      {/* Progress log modal */}
+      {showProgress && (
+        <div
+          className="modal"
+          style={{
+            display: 'block',
+            background: 'rgba(0,0,0,0.5)',
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            zIndex: 1050,
+            overflow: 'auto',
+          }}
+          onClick={() => setShowProgress(false)}
+        >
+          <div
+            className="modal-dialog modal-lg"
+            style={{ direction: 'rtl', maxWidth: 900 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-content">
+              <div className="modal-header" style={{ background: '#e3f2fd', borderBottom: '2px solid #1976d2' }}>
+                <button type="button" className="close" onClick={() => setShowProgress(false)} aria-label="Close">
+                  &times;
+                </button>
+                <h4 className="modal-title" style={{ color: '#0d47a1' }}>
+                  <i className="fa fa-list-ol" /> חישוב השיבוץ - מה המערכת עשתה
+                </h4>
+              </div>
+              <div className="modal-body" style={{ maxHeight: 480, overflowY: 'auto' }}>
+                {progressLog.length === 0 ? (
+                  <div className="alert alert-warning" style={{ textAlign: 'center' }}>
+                    אין יומן חישוב זמין. הרץ קודם שיבוץ אוטומטי.
+                  </div>
+                ) : (
+                  <table className="table table-bordered table-striped" style={{ marginBottom: 0 }}>
+                    <thead>
+                      <tr className="info">
+                        <th style={{ textAlign: 'center', width: 60 }}>#</th>
+                        <th>שלב</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {progressLog.map((r) => {
+                        const parts = String(r.Message || '').split(' | ');
+                        const time = parts[0] || '';
+                        const reds = parts[1] || '';
+                        const step = parts[2] || r.Message;
+                        return (
+                          <tr key={r.Step}>
+                            <td style={{ textAlign: 'center', fontWeight: 'bold', color: '#1976d2' }}>
+                              {r.Step}
+                            </td>
+                            <td>
+                              <code style={{ fontSize: 11, color: '#666', marginLeft: 8 }}>{time}</code>
+                              <code style={{ fontSize: 11, color: '#d32f2f', marginLeft: 8 }}>{reds}</code>
+                              <span>{step}</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+                <div style={{ marginTop: 12, padding: 10, background: '#f5f5f5', borderRadius: 4, fontSize: 13 }}>
+                  <strong>איך לקרוא:</strong> כל שורה היא שלב בחישוב.
+                  <code style={{ fontSize: 11, color: '#666', margin: '0 4px' }}>1234ms</code>
+                  הוא זמן מצטבר מתחילת הריצה.
+                  <code style={{ fontSize: 11, color: '#d32f2f', margin: '0 4px' }}>reds=X</code>
+                  הוא כמה שעות חסרות נותרו באותו רגע.
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-info" onClick={() => setShowProgress(false)}>
+                  סגור
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Diagnostic modal (new) */}
       {showDiagnostic && (

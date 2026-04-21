@@ -981,6 +981,16 @@ public class WebService : System.Web.Services.WebService
         int saved = r.SavedCount;
         int reds = r.ErrorCount;
 
+            // Persist progress log for UI
+            try
+            {
+                if (HttpContext.Current != null && HttpContext.Current.Session != null)
+                {
+                    HttpContext.Current.Session["ShibutzProgressLog"] = sh.ProgressLog;
+                }
+            }
+            catch { }
+
             // Store errors in session for JavaScript to retrieve - ALWAYS store, even if empty
             if (HttpContext.Current != null && HttpContext.Current.Session != null)
             {
@@ -1309,6 +1319,44 @@ public class WebService : System.Web.Services.WebService
    
 
     
+    // =========================================================
+    // Shibutz progress log - returns step-by-step activity from the
+    // last run for the UI to display to the admin ("איך זה עבד")
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_GetShibutzProgress()
+    {
+        try
+        {
+            List<string> log = HttpContext.Current.Session["ShibutzProgressLog"] as List<string>;
+            DataTable dt = new DataTable();
+            dt.Columns.Add("Step", typeof(int));
+            dt.Columns.Add("Message", typeof(string));
+            if (log != null)
+            {
+                for (int i = 0; i < log.Count; i++)
+                {
+                    DataRow row = dt.NewRow();
+                    row["Step"] = i + 1;
+                    row["Message"] = log[i];
+                    dt.Rows.Add(row);
+                }
+            }
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            DataTable dt = new DataTable();
+            dt.Columns.Add("Error", typeof(string));
+            DataRow r = dt.NewRow();
+            r["Error"] = ex.Message;
+            dt.Rows.Add(r);
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+    }
+
     // =========================================================
     // Report-style diagnostic: returns missing teacher/class assignments
     // directly from the DB without relying on session state. Used by
