@@ -147,9 +147,32 @@ const LAYERS = [
   { id: '6', label: "שכבה ו'" },
 ];
 
+// שעות היום — זהות ל-SchoolHours
+const HOUR_SLOTS = [
+  { seq: 1, time: '08:00 - 09:00' },
+  { seq: 2, time: '09:00 - 09:40' },
+  { seq: 3, time: '10:05 - 10:55' },
+  { seq: 4, time: '10:56 - 11:40' },
+  { seq: 5, time: '12:00 - 12:45' },
+  { seq: 6, time: '12:46 - 13:30' },
+  { seq: 7, time: '13:45 - 14:30' },
+  { seq: 8, time: '14:31 - 15:15' },
+  { seq: 9, time: '15:16 - 16:00' },
+];
+
+function hoursForDay(day: number) {
+  return day === 6 ? HOUR_SLOTS.slice(0, 6) : HOUR_SLOTS;
+}
+
 function getDayId(hourId: string | number | null | undefined): number {
   if (hourId === null || hourId === undefined) return 0;
   return Number(String(hourId).charAt(0)) || 0;
+}
+
+function getSeqId(hourId: string | number | null | undefined): number {
+  if (hourId === null || hourId === undefined) return 0;
+  const s = String(hourId);
+  return Number(s.substring(1)) || 0;
 }
 
 function emptyIfNull<T>(v: T | null | undefined): string {
@@ -727,7 +750,8 @@ function TeacherHoursPerClassModal({
 export default function Assign() {
   const { user } = useAuth();
   const [layerId, setLayerId] = useState<string>('0');
-  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  // allAssignments holds the full dataset (LayerId=0); `assignments` below filters it.
+  const [allAssignments, setAllAssignments] = useState<AssignmentRow[]>([]);
   const [freeTeachers, setFreeTeachers] = useState<FreeTeacher[]>([]);
   const [professionals, setProfessionals] = useState<Professional[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>('');
@@ -757,21 +781,22 @@ export default function Assign() {
   const configurationId = user?.ConfigurationId ?? '';
 
   // --- data loading ---
-  const loadAssignments = useCallback((lid: string) => {
-    ajax<AssignmentRow[]>('Assign_GetAssignment', { LayerId: lid })
-      .then((data) => setAssignments(data ?? []))
+  // Load the full dataset (LayerId=0) once; layer switches filter client-side.
+  const loadAssignments = useCallback(() => {
+    return ajax<AssignmentRow[]>('Assign_GetAssignment', { LayerId: '0' })
+      .then((data) => setAllAssignments(data ?? []))
       .catch((err) => console.error('Assign_GetAssignment', err));
   }, []);
 
   const loadFreeTeachers = useCallback((classId: string) => {
     setSelectedClassId(classId);
-    ajax<FreeTeacher[]>('Assign_GetFreeTeacher', { ClassId: classId })
+    return ajax<FreeTeacher[]>('Assign_GetFreeTeacher', { ClassId: classId })
       .then((data) => setFreeTeachers(data ?? []))
       .catch((err) => console.error('Assign_GetFreeTeacher', err));
   }, []);
 
   const loadProfessionals = useCallback(() => {
-    ajax<Professional[]>('Gen_GetTable', {
+    return ajax<Professional[]>('Gen_GetTable', {
       TableName: 'Professional',
       Condition: `ConfigurationId=${configurationId}`,
     })
@@ -785,15 +810,18 @@ export default function Assign() {
     Promise.allSettled([
       loadProfessionals(),
       loadFreeTeachers(''),
-      loadAssignments('0'),
+      loadAssignments(),
     ]).finally(() => setInitialLoading(false));
   }, [configurationId, loadProfessionals, loadFreeTeachers, loadAssignments]);
 
-  useEffect(() => {
-    loadAssignments(layerId);
-  }, [layerId, loadAssignments]);
+  // --- derived: filter the full dataset by selected layer (client-side) ---
+  const assignments = useMemo(() => {
+    if (layerId === '0') return allAssignments;
+    return allAssignments.filter(
+      (r) => String(r.LayerId ?? '') === layerId,
+    );
+  }, [allAssignments, layerId]);
 
-  // --- derived ---
   const grid = useMemo(() => buildGrid(assignments), [assignments]);
 
   // --- dnd-kit ---
@@ -901,7 +929,7 @@ export default function Assign() {
         });
         const err = Array.isArray(res) && res[0] ? Number(res[0].res) : 0;
         if (err === 0) {
-          loadAssignments(layerId);
+          loadAssignments();
           if (Type === 1 || Type === 3 || Type === 5) {
             loadFreeTeachers(selectedClassId);
           }
@@ -917,7 +945,7 @@ export default function Assign() {
         setErrorMsg('שגיאה בשמירה');
       }
     },
-    [layerId, loadAssignments, loadFreeTeachers, selectedClassId],
+    [loadAssignments, loadFreeTeachers, selectedClassId],
   );
 
   const handleDragEnd = (e: DragEndEvent) => {
@@ -1020,46 +1048,87 @@ export default function Assign() {
                   <div>בחר שכבה כדי להציג את מערכת הכיתות</div>
                 </div>
               )}
-              {grid.classes.map((cls) => (
-                <div key={cls.ClassId} className="assign-class-row">
-                  <div className="assign-class-row__header">
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-round assign-class-row__chip"
-                      onClick={() => loadFreeTeachers(cls.ClassId)}
-                    >
-                      <i className="fa fa-users" /> {cls.ClassName}
-                    </button>
+              {grid.classes.map((cls) => {
+                // Build a seq lookup per class: Map<"dayId_seq", AssignSlot>
+                const cellMap = new Map<string, AssignSlot>();
+                for (let dayId = 1; dayId <= 6; dayId++) {
+                  const dayKey = `${cls.ClassId}_${dayId}`;
+                  const slots = grid.cells.get(dayKey) ?? [];
+                  for (const slot of slots) {
+                    const seq = getSeqId(slot.primary.HourId);
+                    if (seq > 0) cellMap.set(`${dayId}_${seq}`, slot);
+                  }
+                }
+                return (
+                  <div key={cls.ClassId} className="assign-schedule">
+                    <div className="assign-schedule__header">
+                      <button
+                        type="button"
+                        className="assign-schedule__class-btn"
+                        onClick={() => loadFreeTeachers(cls.ClassId)}
+                        title="הצג מורים פנויים לכיתה"
+                      >
+                        <i className="fa fa-users" /> {cls.ClassName}
+                      </button>
+                    </div>
+                    <table className="assign-schedule__table">
+                      <thead>
+                        <tr>
+                          <th className="assign-schedule__hour-hdr">שעה</th>
+                          {[1, 2, 3, 4, 5, 6].map((dayId) => (
+                            <th
+                              key={dayId}
+                              className={`assign-schedule__day-hdr day-${dayId}`}
+                            >
+                              {DAY_NAMES[dayId]}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {HOUR_SLOTS.map(({ seq, time }) => (
+                          <tr key={seq}>
+                            <th className="assign-schedule__hour-cell">
+                              <span className="assign-schedule__clock">{time}</span>
+                            </th>
+                            {[1, 2, 3, 4, 5, 6].map((dayId) => {
+                              if (dayId === 6 && seq > 6) {
+                                return (
+                                  <td key={dayId} className="assign-schedule__cell is-off">
+                                    &nbsp;
+                                  </td>
+                                );
+                              }
+                              const slot = cellMap.get(`${dayId}_${seq}`);
+                              return (
+                                <td
+                                  key={dayId}
+                                  className={`assign-schedule__cell day-${dayId}${slot ? '' : ' is-vacant'}`}
+                                  title={`${cls.ClassName} · ${DAY_NAMES[dayId]} שעה ${seq} · ${time}`}
+                                >
+                                  {slot ? (
+                                    <AssignBadge
+                                      slot={slot}
+                                      highlightTeacherId={highlightTeacherId}
+                                      highlightClassId={highlightClassId}
+                                      onBadgeClick={handleBadgeClick}
+                                      onTeacherRightClick={handleTeacherRightClick}
+                                    />
+                                  ) : (
+                                    <span className="assign-schedule__empty" aria-hidden="true">
+                                      +
+                                    </span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                  <div className="assign-class-row__days">
-                    {[1, 2, 3, 4, 5, 6].map((dayId) => {
-                      const key = `${cls.ClassId}_${dayId}`;
-                      const slots = grid.cells.get(key) ?? [];
-                      return (
-                        <div key={dayId} className="assign-day col-md-2">
-                          <div className="panel panel-info">
-                            <div className="panel-heading dvClassDayTitle">
-                              <h3 className="panel-title">{DAY_NAMES[dayId]}</h3>
-                            </div>
-                            <div className="panel-body dvClassDayBody">
-                              {slots.map((slot, i) => (
-                                <AssignBadge
-                                  key={`${slot.primary.AssignmentId ?? 'e'}-${slot.primary.HourId}-${i}`}
-                                  slot={slot}
-                                  highlightTeacherId={highlightTeacherId}
-                                  highlightClassId={highlightClassId}
-                                  onBadgeClick={handleBadgeClick}
-                                  onTeacherRightClick={handleTeacherRightClick}
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -1099,6 +1168,9 @@ export default function Assign() {
               </h3>
             </div>
             <ProDropZone>
+              {professionals.length === 0 && (
+                <div className="assign-dockbar__empty">אין מקצועות טעונים עדיין</div>
+              )}
               {professionals.map((p) => (
                 <DraggableProfessional key={p.ProfessionalId} pro={p} />
               ))}

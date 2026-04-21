@@ -1,0 +1,9 @@
+{
+  "spinnerTipsEnabled": false,
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"/c/Users/Administrator/.claude/projects/C--Users-Administrator-sganit/memory/\")",
+      "Read(//c/Users/Administrator/.claude/projects/C--Users-Administrator-sganit/**)"
+    ]
+  }
+}

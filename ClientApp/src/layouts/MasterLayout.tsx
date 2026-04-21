@@ -24,11 +24,22 @@ export default function MasterLayout() {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [classes, setClasses] = useState<ClassStatusRow[]>([]);
+  const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
+    try { return localStorage.getItem('sidebarExpanded') === '1'; } catch { return false; }
+  });
 
   useEffect(() => {
     if (!user) return;
     ajax<ClassStatusRow[]>('Class_GetClassStatus').then(setClasses).catch(() => setClasses([]));
   }, [user, location.pathname]);
+
+  const toggleSidebar = () => {
+    setSidebarExpanded(prev => {
+      const next = !prev;
+      try { localStorage.setItem('sidebarExpanded', next ? '1' : '0'); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   if (!user) return <Navigate to="/Login" replace state={{ from: location }} />;
 
@@ -62,8 +73,17 @@ export default function MasterLayout() {
         </div>
       </nav>
 
-      <section id="main-container">
+      <section id="main-container" className={sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}>
         <section id="left-navigation">
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={toggleSidebar}
+            aria-label={sidebarExpanded ? 'כווץ תפריט' : 'הרחב תפריט'}
+            title={sidebarExpanded ? 'כווץ תפריט' : 'הרחב תפריט'}
+          >
+            <i className={`fa ${sidebarExpanded ? 'fa-angle-double-right' : 'fa-angle-double-left'}`}></i>
+          </button>
           <div className="user-image">
             <img
               id="imgLogo"

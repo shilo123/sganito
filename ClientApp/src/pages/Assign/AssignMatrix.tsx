@@ -33,18 +33,17 @@ interface AssignmentRow {
   Ihud: number | null;
 }
 
-interface TeacherHoursRow {
-  TeacherId: number;
-  TeacherName?: string;
-  ClassId: number;
-  ClassName?: string;
-  Assigned?: number;
-  Expected?: number;
-  [key: string]: unknown;
-}
-
 const DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'];
 const HOURS_PER_DAY = 9;
+const DAYS = [1, 2, 3, 4, 5, 6] as const;
+const HOURS = Array.from({ length: HOURS_PER_DAY }, (_, i) => i + 1);
+
+function teacherShort(fullName: string | null | undefined): string {
+  if (!fullName) return '';
+  const parts = fullName.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0];
+  return parts[parts.length - 1];
+}
 
 // ---- Component ----
 
@@ -56,13 +55,11 @@ export default function AssignMatrix() {
   const [assignment, setAssignment] = useState<AssignmentRow[]>([]);
 
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
-  const [teacherHours, setTeacherHours] = useState<TeacherHoursRow[]>([]);
-  const [loadingTeacherHours, setLoadingTeacherHours] = useState(false);
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Initial load
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -91,40 +88,7 @@ export default function AssignMatrix() {
     };
   }, [user]);
 
-  // Load per-teacher hours on selection change
-  useEffect(() => {
-    const tid = Number(selectedTeacherId);
-    if (!tid || tid <= 0) {
-      setTeacherHours([]);
-      return;
-    }
-    let cancelled = false;
-    setLoadingTeacherHours(true);
-
-    const configId = user?.ConfigurationId ?? '';
-    ajax<TeacherHoursRow[]>('Assign_GetTeacherHoursPerClass', {
-      TeacherId: tid,
-      configId,
-    })
-      .then((rows) => {
-        if (cancelled) return;
-        setTeacherHours(Array.isArray(rows) ? rows : []);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        console.error('Assign_GetTeacherHoursPerClass failed', e);
-        setTeacherHours([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingTeacherHours(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedTeacherId, user]);
-
-  // Build lookup: classId -> hourId (NUMBER form day*10+hour) -> assignment rows
+  // classId -> hourId -> assignment rows
   const matrix = useMemo(() => {
     const m = new Map<number, Map<number, AssignmentRow[]>>();
     for (const row of assignment) {
@@ -137,7 +101,6 @@ export default function AssignMatrix() {
     return m;
   }, [assignment]);
 
-  // Classes sorted by LayerId then ClassName
   const sortedClasses = useMemo(() => {
     return [...classes].sort((a, b) => {
       if (a.LayerId !== b.LayerId) return a.LayerId - b.LayerId;
@@ -145,23 +108,51 @@ export default function AssignMatrix() {
     });
   }, [classes]);
 
-  function renderCell(classId: number, day: number, hour: number) {
-    const hourId = day * 10 + hour;
-    const rows = matrix.get(classId)?.get(hourId) ?? [];
-    if (rows.length === 0) {
-      return <span>&nbsp;</span>;
+  const selectedTid = selectedTeacherId ? Number(selectedTeacherId) : null;
+
+  // Teacher hours counts (how many cells each teacher has)
+  const teacherHourCounts = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const row of assignment) {
+      if (row.TeacherId == null) continue;
+      m.set(row.TeacherId, (m.get(row.TeacherId) ?? 0) + 1);
     }
-    const names = rows
-      .map((r) => r.TeacherName)
-      .filter((n): n is string => !!n)
-      .join(' / ');
-    const professional = rows[0]?.Professional ? rows[0].Professional + ' - ' : '';
-    return (
-      <span title={professional + names}>
-        {professional}
-        {names || <em>&nbsp;</em>}
-      </span>
-    );
+    return m;
+  }, [assignment]);
+
+  const filteredTeachers = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const base = teachers.filter((t) => teacherHourCounts.has(t.TeacherId));
+    if (!q) return base;
+    return base.filter((t) => {
+      const full = (t.FullText || `${t.FirstName ?? ''} ${t.LastName ?? ''}`).toLowerCase();
+      return full.includes(q);
+    });
+  }, [teachers, searchQuery, teacherHourCounts]);
+
+  // Count total highlighted cells for the selected teacher
+  const highlightedStats = useMemo(() => {
+    if (!selectedTid) return null;
+    let total = 0;
+    const byDay: Record<number, number> = {};
+    for (const row of assignment) {
+      if (row.TeacherId === selectedTid) {
+        total++;
+        const day = Math.floor(row.HourId / 10);
+        byDay[day] = (byDay[day] || 0) + 1;
+      }
+    }
+    const teacher = teachers.find((t) => t.TeacherId === selectedTid);
+    return { total, byDay, name: teacher?.FullText ?? '' };
+  }, [selectedTid, assignment, teachers]);
+
+  function handleCellClick(teacherId: number | null) {
+    if (!teacherId) {
+      setSelectedTeacherId('');
+      return;
+    }
+    const cur = selectedTid;
+    setSelectedTeacherId(teacherId === cur ? '' : String(teacherId));
   }
 
   if (loading) {
@@ -177,120 +168,153 @@ export default function AssignMatrix() {
   }
 
   return (
-    <div style={{ direction: 'rtl', padding: 10 }}>
-      <div className="col-md-12">
-        <div className="panel panel-info">
-          <div className="panel-heading">
-            <h3 className="panel-title">&nbsp;מטריצת שיבוץ - תצוגה בלבד</h3>
-          </div>
-          <div className="panel-body">
-            <div className="col-md-4" style={{ marginBottom: 15 }}>
-              <div className="input-group ls-group-input">
-                <span className="input-group-addon">בחר מורה לצפייה בשעות</span>
-                <select
-                  className="form-control"
-                  value={selectedTeacherId}
-                  onChange={(e) => setSelectedTeacherId(e.target.value)}
-                >
-                  <option value="">-- הצג כל השיבוצים --</option>
-                  {teachers.map((t) => (
-                    <option key={t.TeacherId} value={t.TeacherId}>
-                      {t.FullText || `${t.FirstName ?? ''} ${t.LastName ?? ''}`.trim()}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {selectedTeacherId && (
-              <div className="col-md-12" style={{ marginBottom: 15 }}>
-                <div className="panel panel-default">
-                  <div className="panel-heading">
-                    <strong>שעות המורה לפי כיתה</strong>
-                  </div>
-                  <div className="panel-body">
-                    {loadingTeacherHours ? (
-                      <p>טוען...</p>
-                    ) : teacherHours.length === 0 ? (
-                      <p>אין נתונים עבור המורה שנבחר.</p>
-                    ) : (
-                      <table className="table table-bordered table-striped">
-                        <thead>
-                          <tr className="info">
-                            <th>כיתה</th>
-                            <th>שעות משובצות</th>
-                            <th>שעות צפויות</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {teacherHours.map((r, i) => (
-                            <tr key={i}>
-                              <td>{r.ClassName ?? r.ClassId}</td>
-                              <td style={{ textAlign: 'center' }}>
-                                {r.Assigned ?? '-'}
-                              </td>
-                              <td style={{ textAlign: 'center' }}>
-                                {r.Expected ?? '-'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                </div>
-              </div>
+    <div className="mx-page">
+      <div className="mx-page__header">
+        <div className="mx-page__filter">
+          <div className="mx-page__search-row">
+            <i className="fa fa-search" />
+            <input
+              type="text"
+              className="mx-page__search-input"
+              placeholder="חיפוש מורה..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {(searchQuery || selectedTeacherId) && (
+              <button
+                type="button"
+                className="mx-page__clear"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedTeacherId('');
+                }}
+              >
+                נקה
+              </button>
             )}
-
-            {/* Main class x hour matrix, separated per day */}
-            <div className="col-md-12" style={{ overflow: 'auto' }}>
-              {[1, 2, 3, 4, 5, 6].map((day) => {
-                const rowSpanClasses = sortedClasses;
+          </div>
+          <div className="mx-chips" dir="rtl">
+            {filteredTeachers.length === 0 ? (
+              <span className="mx-chips__empty">לא נמצאו מורים תואמים</span>
+            ) : (
+              filteredTeachers.map((t) => {
+                const name = t.FullText || `${t.FirstName ?? ''} ${t.LastName ?? ''}`.trim();
+                const count = teacherHourCounts.get(t.TeacherId) ?? 0;
+                const isActive = selectedTid === t.TeacherId;
                 return (
-                  <div key={day} style={{ marginBottom: 25 }}>
-                    <h4 style={{ background: '#428bca', color: 'white', padding: '5px 10px' }}>
-                      יום {DAY_NAMES[day - 1]}
-                    </h4>
-                    <table
-                      className="table table-bordered"
-                      style={{ fontSize: 11, tableLayout: 'fixed' }}
-                    >
-                      <thead>
-                        <tr className="info">
-                          <th style={{ width: 100 }}>כיתה</th>
-                          {Array.from({ length: HOURS_PER_DAY }, (_, i) => i + 1).map((hour) => (
-                            <th key={hour} style={{ textAlign: 'center' }}>
-                              שעה {hour}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rowSpanClasses.map((cls) => (
-                          <tr key={cls.ClassId}>
-                            <td>
-                              <strong>{cls.ClassName}</strong>
-                            </td>
-                            {Array.from({ length: HOURS_PER_DAY }, (_, i) => i + 1).map(
-                              (hour) => (
-                                <td
-                                  key={hour}
-                                  style={{ textAlign: 'center', verticalAlign: 'middle' }}
-                                >
-                                  {renderCell(cls.ClassId, day, hour)}
-                                </td>
-                              )
-                            )}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <button
+                    key={t.TeacherId}
+                    type="button"
+                    className={`mx-chip${isActive ? ' is-active' : ''}`}
+                    onClick={() =>
+                      setSelectedTeacherId(isActive ? '' : String(t.TeacherId))
+                    }
+                  >
+                    {name}
+                    <span className="mx-chip__count">{count}</span>
+                  </button>
                 );
-              })}
-            </div>
+              })
+            )}
           </div>
         </div>
+        <h2 className="mx-page__title">
+          <i className="fa fa-th" />
+          מטריצת שיבוץ
+        </h2>
+      </div>
+
+      {highlightedStats && (
+        <div className="mx-teacher-bar">
+          <div>
+            <i className="fa fa-user" style={{ marginInlineEnd: 6 }} />
+            מציג את שיבוצי המורה: <strong>{highlightedStats.name}</strong>
+          </div>
+          <div className="mx-teacher-bar__stats">
+            <span className="mx-teacher-bar__stat">סה״כ {highlightedStats.total} שעות</span>
+            {DAYS.map((d) => (
+              <span key={d} className="mx-teacher-bar__stat">
+                {DAY_NAMES[d - 1]}: {highlightedStats.byDay[d] || 0}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mx-scroll">
+        <table className="mx-grid">
+          <thead>
+            <tr>
+              <th rowSpan={2} className="mx-grid__class-hdr">כיתה</th>
+              {DAYS.map((day) => (
+                <th key={day} colSpan={HOURS_PER_DAY} className={`mx-grid__day-hdr day-${day}`}>
+                  {DAY_NAMES[day - 1]}
+                </th>
+              ))}
+            </tr>
+            <tr>
+              {DAYS.flatMap((day) =>
+                HOURS.map((hour) => (
+                  <th
+                    key={`${day}-${hour}`}
+                    className={`mx-grid__hour-hdr${hour === HOURS_PER_DAY ? ' hour-9' : ''}`}
+                  >
+                    {hour}
+                  </th>
+                )),
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {sortedClasses.map((cls) => (
+              <tr key={cls.ClassId}>
+                <td className="mx-grid__class-cell">{cls.ClassName}</td>
+                {DAYS.flatMap((day) =>
+                  HOURS.map((hour) => {
+                    const hourId = day * 10 + hour;
+                    const rows = matrix.get(cls.ClassId)?.get(hourId) ?? [];
+                    const isEmpty = rows.length === 0;
+                    const firstTeacher = rows[0]?.TeacherId ?? null;
+                    const isHighlighted = !!(
+                      selectedTid && rows.some((r) => r.TeacherId === selectedTid)
+                    );
+                    const names = rows
+                      .map((r) => r.TeacherName)
+                      .filter((n): n is string => !!n)
+                      .join(' / ');
+                    const professional = rows[0]?.Professional ?? '';
+                    const short = teacherShort(names.split(' / ')[0]);
+                    const titleParts = [
+                      cls.ClassName,
+                      `${DAY_NAMES[day - 1]} שעה ${hour}`,
+                      names,
+                      professional,
+                    ].filter(Boolean);
+                    const classes = [
+                      'mx-grid__cell',
+                      `day-${day}`,
+                      hour === HOURS_PER_DAY ? 'hour-9' : '',
+                      isEmpty ? 'is-empty' : '',
+                      isHighlighted ? 'is-highlighted' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
+                    return (
+                      <td
+                        key={`${cls.ClassId}-${day}-${hour}`}
+                        className={classes}
+                        title={titleParts.join(' · ')}
+                        onClick={() => !isEmpty && handleCellClick(firstTeacher)}
+                      >
+                        {short}
+                      </td>
+                    );
+                  }),
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
