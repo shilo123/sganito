@@ -845,22 +845,16 @@ export default function TeacherHours() {
   );
 
   const [autoAssignBusy, setAutoAssignBusy] = useState(false);
+  const [autoAssignConfirm, setAutoAssignConfirm] = useState(false);
   const [autoAssignResult, setAutoAssignResult] = useState<{
     added: number;
     teachers: number;
     details: string[];
   } | null>(null);
 
-  async function runAutoAssignSmart() {
+  async function executeAutoAssignSmart() {
+    setAutoAssignConfirm(false);
     if (autoAssignBusy) return;
-    const ok = window.confirm(
-      'פעולה זו תוסיף שעות עבודה לכל המורים שחסרות להם שעות, תוך:\n' +
-        '• התחשבות ביום החופשי של כל מורה\n' +
-        '• מחנכים מקבלים אוטומטית את שעה 1 של כל יום (התחלת יום בכיתתם)\n' +
-        '• כיסוי כל השעות הדרושות לפי הגדרות "הגדרת כיתות ומורים"\n\n' +
-        'להמשיך?',
-    );
-    if (!ok) return;
     setAutoAssignBusy(true);
     setAutoAssignResult(null);
     try {
@@ -882,11 +876,9 @@ export default function TeacherHours() {
       } else {
         toast.success(`הוגדרו ${data.Added} שעות ל-${data.Teachers} מורים`);
       }
-      // Reload current teacher's hours if any is open
       if (selectedTeacher) {
         loadTeacherHours(selectedTeacher.TeacherId);
       }
-      // Reload teacher list (so FreeDay / Frontaly display is fresh)
       loadTeachers();
     } catch (e) {
       console.error('Teacher_AutoAssignHoursSmart failed', e);
@@ -894,6 +886,11 @@ export default function TeacherHours() {
     } finally {
       setAutoAssignBusy(false);
     }
+  }
+
+  function runAutoAssignSmart() {
+    if (autoAssignBusy) return;
+    setAutoAssignConfirm(true);
   }
 
   const onMenuDefineShehya = () => {
@@ -947,55 +944,95 @@ export default function TeacherHours() {
       )}
       <div className="col-md-12">
         <div className="row dvWeek">
-          <div className="panel panel-info">
-            <div
-              className="panel-heading"
-              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+          {/* Dominant auto-assign hours card */}
+          <div
+            style={{
+              background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+              borderRadius: 10,
+              padding: '18px 22px',
+              marginBottom: 16,
+              color: '#fff',
+              boxShadow: '0 4px 14px -4px rgba(217, 119, 6, 0.45)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 14,
+            }}
+          >
+            <div style={{ flex: '1 1 auto', minWidth: 260 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>
+                <i className="fa fa-magic" style={{ marginLeft: 8 }} />
+                שיבוץ שעות אוטומטי
+              </div>
+              <div style={{ fontSize: 13, opacity: 0.95, lineHeight: 1.5 }}>
+                מגדיר אוטומטית שעות עבודה לכל המורים. מחנכים יקבלו שעה 1 של כל יום (להתחלת היום
+                בכיתתם), יום חופשי יישמר, הקבצה/איחוד יסונכרנו, ובסוף יעודכנו גם המקסימומים.
+                <br />
+                מיועד לעבוד יחד עם "שיבוץ אוטומטי" של המערכת.
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-lg"
+              onClick={runAutoAssignSmart}
+              disabled={autoAssignBusy}
+              style={{
+                background: '#fff',
+                color: '#d97706',
+                fontWeight: 700,
+                padding: '12px 22px',
+                borderRadius: 8,
+                border: 'none',
+                fontSize: 15,
+                minWidth: 200,
+                boxShadow: '0 2px 8px -2px rgba(0,0,0,0.25)',
+                cursor: autoAssignBusy ? 'wait' : 'pointer',
+                opacity: autoAssignBusy ? 0.7 : 1,
+              }}
             >
-              <h3 className="panel-title" style={{ margin: 0 }}>
-                &nbsp;בחירת מורה
-              </h3>
-              <button
-                type="button"
-                className="btn btn-warning btn-sm"
-                onClick={runAutoAssignSmart}
-                disabled={autoAssignBusy}
-                title="הגדר אוטומטית שעות עבודה לכל המורים - מחנכים בשעה 1, תוך התחשבות ביום חופשי והגדרות כיתות-מורים"
-              >
-                {autoAssignBusy ? (
-                  <>
-                    <span className="spinner" /> מגדיר שעות...
-                  </>
-                ) : (
-                  <>
-                    <i className="fa fa-magic" /> שיבוץ שעות אוטומטי
-                  </>
-                )}
-              </button>
+              {autoAssignBusy ? (
+                <>
+                  <span className="spinner" /> מגדיר שעות...
+                </>
+              ) : (
+                <>
+                  <i className="fa fa-bolt" style={{ marginLeft: 6 }} />
+                  הפעל שיבוץ אוטומטי
+                </>
+              )}
+            </button>
+          </div>
+
+          {autoAssignResult && autoAssignResult.added > 0 && (
+            <div
+              className="alert alert-success"
+              style={{ marginBottom: 16, padding: '12px 16px', cursor: 'pointer' }}
+              onClick={() => setAutoAssignResult(null)}
+              title="לחץ כדי לסגור"
+            >
+              <strong style={{ fontSize: 15 }}>
+                <i className="fa fa-check-circle" /> הוגדרו {autoAssignResult.added} שעות ל-
+                {autoAssignResult.teachers} מורים
+              </strong>
+              {autoAssignResult.details.length > 0 && (
+                <ul style={{ marginBottom: 0, marginTop: 8, fontSize: 13 }}>
+                  {autoAssignResult.details.slice(0, 15).map((d, i) => (
+                    <li key={i}>{d}</li>
+                  ))}
+                  {autoAssignResult.details.length > 15 && (
+                    <li>...ועוד {autoAssignResult.details.length - 15} מורים</li>
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div className="panel panel-info">
+            <div className="panel-heading">
+              <h3 className="panel-title">&nbsp;בחירת מורה</h3>
             </div>
             <div className="panel-body">
-              {autoAssignResult && autoAssignResult.added > 0 && (
-                <div
-                  className="alert alert-success"
-                  style={{ marginBottom: 10, padding: '8px 12px' }}
-                  onClick={() => setAutoAssignResult(null)}
-                >
-                  <strong>
-                    <i className="fa fa-check-circle" /> הוגדרו {autoAssignResult.added} שעות ל-
-                    {autoAssignResult.teachers} מורים
-                  </strong>
-                  {autoAssignResult.details.length > 0 && (
-                    <ul style={{ marginBottom: 0, marginTop: 6, fontSize: 13 }}>
-                      {autoAssignResult.details.slice(0, 10).map((d, i) => (
-                        <li key={i}>{d}</li>
-                      ))}
-                      {autoAssignResult.details.length > 10 && (
-                        <li>...ועוד {autoAssignResult.details.length - 10} מורים</li>
-                      )}
-                    </ul>
-                  )}
-                </div>
-              )}
               <div className="col-md-4">
                 <input
                   type="text"
@@ -1528,6 +1565,56 @@ export default function TeacherHours() {
             </a>
           </li>
         </ul>
+      )}
+
+      {autoAssignConfirm && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setAutoAssignConfirm(false);
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon" style={{ color: '#d97706' }}>
+              <i className="fa fa-magic" />
+            </div>
+            <h3 className="confirm-modal__title">שיבוץ שעות אוטומטי</h3>
+            <p className="confirm-modal__text" style={{ textAlign: 'right' }}>
+              פעולה זו תוסיף שעות עבודה לכל המורים שחסרות להם, תוך:
+              <br />
+              <br />
+              <strong>• מחנכים</strong> יקבלו אוטומטית את שעה 1 של כל יום (התחלת יום בכיתתם)
+              <br />
+              <strong>• יום חופשי</strong> של כל מורה יישמר
+              <br />
+              <strong>• הקבצה/איחוד</strong> יסונכרנו כדי שהמורים יוכלו ללמד יחד
+              <br />
+              <strong>• המקסימום</strong> של כל מורה יעודכן אוטומטית לפי השעות הדרושות
+              <br />
+              <br />
+              האם להמשיך?
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setAutoAssignConfirm(false)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-warning"
+                onClick={executeAutoAssignSmart}
+                autoFocus
+              >
+                <i className="fa fa-bolt" /> הפעל שיבוץ
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {quotaModal && selectedTeacher && (() => {

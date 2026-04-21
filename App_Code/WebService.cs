@@ -1386,12 +1386,13 @@ SELECT COUNT(*) AS EmptySlots FROM (
             string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
             int cId = Helper.ConvertToInt(configId);
 
-            // Get every teacher's quota, FreeDay, Tafkid, ManageClassId
+            // Get every teacher's quota, FreeDay, Tafkid, ManageClassId, Frontaly
             string sqlTeachers = @"
 SELECT t.TeacherId, ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
   ISNULL(t.FreeDay, 0) AS FreeDay,
   ISNULL(t.TafkidId, 0) AS TafkidId,
   ISNULL(t.ManageClassId, 0) AS ManageClassId,
+  ISNULL(t.Frontaly, 0) AS Frontaly,
   ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS TotalRequired
 FROM Teacher t
 WHERE t.ConfigurationId = " + cId + @"
@@ -1402,21 +1403,73 @@ WHERE t.ConfigurationId = " + cId + @"
             string sqlHours = "SELECT HourId FROM SchoolHours WHERE ConfigurationId=" + cId + " AND (IsOnlyShehya=0 OR IsOnlyShehya IS NULL) ORDER BY HourId";
             DataTable dtHours = Dal.GetDataTable(sqlHours);
             List<int> allSchoolHours = new List<int>();
+            HashSet<int> schoolHourSet = new HashSet<int>();
+            // Group school hours by day for spread-per-day logic
+            Dictionary<int, List<int>> hoursByDay = new Dictionary<int, List<int>>();
             for (int i = 0; i < dtHours.Rows.Count; i++)
-                allSchoolHours.Add(Helper.ConvertToInt(dtHours.Rows[i]["HourId"].ToString()));
+            {
+                int hid = Helper.ConvertToInt(dtHours.Rows[i]["HourId"].ToString());
+                allSchoolHours.Add(hid);
+                schoolHourSet.Add(hid);
+                int day = hid / 10;
+                if (!hoursByDay.ContainsKey(day)) hoursByDay[day] = new List<int>();
+                hoursByDay[day].Add(hid);
+            }
+
+            // Load hakbatza/ihud groups - build mapping of teacher -> set of other teachers they must co-teach with
+            // For each (classId, hakbatza>0): all teachers in group must share hours
+            // For each (ihud>0) across classes: all teachers must share hours
+            Dictionary<int, HashSet<int>> coTeachers = new Dictionary<int, HashSet<int>>();
+            string sqlCT = "SELECT ClassId, TeacherId, ISNULL(Hakbatza,0) AS Hakbatza, ISNULL(Ihud,0) AS Ihud FROM ClassTeacher WHERE ConfigurationId=" + cId + " AND (Hakbatza>0 OR Ihud>0)";
+            DataTable dtCT = Dal.GetDataTable(sqlCT);
+            Dictionary<string, List<int>> groupMembers = new Dictionary<string, List<int>>();
+            for (int i = 0; i < dtCT.Rows.Count; i++)
+            {
+                int classId = Helper.ConvertToInt(dtCT.Rows[i]["ClassId"].ToString());
+                int teacherId = Helper.ConvertToInt(dtCT.Rows[i]["TeacherId"].ToString());
+                int hak = Helper.ConvertToInt(dtCT.Rows[i]["Hakbatza"].ToString());
+                int ihu = Helper.ConvertToInt(dtCT.Rows[i]["Ihud"].ToString());
+                string gk = ihu > 0 ? ("I_" + ihu) : ("H_" + classId + "_" + hak);
+                if (!groupMembers.ContainsKey(gk)) groupMembers[gk] = new List<int>();
+                if (!groupMembers[gk].Contains(teacherId)) groupMembers[gk].Add(teacherId);
+            }
+            foreach (var kv in groupMembers)
+            {
+                foreach (int t in kv.Value)
+                {
+                    if (!coTeachers.ContainsKey(t)) coTeachers[t] = new HashSet<int>();
+                    foreach (int u in kv.Value)
+                        if (u != t) coTeachers[t].Add(u);
+                }
+            }
 
             int totalAdded = 0;
             int teachersTouched = 0;
+            int quotaUpdated = 0;
             var details = new List<string>();
 
+            // Process homeroom teachers FIRST (they "anchor" the grid at hour 1)
+            var teacherOrder = new List<int>();
+            var tempRows = new Dictionary<int, DataRow>();
             for (int i = 0; i < dtTeachers.Rows.Count; i++)
             {
-                int teacherId = Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString());
-                string teacherName = dtTeachers.Rows[i]["TeacherName"].ToString().Trim();
-                int freeDay = Helper.ConvertToInt(dtTeachers.Rows[i]["FreeDay"].ToString());
+                int tid = Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString());
+                tempRows[tid] = dtTeachers.Rows[i];
                 int tafkid = Helper.ConvertToInt(dtTeachers.Rows[i]["TafkidId"].ToString());
-                int manageClass = Helper.ConvertToInt(dtTeachers.Rows[i]["ManageClassId"].ToString());
-                int totalRequired = Helper.ConvertToInt(dtTeachers.Rows[i]["TotalRequired"].ToString());
+                int mc = Helper.ConvertToInt(dtTeachers.Rows[i]["ManageClassId"].ToString());
+                if (tafkid == 1 && mc > 0) teacherOrder.Insert(0, tid); // homerooms first
+                else teacherOrder.Add(tid);
+            }
+
+            foreach (int teacherId in teacherOrder)
+            {
+                DataRow row = tempRows[teacherId];
+                string teacherName = row["TeacherName"].ToString().Trim();
+                int freeDay = Helper.ConvertToInt(row["FreeDay"].ToString());
+                int tafkid = Helper.ConvertToInt(row["TafkidId"].ToString());
+                int manageClass = Helper.ConvertToInt(row["ManageClassId"].ToString());
+                int totalRequired = Helper.ConvertToInt(row["TotalRequired"].ToString());
+                int currentFrontaly = Helper.ConvertToInt(row["Frontaly"].ToString());
                 bool isHomeroom = tafkid == 1 && manageClass > 0;
 
                 // Load current TeacherHours for this teacher
@@ -1425,34 +1478,61 @@ WHERE t.ConfigurationId = " + cId + @"
                 for (int j = 0; j < dtCur.Rows.Count; j++)
                     currentHours.Add(Helper.ConvertToInt(dtCur.Rows[j]["HourId"].ToString()));
 
-                // Pre-plan the ideal slots this teacher should have (in priority order)
+                // ---- Build desired slots, prioritised ----
                 List<int> desiredSlots = new List<int>();
 
-                // 1. Homeroom - hour 1 of every working day (except FreeDay)
+                // 1. Homeroom: hour 1 of every working day (so the homeroom always
+                //    starts the day with their class)
                 if (isHomeroom)
                 {
                     for (int day = 1; day <= 6; day++)
                     {
                         if (day == freeDay) continue;
                         int hourId = day * 10 + 1;
-                        if (allSchoolHours.Contains(hourId)) desiredSlots.Add(hourId);
+                        if (schoolHourSet.Contains(hourId) && !desiredSlots.Contains(hourId))
+                            desiredSlots.Add(hourId);
                     }
                 }
 
-                // 2. Fill remaining slots from earliest SchoolHours onwards (skipping FreeDay)
-                foreach (int h in allSchoolHours)
+                // 2. Align with hakbatza/ihud partners - copy THEIR existing hours
+                //    so partners end up sharing slots (required for co-teaching)
+                if (coTeachers.ContainsKey(teacherId))
                 {
-                    int day = h / 10;
-                    if (day == freeDay) continue;
-                    if (desiredSlots.Contains(h)) continue;
-                    desiredSlots.Add(h);
+                    foreach (int partner in coTeachers[teacherId])
+                    {
+                        DataTable dtP = Dal.GetDataTable("SELECT HourId FROM TeacherHours WHERE TeacherId=" + partner + " AND ConfigurationId=" + cId);
+                        for (int j = 0; j < dtP.Rows.Count; j++)
+                        {
+                            int hid = Helper.ConvertToInt(dtP.Rows[j]["HourId"].ToString());
+                            if (!schoolHourSet.Contains(hid)) continue;
+                            if ((hid / 10) == freeDay) continue;
+                            if (!desiredSlots.Contains(hid)) desiredSlots.Add(hid);
+                        }
+                    }
                 }
 
-                // Count how many we currently have that already intersect the
-                // valid schoolhours (real available)
+                // 3. Distribute the remaining slots ACROSS days (column-major)
+                //    e.g. d1h2, d2h2, d3h2, d4h2, d5h2, d6h2, then d1h3, d2h3, ...
+                //    This reduces per-class conflicts vs. filling one day at a time.
+                int maxHoursAny = 0;
+                foreach (var kv in hoursByDay) if (kv.Value.Count > maxHoursAny) maxHoursAny = kv.Value.Count;
+                for (int idx = 0; idx < maxHoursAny; idx++)
+                {
+                    for (int day = 1; day <= 6; day++)
+                    {
+                        if (day == freeDay) continue;
+                        if (!hoursByDay.ContainsKey(day)) continue;
+                        List<int> hoursOfDay = hoursByDay[day];
+                        if (idx >= hoursOfDay.Count) continue;
+                        int hid = hoursOfDay[idx];
+                        if (!desiredSlots.Contains(hid)) desiredSlots.Add(hid);
+                    }
+                }
+
+                // Count real-available hours (already in set, valid, not free-day)
                 int realAvailable = 0;
                 foreach (int h in currentHours)
-                    if (allSchoolHours.Contains(h) && (h / 10) != freeDay) realAvailable++;
+                    if (schoolHourSet.Contains(h) && (h / 10) != freeDay) realAvailable++;
 
                 int needed = totalRequired - realAvailable;
                 if (needed <= 0) continue;
@@ -1471,6 +1551,38 @@ WHERE t.ConfigurationId = " + cId + @"
                     catch { /* race/duplicate - skip */ }
                 }
 
+                // Update Frontaly (max hours) if needed, so the UI and shibutz
+                // algorithm know how many hours the teacher actually can teach.
+                int neededFrontaly = totalRequired;
+                if (currentFrontaly < neededFrontaly)
+                {
+                    try
+                    {
+                        DataTable dtT = Dal.GetDataTable("SELECT TOP 1 TafkidId, ProfessionalId, FirstName, LastName, Email, Tz, Shehya, Partani FROM Teacher WHERE TeacherId=" + teacherId);
+                        if (dtT.Rows.Count > 0)
+                        {
+                            DataRow tr = dtT.Rows[0];
+                            Dal.ExeSp(
+                                "Teacher_DML",
+                                teacherId.ToString(),
+                                tr["TafkidId"] == null ? "" : tr["TafkidId"].ToString(),
+                                tr["ProfessionalId"] == null ? "" : tr["ProfessionalId"].ToString(),
+                                tr["FirstName"] == null ? "" : tr["FirstName"].ToString(),
+                                tr["LastName"] == null ? "" : tr["LastName"].ToString(),
+                                tr["Email"] == null ? "" : tr["Email"].ToString(),
+                                neededFrontaly.ToString(),
+                                freeDay.ToString(),
+                                tr["Tz"] == null ? "" : tr["Tz"].ToString(),
+                                tr["Shehya"] == null ? "" : tr["Shehya"].ToString(),
+                                tr["Partani"] == null ? "" : tr["Partani"].ToString(),
+                                "1"
+                            );
+                            quotaUpdated++;
+                        }
+                    }
+                    catch { /* non-critical */ }
+                }
+
                 if (added > 0)
                 {
                     totalAdded += added;
@@ -1486,6 +1598,7 @@ WHERE t.ConfigurationId = " + cId + @"
             var sb = new System.Text.StringBuilder();
             sb.Append("{\"Added\":").Append(totalAdded);
             sb.Append(",\"Teachers\":").Append(teachersTouched);
+            sb.Append(",\"QuotaUpdated\":").Append(quotaUpdated);
             sb.Append(",\"Details\":[");
             for (int d = 0; d < details.Count; d++)
             {

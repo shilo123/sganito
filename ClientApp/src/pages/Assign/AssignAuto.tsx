@@ -362,6 +362,8 @@ export default function AssignAuto() {
   }
   // Suppress unused warning — exposed for potential manual flow triggers
   void loadDataForAssignAuto;
+  // Reserved for later use - fix-missing button was removed per user request
+  void doFixMissing;
 
   return (
     <div style={{ direction: 'rtl' }}>
@@ -481,14 +483,6 @@ export default function AssignAuto() {
             >
               <i className="fa fa-magic" />
               <span>שבץ אוטומטית</span>
-            </button>
-            <button
-              type="button"
-              className="assign-auto__btn assign-auto__btn--warning"
-              onClick={doFixMissing}
-            >
-              <i className="fa fa-wrench" />
-              <span>תקן חוסרים (הזזות)</span>
             </button>
             <button
               type="button"
