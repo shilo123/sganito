@@ -175,6 +175,8 @@ export default function TeacherHours() {
   const [quotaValue, setQuotaValue] = useState<number>(0);
   const [quotaBusy, setQuotaBusy] = useState(false);
   const [freeDayBusy, setFreeDayBusy] = useState(false);
+  const [maxHoursEdit, setMaxHoursEdit] = useState<string>('');
+  const [maxHoursBusy, setMaxHoursBusy] = useState(false);
   const [busyCells, setBusyCells] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
@@ -336,8 +338,10 @@ export default function TeacherHours() {
       setTeacherHours([]);
       setHoursLoading(true);
       loadTeacherHours(selectedTeacher.TeacherId);
+      setMaxHoursEdit(String(selectedTeacher.Frontaly ?? 0));
     } else {
       setTeacherHours([]);
+      setMaxHoursEdit('');
     }
   }, [selectedTeacher, loadTeacherHours]);
 
@@ -620,6 +624,51 @@ export default function TeacherHours() {
     }
   }
 
+  async function updateMaxHours(newVal: number) {
+    if (!selectedTeacher) return;
+    if (maxHoursBusy) return;
+    if (!Number.isFinite(newVal) || newVal <= 0) {
+      toast.warning('הזן מספר חיובי של שעות');
+      return;
+    }
+    if (newVal < frontalCount) {
+      toast.warning(
+        `המורה משובצת כבר ל-${frontalCount} שעות — הסר שיבוצים לפני הקטנת המכסה`,
+      );
+      setMaxHoursEdit(String(selectedTeacher.Frontaly ?? 0));
+      return;
+    }
+    setMaxHoursBusy(true);
+    try {
+      const t = selectedTeacher;
+      await ajax('Teacher_DML', {
+        TeacherId: t.TeacherId,
+        Tafkid: t.TafkidId ?? '',
+        ProfessionalId: t.ProfessionalId ?? '',
+        FirstName: t.FirstName ?? '',
+        LastName: t.LastName ?? '',
+        Email: t.Email ?? '',
+        Frontaly: String(newVal),
+        FreeDay: t.FreeDay ?? '',
+        Tz: t.Tz ?? '',
+        Shehya: t.Shehya ?? '',
+        Partani: t.Partani ?? '',
+        Type: 1,
+      });
+      const updated: Teacher = { ...t, Frontaly: newVal };
+      setSelectedTeacher(updated);
+      setTeachers((prev) =>
+        prev.map((x) => (String(x.TeacherId) === String(updated.TeacherId) ? updated : x)),
+      );
+      toast.success(`המכסה עודכנה ל-${newVal} שעות`);
+    } catch (err) {
+      console.error('updateMaxHours failed', err);
+      toast.error('עדכון המכסה נכשל');
+    } finally {
+      setMaxHoursBusy(false);
+    }
+  }
+
   async function updateFreeDay(newFreeDay: number | '') {
     if (!selectedTeacher) return;
     if (freeDayBusy) return;
@@ -826,7 +875,6 @@ export default function TeacherHours() {
     setSearch('');
   };
 
-  const frontaly = selectedTeacher?.Frontaly ?? 0;
   const teacherFullName = selectedTeacher
     ? `${selectedTeacher.FirstName ?? ''} ${selectedTeacher.LastName ?? ''}`.trim()
     : '';
@@ -915,12 +963,49 @@ export default function TeacherHours() {
                 <h2 className="th-modal__title">{teacherFullName}</h2>
               </div>
               <div className="th-modal__stats">
-                <div className="th-stat th-stat--primary">
-                  <span className="th-stat__val">
-                    {frontalCount}
-                    <span style={{ fontSize: 18, opacity: 0.7 }}>/{String(frontaly)}</span>
+                <div
+                  className="th-stat th-stat--primary"
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}
+                >
+                  <span className="th-stat__val" style={{ fontSize: 28, lineHeight: 1 }}>
+                    <strong>{frontalCount}</strong>
+                    <span style={{ fontSize: 16, opacity: 0.8, margin: '0 4px' }}>/</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={maxHoursEdit}
+                      disabled={maxHoursBusy}
+                      onChange={(e) => setMaxHoursEdit(e.target.value)}
+                      onBlur={() => {
+                        const n = Number(maxHoursEdit);
+                        if (n > 0 && n !== Number(selectedTeacher?.Frontaly ?? 0)) {
+                          updateMaxHours(n);
+                        } else if (n <= 0) {
+                          setMaxHoursEdit(String(selectedTeacher?.Frontaly ?? 0));
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                        if (e.key === 'Escape') {
+                          setMaxHoursEdit(String(selectedTeacher?.Frontaly ?? 0));
+                          (e.target as HTMLInputElement).blur();
+                        }
+                      }}
+                      style={{
+                        width: 62,
+                        fontSize: 22,
+                        fontWeight: 700,
+                        textAlign: 'center',
+                        padding: '2px 4px',
+                        border: '1px solid #fff',
+                        borderRadius: 4,
+                        background: maxHoursBusy ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.95)',
+                        color: '#1f2937',
+                      }}
+                      title="לחץ כדי לערוך את מקסימום השעות"
+                    />
                   </span>
-                  <span className="th-stat__label">שובצו / נדרשות</span>
+                  <span className="th-stat__label">שובצו / מקסימום</span>
                 </div>
                 <div
                   className="th-stat"
