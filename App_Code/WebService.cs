@@ -1386,7 +1386,16 @@ SELECT COUNT(*) AS EmptySlots FROM (
             string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
             int cId = Helper.ConvertToInt(configId);
 
-            // Get every teacher's quota, FreeDay, Tafkid, ManageClassId, Frontaly
+            // Optional flag: auto-pick a FreeDay for homeroom teachers who don't
+            // have one yet. Passed as AutoSetHomeroomFreeDay=1 in the form body.
+            string autoFdRaw = GetParams("AutoSetHomeroomFreeDay");
+            bool autoSetHomeroomFreeDay = autoFdRaw == "1" || autoFdRaw == "true";
+
+            // Include EVERY teacher in this configuration — not only those
+            // with ClassTeacher requirements. Teachers without CT still need
+            // working hours so they're present at school and available for
+            // shehya, substitution, etc. The user's instruction was: "no
+            // teacher should be left without any hours."
             string sqlTeachers = @"
 SELECT t.TeacherId, ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
   ISNULL(t.FreeDay, 0) AS FreeDay,
@@ -1395,9 +1404,80 @@ SELECT t.TeacherId, ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS Teac
   ISNULL(t.Frontaly, 0) AS Frontaly,
   ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS TotalRequired
 FROM Teacher t
-WHERE t.ConfigurationId = " + cId + @"
-  AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) > 0";
+WHERE t.ConfigurationId = " + cId;
             DataTable dtTeachers = Dal.GetDataTable(sqlTeachers);
+
+            // Auto-pick FreeDay for homeroom teachers who don't have one yet.
+            // Heuristic: pick the day (1..6) with the fewest existing
+            // TeacherHours for this teacher. If tied, prefer Friday (day 6) as
+            // schools usually give homeroom teachers that day off.
+            int freeDayAutoSet = 0;
+            if (autoSetHomeroomFreeDay)
+            {
+                for (int i = 0; i < dtTeachers.Rows.Count; i++)
+                {
+                    int tid = Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString());
+                    int tafkid = Helper.ConvertToInt(dtTeachers.Rows[i]["TafkidId"].ToString());
+                    int mc = Helper.ConvertToInt(dtTeachers.Rows[i]["ManageClassId"].ToString());
+                    int curFd = Helper.ConvertToInt(dtTeachers.Rows[i]["FreeDay"].ToString());
+                    if (curFd >= 1 && curFd <= 6) continue;           // already has one
+                    if (!(tafkid == 1 && mc > 0)) continue;           // homeroom only
+
+                    // Count existing hours per day
+                    int[] perDay = new int[7];
+                    DataTable dtH = Dal.GetDataTable("SELECT HourId FROM TeacherHours WHERE TeacherId=" + tid + " AND ConfigurationId=" + cId);
+                    for (int j = 0; j < dtH.Rows.Count; j++)
+                    {
+                        int hid = Helper.ConvertToInt(dtH.Rows[j]["HourId"].ToString());
+                        int d = hid / 10;
+                        if (d >= 1 && d <= 6) perDay[d]++;
+                    }
+                    int pickDay = 6;
+                    int pickCount = perDay[6];
+                    for (int d = 5; d >= 1; d--)
+                    {
+                        if (perDay[d] < pickCount) { pickDay = d; pickCount = perDay[d]; }
+                    }
+                    try
+                    {
+                        Dal.ExecuteNonQuery("UPDATE Teacher SET FreeDay=" + pickDay +
+                                            " WHERE TeacherId=" + tid + " AND ConfigurationId=" + cId);
+                        dtTeachers.Rows[i]["FreeDay"] = pickDay;
+                        freeDayAutoSet++;
+                    }
+                    catch { /* non-critical */ }
+                }
+            }
+
+            // Rebuild-from-scratch: wipe all TeacherHours for teachers that have
+            // ClassTeacher requirements, then re-seed them with the spread-per-day
+            // distribution. This gives a predictable, evenly-spread grid and
+            // guarantees nothing sits on a FreeDay. Only affects teachers that
+            // appear in dtTeachers (i.e. teachers with ClassTeacher > 0).
+            int wipedHours = 0;
+            int cleanedFreeDayHours = 0; // kept for backwards-compat in the JSON
+            try
+            {
+                // Build a CSV of the teacher IDs we'll rebuild
+                System.Text.StringBuilder csv = new System.Text.StringBuilder();
+                for (int i = 0; i < dtTeachers.Rows.Count; i++)
+                {
+                    if (csv.Length > 0) csv.Append(",");
+                    csv.Append(Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString()));
+                }
+                if (csv.Length > 0)
+                {
+                    DataTable dtN = Dal.GetDataTable(
+                        "SELECT COUNT(*) AS N FROM TeacherHours WHERE ConfigurationId=" + cId +
+                        " AND TeacherId IN (" + csv + ")");
+                    if (dtN.Rows.Count > 0)
+                        wipedHours = Helper.ConvertToInt(dtN.Rows[0]["N"].ToString());
+                    Dal.ExecuteNonQuery(
+                        "DELETE FROM TeacherHours WHERE ConfigurationId=" + cId +
+                        " AND TeacherId IN (" + csv + ")");
+                }
+            }
+            catch { /* non-critical */ }
 
             // Load SchoolHours once
             string sqlHours = "SELECT HourId FROM SchoolHours WHERE ConfigurationId=" + cId + " AND (IsOnlyShehya=0 OR IsOnlyShehya IS NULL) ORDER BY HourId";
@@ -1534,13 +1614,31 @@ WHERE t.ConfigurationId = " + cId + @"
                 foreach (int h in currentHours)
                     if (schoolHourSet.Contains(h) && (h / 10) != freeDay) realAvailable++;
 
-                int needed = totalRequired - realAvailable;
-                if (needed <= 0) continue;
+                // Update Frontaly (max hours) FIRST so it runs even if this teacher
+                // already has enough hours but their quota field is stale.
+                // Direct UPDATE only: the Teacher_DML SP has a side-effect that
+                // deletes TeacherHours on the FreeDay - we don't want that here.
+                if (currentFrontaly < totalRequired)
+                {
+                    try
+                    {
+                        Dal.ExecuteNonQuery("UPDATE Teacher SET Frontaly=" + totalRequired +
+                                            " WHERE TeacherId=" + teacherId +
+                                            " AND ConfigurationId=" + cId);
+                        quotaUpdated++;
+                    }
+                    catch { /* non-critical */ }
+                }
 
+                // Give the teacher ALL non-FreeDay school-hour slots. The
+                // scheduler needs slack to resolve conflicts — if we give them
+                // exactly `totalRequired` hours, any conflict becomes a miss.
+                // Extra hours are harmless (they just mark the teacher as
+                // "available" in those slots; the scheduler only fills what it
+                // needs).
                 int added = 0;
                 foreach (int hourId in desiredSlots)
                 {
-                    if (added >= needed) break;
                     if (currentHours.Contains(hourId)) continue;
                     try
                     {
@@ -1549,38 +1647,6 @@ WHERE t.ConfigurationId = " + cId + @"
                         added++;
                     }
                     catch { /* race/duplicate - skip */ }
-                }
-
-                // Update Frontaly (max hours) if needed, so the UI and shibutz
-                // algorithm know how many hours the teacher actually can teach.
-                int neededFrontaly = totalRequired;
-                if (currentFrontaly < neededFrontaly)
-                {
-                    try
-                    {
-                        DataTable dtT = Dal.GetDataTable("SELECT TOP 1 TafkidId, ProfessionalId, FirstName, LastName, Email, Tz, Shehya, Partani FROM Teacher WHERE TeacherId=" + teacherId);
-                        if (dtT.Rows.Count > 0)
-                        {
-                            DataRow tr = dtT.Rows[0];
-                            Dal.ExeSp(
-                                "Teacher_DML",
-                                teacherId.ToString(),
-                                tr["TafkidId"] == null ? "" : tr["TafkidId"].ToString(),
-                                tr["ProfessionalId"] == null ? "" : tr["ProfessionalId"].ToString(),
-                                tr["FirstName"] == null ? "" : tr["FirstName"].ToString(),
-                                tr["LastName"] == null ? "" : tr["LastName"].ToString(),
-                                tr["Email"] == null ? "" : tr["Email"].ToString(),
-                                neededFrontaly.ToString(),
-                                freeDay.ToString(),
-                                tr["Tz"] == null ? "" : tr["Tz"].ToString(),
-                                tr["Shehya"] == null ? "" : tr["Shehya"].ToString(),
-                                tr["Partani"] == null ? "" : tr["Partani"].ToString(),
-                                "1"
-                            );
-                            quotaUpdated++;
-                        }
-                    }
-                    catch { /* non-critical */ }
                 }
 
                 if (added > 0)
@@ -1599,6 +1665,9 @@ WHERE t.ConfigurationId = " + cId + @"
             sb.Append("{\"Added\":").Append(totalAdded);
             sb.Append(",\"Teachers\":").Append(teachersTouched);
             sb.Append(",\"QuotaUpdated\":").Append(quotaUpdated);
+            sb.Append(",\"FreeDayAutoSet\":").Append(freeDayAutoSet);
+            sb.Append(",\"CleanedFreeDayHours\":").Append(cleanedFreeDayHours);
+            sb.Append(",\"WipedHours\":").Append(wipedHours);
             sb.Append(",\"Details\":[");
             for (int d = 0; d < details.Count; d++)
             {
@@ -1729,6 +1798,29 @@ ORDER BY sh.HourId";
     // total/red slot counts, per-class fill progress.
     // SessionState=Disabled so this doesn't block on the long-running request.
     // =========================================================
+    // Signals the running scheduler to abort at the next safe checkpoint.
+    // Does NOT block — returns immediately. The running Assign_ShibutzAuto
+    // request will finish normally (with partial results) and the client
+    // will see a regular response.
+    [WebMethod]
+    public void Assign_CancelShibutz()
+    {
+        try
+        {
+            int cId = Helper.ConvertToInt(HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+            Shibutz.RequestCancel(cId);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Cancelled\":true}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
     [WebMethod]
     public void Assign_GetShibutzLiveStatus()
     {
@@ -1933,6 +2025,290 @@ ORDER BY (TotalRequired - AvailableHourSlots) DESC";
     // but an unrelated teacher is currently there. Falls back to the
     // simple force logic otherwise.
     // =========================================================
+
+    // =========================================================
+    // Analyze current scheduling gaps and return concrete
+    // resolution proposals the admin can approve (or reject).
+    //
+    // Returns JSON:
+    // {
+    //   TotalMissing: int,
+    //   AffectedTeachers: int,
+    //   Proposals: {
+    //     ClearFreeDayTeachers:   [ {TeacherId, Name, FreeDay, Missing}, ... ],
+    //     ReduceClassTeacherRows: [ {ClassTeacherKey, ClassName, TeacherName, From, To}, ... ],
+    //     SyncHakbatzaFreeDay:    [ {GroupKey, MajorityFreeDay, Members: [...] }, ... ]
+    //   }
+    // }
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_GetConflictResolutions()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+
+            // Reuse the diagnostic query (unmet ClassTeacher requirements).
+            string sqlDiag = @"
+SELECT ct.ClassId, ct.TeacherId,
+  ISNULL(c.Name,'') AS ClassName,
+  ISNULL(t.FirstName,'')+' '+ISNULL(t.LastName,'') AS TeacherName,
+  ct.Hour AS Required,
+  ISNULL(ta.Assigned,0) AS Assigned,
+  ct.Hour - ISNULL(ta.Assigned,0) AS Missing,
+  ISNULL(t.FreeDay,0) AS FreeDay,
+  ISNULL(ct.Hakbatza,0) AS Hakbatza,
+  ISNULL(ct.Ihud,0) AS Ihud
+FROM ClassTeacher ct
+LEFT JOIN (
+  SELECT ClassId, TeacherId, COUNT(*) AS Assigned
+  FROM TeacherAssignment
+  WHERE ConfigurationId=" + cId + @" AND HourTypeId=1
+  GROUP BY ClassId, TeacherId
+) ta ON ta.ClassId=ct.ClassId AND ta.TeacherId=ct.TeacherId
+LEFT JOIN Teacher t ON t.TeacherId=ct.TeacherId
+LEFT JOIN Class c ON c.ClassId=ct.ClassId
+WHERE ct.ConfigurationId=" + cId + @"
+  AND (ct.Hour - ISNULL(ta.Assigned,0)) > 0";
+            DataTable dt = Dal.GetDataTable(sqlDiag);
+
+            // Build proposals
+            HashSet<int> seenTeachers = new HashSet<int>();
+            List<string> clearFreeDay = new List<string>();
+            List<string> reduceCT = new List<string>();
+            // Hakbatza groups: key = "classId_hakbatza" OR "ihud_X"
+            Dictionary<string, List<int[]>> hakGroups = new Dictionary<string, List<int[]>>();
+            int totalMissing = 0;
+            for (int i = 0; i < dt.Rows.Count; i++)
+            {
+                int classId = Helper.ConvertToInt(dt.Rows[i]["ClassId"].ToString());
+                int teacherId = Helper.ConvertToInt(dt.Rows[i]["TeacherId"].ToString());
+                string className = dt.Rows[i]["ClassName"].ToString();
+                string teacherName = dt.Rows[i]["TeacherName"].ToString().Trim();
+                int required = Helper.ConvertToInt(dt.Rows[i]["Required"].ToString());
+                int assigned = Helper.ConvertToInt(dt.Rows[i]["Assigned"].ToString());
+                int missing = Helper.ConvertToInt(dt.Rows[i]["Missing"].ToString());
+                int freeDay = Helper.ConvertToInt(dt.Rows[i]["FreeDay"].ToString());
+                int hak = Helper.ConvertToInt(dt.Rows[i]["Hakbatza"].ToString());
+                int ihud = Helper.ConvertToInt(dt.Rows[i]["Ihud"].ToString());
+                totalMissing += missing;
+
+                // Proposal 1: clear FreeDay for teachers with missing hours (unique per teacher)
+                if (freeDay >= 1 && freeDay <= 6 && !seenTeachers.Contains(teacherId))
+                {
+                    seenTeachers.Add(teacherId);
+                    int teacherMissingTotal = 0;
+                    for (int k = 0; k < dt.Rows.Count; k++)
+                    {
+                        if (Helper.ConvertToInt(dt.Rows[k]["TeacherId"].ToString()) == teacherId)
+                            teacherMissingTotal += Helper.ConvertToInt(dt.Rows[k]["Missing"].ToString());
+                    }
+                    clearFreeDay.Add(
+                        "{\"TeacherId\":" + teacherId +
+                        ",\"Name\":\"" + Esc(teacherName) + "\"" +
+                        ",\"FreeDay\":" + freeDay +
+                        ",\"Missing\":" + teacherMissingTotal + "}");
+                }
+
+                // Proposal 2: reduce ClassTeacher row to what's actually achievable
+                reduceCT.Add(
+                    "{\"ClassId\":" + classId +
+                    ",\"TeacherId\":" + teacherId +
+                    ",\"ClassName\":\"" + Esc(className) + "\"" +
+                    ",\"TeacherName\":\"" + Esc(teacherName) + "\"" +
+                    ",\"From\":" + required +
+                    ",\"To\":" + assigned +
+                    ",\"Delta\":" + missing + "}");
+
+                // Proposal 3: hakbatza/ihud groups to sync
+                string gk = ihud > 0 ? ("I_" + ihud) : (hak > 0 ? ("H_" + classId + "_" + hak) : null);
+                if (gk != null)
+                {
+                    if (!hakGroups.ContainsKey(gk)) hakGroups[gk] = new List<int[]>();
+                    hakGroups[gk].Add(new int[] { teacherId, freeDay });
+                }
+            }
+
+            // Build hakbatza sync proposal (only groups with 2+ distinct FreeDays)
+            List<string> syncHak = new List<string>();
+            foreach (var kv in hakGroups)
+            {
+                HashSet<int> fds = new HashSet<int>();
+                foreach (var m in kv.Value) fds.Add(m[1]);
+                if (fds.Count < 2) continue;       // already synced
+                // majority / mode FreeDay (ignore 0 = no free day when possible)
+                Dictionary<int, int> counts = new Dictionary<int, int>();
+                foreach (var m in kv.Value)
+                {
+                    if (!counts.ContainsKey(m[1])) counts[m[1]] = 0;
+                    counts[m[1]]++;
+                }
+                int best = -1, bestCnt = -1;
+                foreach (var c in counts) if (c.Value > bestCnt) { bestCnt = c.Value; best = c.Key; }
+
+                System.Text.StringBuilder members = new System.Text.StringBuilder();
+                members.Append("[");
+                for (int i = 0; i < kv.Value.Count; i++)
+                {
+                    if (i > 0) members.Append(",");
+                    members.Append("{\"TeacherId\":").Append(kv.Value[i][0])
+                           .Append(",\"FreeDay\":").Append(kv.Value[i][1]).Append("}");
+                }
+                members.Append("]");
+
+                syncHak.Add("{\"GroupKey\":\"" + Esc(kv.Key) + "\"" +
+                            ",\"MajorityFreeDay\":" + best +
+                            ",\"Members\":" + members.ToString() + "}");
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("{\"TotalMissing\":").Append(totalMissing);
+            sb.Append(",\"AffectedTeachers\":").Append(seenTeachers.Count);
+            sb.Append(",\"Proposals\":{");
+            sb.Append("\"ClearFreeDayTeachers\":[").Append(string.Join(",", clearFreeDay.ToArray())).Append("]");
+            sb.Append(",\"ReduceClassTeacherRows\":[").Append(string.Join(",", reduceCT.ToArray())).Append("]");
+            sb.Append(",\"SyncHakbatzaFreeDay\":[").Append(string.Join(",", syncHak.ToArray())).Append("]");
+            sb.Append("}}");
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
+            HttpContext.Current.Response.Write(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Apply the admin-approved resolutions: takes 3 boolean flags
+    // (ClearFreeDay / ReduceCT / SyncHakbatza) and performs the corresponding
+    // UPDATEs. Returns the counts actually changed.
+    [WebMethod(EnableSession = true)]
+    public void Assign_ApplyConflictResolutions()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+
+            bool doClearFD = GetParams("ClearFreeDay") == "1";
+            bool doReduceCT = GetParams("ReduceCT") == "1";
+            bool doSyncHak = GetParams("SyncHakbatza") == "1";
+
+            int clearedFD = 0, reducedCT = 0, syncedFD = 0;
+
+            // 1. Clear FreeDay for teachers who still have missing hours
+            if (doClearFD)
+            {
+                string sqlClear = @"
+UPDATE Teacher
+SET FreeDay = NULL
+WHERE ConfigurationId=" + cId + @"
+  AND ISNULL(FreeDay,0) BETWEEN 1 AND 6
+  AND TeacherId IN (
+    SELECT DISTINCT ct.TeacherId
+    FROM ClassTeacher ct
+    LEFT JOIN (
+      SELECT ClassId, TeacherId, COUNT(*) AS Asgn
+      FROM TeacherAssignment
+      WHERE ConfigurationId=" + cId + @" AND HourTypeId=1
+      GROUP BY ClassId, TeacherId
+    ) ta ON ta.ClassId=ct.ClassId AND ta.TeacherId=ct.TeacherId
+    WHERE ct.ConfigurationId=" + cId + @"
+      AND (ct.Hour - ISNULL(ta.Asgn,0)) > 0
+  )";
+                clearedFD = Dal.ExecuteNonQuery(sqlClear);
+            }
+
+            // 2. Reduce ClassTeacher.Hour to match what was actually assigned
+            if (doReduceCT)
+            {
+                string sqlReduce = @"
+UPDATE ct
+SET Hour = ct.Hour - (ct.Hour - ISNULL(ta.Asgn,0))
+FROM ClassTeacher ct
+LEFT JOIN (
+  SELECT ClassId, TeacherId, COUNT(*) AS Asgn
+  FROM TeacherAssignment
+  WHERE ConfigurationId=" + cId + @" AND HourTypeId=1
+  GROUP BY ClassId, TeacherId
+) ta ON ta.ClassId=ct.ClassId AND ta.TeacherId=ct.TeacherId
+WHERE ct.ConfigurationId=" + cId + @"
+  AND (ct.Hour - ISNULL(ta.Asgn,0)) > 0";
+                reducedCT = Dal.ExecuteNonQuery(sqlReduce);
+            }
+
+            // 3. Sync FreeDay within hakbatza/ihud groups to the majority value
+            if (doSyncHak)
+            {
+                string sqlGroups = @"
+SELECT ct.ClassId, ct.TeacherId, ISNULL(t.FreeDay,0) AS FD,
+  ISNULL(ct.Hakbatza,0) AS Hak, ISNULL(ct.Ihud,0) AS Ihu
+FROM ClassTeacher ct
+INNER JOIN Teacher t ON t.TeacherId=ct.TeacherId
+WHERE ct.ConfigurationId=" + cId + @"
+  AND (ISNULL(ct.Hakbatza,0) > 0 OR ISNULL(ct.Ihud,0) > 0)";
+                DataTable dtG = Dal.GetDataTable(sqlGroups);
+                Dictionary<string, List<int[]>> groups = new Dictionary<string, List<int[]>>();
+                for (int i = 0; i < dtG.Rows.Count; i++)
+                {
+                    int classId = Helper.ConvertToInt(dtG.Rows[i]["ClassId"].ToString());
+                    int teacherId = Helper.ConvertToInt(dtG.Rows[i]["TeacherId"].ToString());
+                    int fd = Helper.ConvertToInt(dtG.Rows[i]["FD"].ToString());
+                    int hak = Helper.ConvertToInt(dtG.Rows[i]["Hak"].ToString());
+                    int ihud = Helper.ConvertToInt(dtG.Rows[i]["Ihu"].ToString());
+                    string gk = ihud > 0 ? ("I_" + ihud) : ("H_" + classId + "_" + hak);
+                    if (!groups.ContainsKey(gk)) groups[gk] = new List<int[]>();
+                    groups[gk].Add(new int[] { teacherId, fd });
+                }
+                foreach (var kv in groups)
+                {
+                    // pick majority FreeDay
+                    Dictionary<int, int> cnts = new Dictionary<int, int>();
+                    foreach (var m in kv.Value)
+                    {
+                        if (!cnts.ContainsKey(m[1])) cnts[m[1]] = 0;
+                        cnts[m[1]]++;
+                    }
+                    if (cnts.Count < 2) continue; // already synced
+                    int best = 0, bestCnt = -1;
+                    foreach (var c in cnts) if (c.Value > bestCnt) { bestCnt = c.Value; best = c.Key; }
+                    foreach (var m in kv.Value)
+                    {
+                        if (m[1] == best) continue;
+                        string sqlU = best >= 1 && best <= 6
+                            ? "UPDATE Teacher SET FreeDay=" + best + " WHERE TeacherId=" + m[0] + " AND ConfigurationId=" + cId
+                            : "UPDATE Teacher SET FreeDay=NULL WHERE TeacherId=" + m[0] + " AND ConfigurationId=" + cId;
+                        try { syncedFD += Dal.ExecuteNonQuery(sqlU); } catch { }
+                    }
+                }
+            }
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(
+                "{\"ClearedFreeDay\":" + clearedFD +
+                ",\"ReducedClassTeacher\":" + reducedCT +
+                ",\"SyncedHakbatzaFreeDay\":" + syncedFD + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    private static string Esc(string s)
+    {
+        if (s == null) return "";
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", " ").Replace("\r", " ");
+    }
+
     [WebMethod(EnableSession = true)]
     public void Assign_ShibutzForceSmart()
     {

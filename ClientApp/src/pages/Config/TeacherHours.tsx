@@ -18,6 +18,8 @@ interface Teacher {
   Tz?: string | null;
   Shehya?: number | string | null;
   Partani?: number | string | null;
+  TotalRequired?: number | string | null;
+  AssignedCount?: number | string | null;
   [k: string]: unknown;
 }
 
@@ -851,6 +853,7 @@ export default function TeacherHours() {
     teachers: number;
     details: string[];
   } | null>(null);
+  const [autoSetFreeDay, setAutoSetFreeDay] = useState(false);
 
   async function executeAutoAssignSmart() {
     setAutoAssignConfirm(false);
@@ -861,7 +864,7 @@ export default function TeacherHours() {
       const raw = await fetch('/WebService.asmx/Teacher_AutoAssignHoursSmart', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-        body: '',
+        body: 'AutoSetHomeroomFreeDay=' + (autoSetFreeDay ? '1' : '0'),
         credentials: 'include',
       });
       if (!raw.ok) throw new Error('HTTP ' + raw.status);
@@ -871,10 +874,19 @@ export default function TeacherHours() {
         teachers: Number(data?.Teachers || 0),
         details: Array.isArray(data?.Details) ? data.Details : [],
       });
-      if (Number(data?.Added || 0) === 0) {
-        toast.info('לא נמצאו מורים שדורשים הוספת שעות עבודה');
+      const added = Number(data?.Added || 0);
+      const quotaUpdated = Number(data?.QuotaUpdated || 0);
+      const freeDayAutoSet = Number(data?.FreeDayAutoSet || 0);
+      const wipedHours = Number(data?.WipedHours || 0);
+      const parts: string[] = [];
+      if (wipedHours > 0) parts.push(`נמחקו ${wipedHours} שעות קיימות`);
+      if (added > 0) parts.push(`נבנו ${added} שעות ל-${data.Teachers} מורים`);
+      if (quotaUpdated > 0) parts.push(`${quotaUpdated} מכסות עודכנו`);
+      if (freeDayAutoSet > 0) parts.push(`${freeDayAutoSet} ימי חופש הוגדרו`);
+      if (parts.length === 0) {
+        toast.info('אין מורים עם דרישות ClassTeacher להקצאה');
       } else {
-        toast.success(`הוגדרו ${data.Added} שעות ל-${data.Teachers} מורים`);
+        toast.success(parts.join(' | '));
       }
       if (selectedTeacher) {
         loadTeacherHours(selectedTeacher.TeacherId);
@@ -944,66 +956,6 @@ export default function TeacherHours() {
       )}
       <div className="col-md-12">
         <div className="row dvWeek">
-          {/* Dominant auto-assign hours card */}
-          <div
-            style={{
-              background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-              borderRadius: 10,
-              padding: '18px 22px',
-              marginBottom: 16,
-              color: '#fff',
-              boxShadow: '0 4px 14px -4px rgba(217, 119, 6, 0.45)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              flexWrap: 'wrap',
-              gap: 14,
-            }}
-          >
-            <div style={{ flex: '1 1 auto', minWidth: 260 }}>
-              <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>
-                <i className="fa fa-magic" style={{ marginLeft: 8 }} />
-                שיבוץ שעות אוטומטי
-              </div>
-              <div style={{ fontSize: 13, opacity: 0.95, lineHeight: 1.5 }}>
-                מגדיר אוטומטית שעות עבודה לכל המורים. מחנכים יקבלו שעה 1 של כל יום (להתחלת היום
-                בכיתתם), יום חופשי יישמר, הקבצה/איחוד יסונכרנו, ובסוף יעודכנו גם המקסימומים.
-                <br />
-                מיועד לעבוד יחד עם "שיבוץ אוטומטי" של המערכת.
-              </div>
-            </div>
-            <button
-              type="button"
-              className="btn btn-lg"
-              onClick={runAutoAssignSmart}
-              disabled={autoAssignBusy}
-              style={{
-                background: '#fff',
-                color: '#d97706',
-                fontWeight: 700,
-                padding: '12px 22px',
-                borderRadius: 8,
-                border: 'none',
-                fontSize: 15,
-                minWidth: 200,
-                boxShadow: '0 2px 8px -2px rgba(0,0,0,0.25)',
-                cursor: autoAssignBusy ? 'wait' : 'pointer',
-                opacity: autoAssignBusy ? 0.7 : 1,
-              }}
-            >
-              {autoAssignBusy ? (
-                <>
-                  <span className="spinner" /> מגדיר שעות...
-                </>
-              ) : (
-                <>
-                  <i className="fa fa-bolt" style={{ marginLeft: 6 }} />
-                  הפעל שיבוץ אוטומטי
-                </>
-              )}
-            </button>
-          </div>
-
           {autoAssignResult && autoAssignResult.added > 0 && (
             <div
               className="alert alert-success"
@@ -1032,8 +984,8 @@ export default function TeacherHours() {
             <div className="panel-heading">
               <h3 className="panel-title">&nbsp;בחירת מורה</h3>
             </div>
-            <div className="panel-body">
-              <div className="col-md-4">
+            <div className="panel-body" style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+              <div className="col-md-4" style={{ flex: '1 1 300px', minWidth: 260 }}>
                 <input
                   type="text"
                   className="form-control"
@@ -1074,6 +1026,37 @@ export default function TeacherHours() {
                   </ul>
                 )}
               </div>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={runAutoAssignSmart}
+                disabled={autoAssignBusy}
+                title="מגדיר אוטומטית שעות עבודה לכל המורים. מחנכים יקבלו שעה 1 של כל יום. יום חופשי יישמר, הקבצה/איחוד יסונכרנו."
+                style={{
+                  background: '#f59e0b',
+                  color: '#fff',
+                  fontWeight: 600,
+                  padding: '7px 14px',
+                  borderRadius: 6,
+                  border: 'none',
+                  fontSize: 13,
+                  cursor: autoAssignBusy ? 'wait' : 'pointer',
+                  opacity: autoAssignBusy ? 0.7 : 1,
+                  whiteSpace: 'nowrap',
+                  marginInlineStart: 'auto',
+                }}
+              >
+                {autoAssignBusy ? (
+                  <>
+                    <span className="spinner" /> מגדיר שעות...
+                  </>
+                ) : (
+                  <>
+                    <i className="fa fa-bolt" style={{ marginLeft: 6 }} />
+                    שיבוץ שעות אוטומטי
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>
@@ -1469,32 +1452,49 @@ export default function TeacherHours() {
           <div className="col-md-2 dvRequireTitle">שם מורה</div>
           <div className="col-md-2 dvRequireTitle">תפקיד</div>
           <div className="col-md-2 dvRequireTitle">מקצוע</div>
-          <div className="col-md-2 dvRequireTitle">יום חופשי</div>
-          <div className="col-md-2 dvRequireTitle">שעות שהייה</div>
-          <div className="col-md-1 dvRequireTitle">שעות פרטני</div>
-          <div className="col-md-1 dvRequireTitle">&nbsp;</div>
+          <div className="col-md-1 dvRequireTitle">יום חופשי</div>
+          <div className="col-md-1 dvRequireTitle">שהייה</div>
+          <div className="col-md-1 dvRequireTitle">פרטני</div>
+          <div className="col-md-1 dvRequireTitle" title="סה״כ שעות מוקצבות בשבוע (סכום שעות כל הכיתות שהמורה מלמד/ת)">מוקצבות</div>
+          <div className="col-md-1 dvRequireTitle" title="כמה שעות שובצו בפועל במערכת הסופית">שיבוץ</div>
+          <div className="col-md-2 dvRequireTitle">&nbsp;</div>
           <div id="dvReqContainer" className="dvPanelReq clear">
-            {tableTeachers.map((t) => (
-              <div key={String(t.TeacherId)}>
-                <div className="col-md-2 dvRequireDetails">
-                  <a
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      pickTeacher(t);
-                    }}
-                  >
-                    {isNullDB(t.FullText)}
-                  </a>
+            {tableTeachers.map((t) => {
+              const required = Number(t.TotalRequired ?? 0);
+              const assigned = Number(t.AssignedCount ?? 0);
+              const gap = assigned - required;
+              const assignedColor = required === 0 ? '#6b7280' : gap === 0 ? '#16a34a' : gap < 0 ? '#dc2626' : '#d97706';
+              return (
+                <div key={String(t.TeacherId)}>
+                  <div className="col-md-2 dvRequireDetails">
+                    <a
+                      href="#"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        pickTeacher(t);
+                      }}
+                    >
+                      {isNullDB(t.FullText)}
+                    </a>
+                  </div>
+                  <div className="col-md-2 dvRequireDetails">{isNullDB(t.Tafkid)}</div>
+                  <div className="col-md-2 dvRequireDetails">{isNullDB(t.Professional)}</div>
+                  <div className="col-md-1 dvRequireDetails">{getDayInWeekString(t.FreeDay)}</div>
+                  <div className="col-md-1 dvRequireDetails">{isNullDB(t.Shehya)}</div>
+                  <div className="col-md-1 dvRequireDetails">{isNullDB(t.Partani)}</div>
+                  <div className="col-md-1 dvRequireDetails" style={{ fontWeight: 600 }}>{required}</div>
+                  <div className="col-md-1 dvRequireDetails" style={{ color: assignedColor, fontWeight: 600 }}>
+                    {assigned}
+                    {required > 0 && gap !== 0 && (
+                      <span style={{ fontSize: 11, marginInlineStart: 4, opacity: 0.8 }}>
+                        ({gap > 0 ? '+' : ''}{gap})
+                      </span>
+                    )}
+                  </div>
+                  <div className="col-md-2 dvRequireDetails">&nbsp;</div>
                 </div>
-                <div className="col-md-2 dvRequireDetails">{isNullDB(t.Tafkid)}</div>
-                <div className="col-md-2 dvRequireDetails">{isNullDB(t.Professional)}</div>
-                <div className="col-md-2 dvRequireDetails">{getDayInWeekString(t.FreeDay)}</div>
-                <div className="col-md-2 dvRequireDetails">{isNullDB(t.Shehya)}</div>
-                <div className="col-md-1 dvRequireDetails">{isNullDB(t.Partani)}</div>
-                <div className="col-md-1 dvRequireDetails">&nbsp;</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1582,21 +1582,52 @@ export default function TeacherHours() {
             </div>
             <h3 className="confirm-modal__title">שיבוץ שעות אוטומטי</h3>
             <p className="confirm-modal__text" style={{ textAlign: 'right' }}>
-              פעולה זו תוסיף שעות עבודה לכל המורים שחסרות להם, תוך:
+              פעולה זו <strong style={{ color: '#dc2626' }}>תמחק את כל שעות העבודה הקיימות</strong>{' '}
+              של מורים עם דרישות כיתה, ותבנה אותן מחדש:
               <br />
               <br />
               <strong>• מחנכים</strong> יקבלו אוטומטית את שעה 1 של כל יום (התחלת יום בכיתתם)
               <br />
-              <strong>• יום חופשי</strong> של כל מורה יישמר
+              <strong>• יום חופשי</strong> של כל מורה יישמר (ולא ייקבעו בו שעות)
               <br />
               <strong>• הקבצה/איחוד</strong> יסונכרנו כדי שהמורים יוכלו ללמד יחד
               <br />
               <strong>• המקסימום</strong> של כל מורה יעודכן אוטומטית לפי השעות הדרושות
               <br />
+              <strong>• פיזור אחיד</strong> על פני הימים, ומתחיל משעה מוקדמת
+              <br />
               <br />
               האם להמשיך?
             </p>
-            <div className="confirm-modal__actions">
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '10px 12px',
+                background: '#fef3c7',
+                border: '1px solid #fcd34d',
+                borderRadius: 8,
+                marginTop: 14,
+                cursor: 'pointer',
+                fontSize: 13,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={autoSetFreeDay}
+                onChange={(e) => setAutoSetFreeDay(e.target.checked)}
+                style={{ width: 18, height: 18, cursor: 'pointer' }}
+              />
+              <span style={{ flex: 1, textAlign: 'right', lineHeight: 1.5 }}>
+                <strong>הגדר אוטומטית יום חופשי למחנכים</strong>
+                <br />
+                <span style={{ fontSize: 12, color: '#6b7280' }}>
+                  (למחנכים ללא יום חופשי - ייבחר היום עם הכי פחות שעות קיימות)
+                </span>
+              </span>
+            </label>
+            <div className="confirm-modal__actions" style={{ marginTop: 14 }}>
               <button
                 type="button"
                 className="btn btn-default"

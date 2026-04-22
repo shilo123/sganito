@@ -3704,12 +3704,12 @@ input[type='radio'] {
 .assign-schedule__table {
   width: 100%;
   border-collapse: separate;
-  border-spacing: 0;
+  border-spacing: 3px;
   table-layout: fixed;
   direction: rtl;
   font-family: var(--font-sans);
+  padding: 2px;
 }
-.assign-schedule__table th,
 .assign-schedule__table td {
   padding: 0;
   vertical-align: middle;
@@ -3717,8 +3717,8 @@ input[type='radio'] {
 }
 
 /* --- Column headers: day names (airy padding + floating underline segment) --- */
-.assign-schedule__day-hdr {
-  padding: 0.85rem 0.5rem 1.1rem;
+.assign-schedule__table th.assign-schedule__day-hdr {
+  padding: 0.75rem 0.5rem 1.4rem;
   font-family: var(--font-display);
   font-size: 0.82rem;
   font-weight: 700;
@@ -3727,7 +3727,9 @@ input[type='radio'] {
   background: var(--surface);
   position: relative;
   line-height: 1.2;
-  vertical-align: top;            /* keep text at top so underline can sit below */
+  vertical-align: top;
+  text-align: center;
+  text-decoration: none;
 }
 .assign-schedule__day-hdr::before { display: none; }
 
@@ -3735,7 +3737,7 @@ input[type='radio'] {
 .assign-schedule__day-hdr::after {
   content: '';
   position: absolute;
-  bottom: 8px;
+  bottom: 6px;
   left: 50%;
   transform: translateX(-50%);
   width: 28px;

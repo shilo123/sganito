@@ -21,6 +21,28 @@ public class Shibutz
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, ShibutzLiveStatus>
         _liveStatus = new System.Collections.Concurrent.ConcurrentDictionary<int, ShibutzLiveStatus>();
 
+    // Cancellation flags. Set by the cancel endpoint; checked by the algorithm
+    // at safe points (between iterations / phases) so it can abort early.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, bool>
+        _cancelRequested = new System.Collections.Concurrent.ConcurrentDictionary<int, bool>();
+
+    public static void RequestCancel(int configurationId)
+    {
+        _cancelRequested[configurationId] = true;
+    }
+
+    public static bool IsCancelRequested(int configurationId)
+    {
+        bool v;
+        return _cancelRequested.TryGetValue(configurationId, out v) && v;
+    }
+
+    public static void ClearCancel(int configurationId)
+    {
+        bool removed;
+        _cancelRequested.TryRemove(configurationId, out removed);
+    }
+
     public static ShibutzLiveStatus GetLiveStatus(int configurationId)
     {
         ShibutzLiveStatus s;
@@ -35,6 +57,7 @@ public class Shibutz
         s.IsRunning = true;
         s.CurrentStep = "מתחיל שיבוץ...";
         _liveStatus[configurationId] = s;
+        ClearCancel(configurationId);  // fresh run - clear any stale cancel flag
     }
 
     private void UpdateLiveStatus(string currentStep, int totalSlots, int totalReds)
@@ -197,12 +220,14 @@ public class Shibutz
         int totalSlots = _allSlots.Count;
         for (int iteration = 0; iteration < 3; iteration++)
         {
+            if (IsCancelRequested(_configurationId)) { LogStep("cancel requested — aborting"); break; }
             int redsBeforeIter = CountRedSlots();
             if (redsBeforeIter == 0) break;
 
             // Hour 1 pipeline
             for (int i = 0; i < hour1Keys.Count; i++)
             {
+                if (IsCancelRequested(_configurationId)) break;
                 List<HourSlot> slots = byTime[hour1Keys[i]];
                 TryCrossTimeSwapsForBatch(slots);
                 DirectFill(slots);
@@ -211,9 +236,11 @@ public class Shibutz
                 LocalSwapFill(slots);
                 DeepChainFill(slots, CHAIN_DEPTH);
             }
+            if (IsCancelRequested(_configurationId)) { LogStep("cancel requested — aborting"); break; }
             // Other hours pipeline
             for (int i = 0; i < otherKeys.Count; i++)
             {
+                if (IsCancelRequested(_configurationId)) break;
                 List<HourSlot> slots = byTime[otherKeys[i]];
                 TryCrossTimeSwapsForBatch(slots);
                 DirectFill(slots);
@@ -3918,7 +3945,7 @@ public class Shibutz
                 if (savedKeys.Contains(key)) continue;
                 savedKeys.Add(key);
 
-                Dal.ExeSpBig(
+                Dal.ExeSpBigNonQuery(
                     con,
                     "Assign_SetAssignAuto",
                     _configurationId,
@@ -3942,7 +3969,7 @@ public class Shibutz
                 if (savedKeys.Contains(key)) continue;
                 savedKeys.Add(key);
 
-                Dal.ExeSpBig(
+                Dal.ExeSpBigNonQuery(
                     con,
                     "Assign_SetAssignAuto",
                     _configurationId,

@@ -11,13 +11,13 @@ interface ClassStatusRow {
 }
 
 const NAV_ITEMS = [
-  { to: '/Config/SchoolHours', icon: 'fa fa-bar-chart-o', label: 'הגדרות שעות בית ספר' },
-  { to: '/Config/TeacherHours', icon: 'glyphicon glyphicon-user', label: 'הגדרות מורים' },
-  { to: '/Config/TeacherClass', icon: 'fa fa-dashboard', label: 'הגדרות כיתות ומורים' },
-  { to: '/Config/Professional', icon: 'fa fa-bar-chart-o', label: 'הגדרות מקצועות בית ספר' },
-  { to: '/Assign/Assign', icon: 'glyphicon glyphicon-transfer', label: 'מערכת בית הספר' },
-  { to: '/Assign/AssignMatrix', icon: 'glyphicon glyphicon-transfer', label: 'מערכת בית הספר מטרציה' },
-  { to: '/Assign/AssignConfig', icon: 'glyphicon glyphicon-tasks', label: 'שיבוץ אוטמטי' },
+  { to: '/Config/SchoolHours', icon: 'fa fa-clock-o', label: 'הגדרות שעות בית ספר' },
+  { to: '/Config/TeacherHours', icon: 'fa fa-users', label: 'ניהול מורים' },
+  { to: '/Config/TeacherClass', icon: 'fa fa-sitemap', label: 'הגדרות כיתות ומורים' },
+  { to: '/Config/Professional', icon: 'fa fa-book', label: 'הגדרות מקצועות בית ספר' },
+  { to: '/Assign/Assign', icon: 'fa fa-calendar', label: 'מערכת בית הספר' },
+  { to: '/Assign/AssignMatrix', icon: 'fa fa-th', label: 'מערכת בית הספר מטריצה' },
+  { to: '/Assign/AssignConfig', icon: 'fa fa-bolt', label: 'שיבוץ אוטומטי' },
 ];
 
 export default function MasterLayout() {

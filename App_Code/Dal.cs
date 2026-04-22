@@ -30,15 +30,46 @@ public class Dal
 
     public static string _dbConnectionString = System.Web.Configuration.WebConfigurationManager.ConnectionStrings["dbDataConnectionString"].ToString();
 
+    // Cache of stored-procedure parameter metadata. SqlCommandBuilder.DeriveParameters
+    // issues a round-trip to SQL Server on every call (~0.5-2s on SQL Express).
+    // We cache a "template" SqlCommand and reuse the native ADO.NET ability to
+    // clone parameters via Clone(). This preserves ALL the obscure metadata
+    // fields (IsNullable, XmlSchemaCollection, SourceColumn etc.) that matter
+    // for INSERTs against some drivers.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SqlParameter[]>
+        _spParamCache = new System.Collections.Concurrent.ConcurrentDictionary<string, SqlParameter[]>(StringComparer.OrdinalIgnoreCase);
+
+    private static void FillParametersFromCache(SqlCommand cmd)
+    {
+        SqlParameter[] cached;
+        if (!_spParamCache.TryGetValue(cmd.CommandText, out cached))
+        {
+            // Cold path: derive from DB, then snapshot using native Clone() to
+            // preserve every internal field ADO.NET sets on SqlParameter.
+            SqlCommandBuilder.DeriveParameters(cmd);
+            SqlParameter[] snapshot = new SqlParameter[cmd.Parameters.Count];
+            for (int i = 0; i < cmd.Parameters.Count; i++)
+                snapshot[i] = (SqlParameter)((ICloneable)cmd.Parameters[i]).Clone();
+            _spParamCache[cmd.CommandText] = snapshot;
+            return;
+        }
+        // Warm path: clone each cached parameter (again via ICloneable) into a
+        // fresh collection for this command.
+        cmd.Parameters.Clear();
+        for (int i = 0; i < cached.Length; i++)
+        {
+            cmd.Parameters.Add((SqlParameter)((ICloneable)cached[i]).Clone());
+        }
+    }
+
     public static int ExecuteNonQuery(string sql)
     {
-        int rowsAffected = 0;
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-        SqlCommand MySqlCommand = new SqlCommand(sql, mySqlConnection);
-        mySqlConnection.Open();
-        rowsAffected = MySqlCommand.ExecuteNonQuery();
-        mySqlConnection.Close();
-        return rowsAffected;
+        using (SqlConnection con = new SqlConnection(_dbConnectionString))
+        using (SqlCommand cmd = new SqlCommand(sql, con))
+        {
+            con.Open();
+            return cmd.ExecuteNonQuery();
+        }
     }
 
     // Oren 15/09/2010
@@ -48,13 +79,12 @@ public class Dal
     /// <param name="updateCommand"></param>
     public static int ExecuteNonQuery(SqlCommand updateCommand)
     {
-        int rowsAffected = 0;
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-        updateCommand.Connection = mySqlConnection;
-        mySqlConnection.Open();
-        rowsAffected = updateCommand.ExecuteNonQuery();
-        mySqlConnection.Close();
-        return rowsAffected;
+        using (SqlConnection con = new SqlConnection(_dbConnectionString))
+        {
+            updateCommand.Connection = con;
+            con.Open();
+            return updateCommand.ExecuteNonQuery();
+        }
     }
 
     public int ExecuteNonQuerySPOneParameter(string storedProcedureName, string stringParameterName, string stringParameterValue)
@@ -362,117 +392,69 @@ public class Dal
 
     public static DataTable ExeSpBig(SqlConnection mySqlConnection, string storedProcedureName, params object[] Params)
     {
-
-
-
-     
-
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-
-        SqlCommandBuilder.DeriveParameters(MySqlCommand);
-
-
-        //SqlParameter sqls = new SqlParameter("ExpertId",Params[0]);
-
-        //MySqlCommand.Parameters.Add(sqls);
-
-
-
-        for (int i = 1; i < MySqlCommand.Parameters.Count; i++)
+        using (SqlCommand cmd = new SqlCommand(storedProcedureName, mySqlConnection))
         {
+            cmd.CommandType = CommandType.StoredProcedure;
+            FillParametersFromCache(cmd);
 
-            if (Params[i - 1].ToString() == "" || Params[i - 1].ToString() == "null")
+            for (int i = 1; i < cmd.Parameters.Count; i++)
             {
-                MySqlCommand.Parameters[i].Value = DBNull.Value;
-            }
-            else
-            {
-                MySqlCommand.Parameters[i].Value = Params[i - 1].ToString();
+                string v = Params[i - 1].ToString();
+                cmd.Parameters[i].Value = (v == "" || v == "null") ? (object)DBNull.Value : (object)v;
             }
 
-           
+            using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))
+            {
+                DataTable table = new DataTable();
+                adapter.Fill(table);
+                return table;
+            }
         }
+    }
 
-     
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        DataTable MyDataTable = new DataTable();
+    // Fast variant of ExeSpBig for INSERT/UPDATE/DELETE SPs that don't return
+    // a result set. Skips the DataAdapter.Fill round-trip. Used by tight loops
+    // like SaveAssignmentsToDatabase which fires one INSERT per slot (~800
+    // calls per run).
+    public static void ExeSpBigNonQuery(SqlConnection mySqlConnection, string storedProcedureName, params object[] Params)
+    {
+        using (SqlCommand cmd = new SqlCommand(storedProcedureName, mySqlConnection))
+        {
+            cmd.CommandType = CommandType.StoredProcedure;
+            FillParametersFromCache(cmd);
 
-        //  mySqlConnection.Open();
-        MySqlDataAdapter.Fill(MyDataTable);
-       
-        return MyDataTable;
+            for (int i = 1; i < cmd.Parameters.Count; i++)
+            {
+                string v = Params[i - 1].ToString();
+                cmd.Parameters[i].Value = (v == "" || v == "null") ? (object)DBNull.Value : (object)v;
+            }
+
+            cmd.ExecuteNonQuery();
+        }
     }
 
     public static DataTable ExeSp(string storedProcedureName, params object[] Params)
     {
-
-
-
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-
-
-        mySqlConnection.Open();
-
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-
-        SqlCommandBuilder.DeriveParameters(MySqlCommand);
-
-
-        //SqlParameter sqls = new SqlParameter("ExpertId",Params[0]);
-
-        //MySqlCommand.Parameters.Add(sqls);
-
-
-
-        for (int i = 1; i < MySqlCommand.Parameters.Count; i++)
+        using (SqlConnection con = new SqlConnection(_dbConnectionString))
+        using (SqlCommand cmd = new SqlCommand(storedProcedureName, con))
         {
+            cmd.CommandType = CommandType.StoredProcedure;
+            con.Open();
+            FillParametersFromCache(cmd);
 
-            if (Params[i - 1].ToString() == "" || Params[i - 1].ToString()=="null")
+            for (int i = 1; i < cmd.Parameters.Count; i++)
             {
-                MySqlCommand.Parameters[i].Value = DBNull.Value;
+                string v = Params[i - 1].ToString();
+                cmd.Parameters[i].Value = (v == "" || v == "null") ? (object)DBNull.Value : (object)v;
             }
-            else
+
+            using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))
             {
-                MySqlCommand.Parameters[i].Value = Params[i - 1].ToString();
+                DataTable table = new DataTable();
+                adapter.Fill(table);
+                return table;
             }
-
-            //   MySqlCommand.Parameters.AddWithValue(parameter, Params[0]);
-
-            // Set value of ith parameter
         }
-
-        //for (int i = 0; i < Params.Length; i++)
-        //{
-
-        //    string parameter = Params[i].ToString();
-
-        //    MySqlCommand.Parameters.AddWithValue(MySqlCommand.Parameters[i+1].ToString(), parameter);
-
-        //}
-
-        //SqlParameter parameterReturnValue = new SqlParameter("ReturnValue", SqlDbType.Int, 4);
-        //parameterReturnValue.Direction = ParameterDirection.ReturnValue;
-        //MySqlCommand.Parameters.Add(parameterReturnValue);
-
-
-
-
-        //foreach (object item in Params)
-        //{
-        //    MySqlCommand.Parameters.AddWithValue("ExpertId",item);
-        //}
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        DataTable MyDataTable = new DataTable();
-
-        //  mySqlConnection.Open();
-        MySqlDataAdapter.Fill(MyDataTable);
-        mySqlConnection.Close();
-        return MyDataTable;
     }
 
     public static DataSet ExeDataSetSp(string storedProcedureName, params object[] Params)
@@ -480,69 +462,26 @@ public class Dal
 
 
 
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-
-
-        mySqlConnection.Open();
-
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-
-        SqlCommandBuilder.DeriveParameters(MySqlCommand);
-
-
-        //SqlParameter sqls = new SqlParameter("ExpertId",Params[0]);
-
-        //MySqlCommand.Parameters.Add(sqls);
-
-
-
-        for (int i = 1; i < MySqlCommand.Parameters.Count; i++)
+        using (SqlConnection con = new SqlConnection(_dbConnectionString))
+        using (SqlCommand cmd = new SqlCommand(storedProcedureName, con))
         {
+            cmd.CommandType = CommandType.StoredProcedure;
+            con.Open();
+            FillParametersFromCache(cmd);
 
-            if (Params[i - 1].ToString() == "" || Params[i - 1].ToString() == "null")
+            for (int i = 1; i < cmd.Parameters.Count; i++)
             {
-                MySqlCommand.Parameters[i].Value = DBNull.Value;
+                string v = Params[i - 1].ToString();
+                cmd.Parameters[i].Value = (v == "" || v == "null") ? (object)DBNull.Value : (object)v;
             }
-            else
+
+            using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))
             {
-                MySqlCommand.Parameters[i].Value = Params[i - 1].ToString();
+                DataSet ds = new DataSet();
+                adapter.Fill(ds);
+                return ds;
             }
-
-            //   MySqlCommand.Parameters.AddWithValue(parameter, Params[0]);
-
-            // Set value of ith parameter
         }
-
-        //for (int i = 0; i < Params.Length; i++)
-        //{
-
-        //    string parameter = Params[i].ToString();
-
-        //    MySqlCommand.Parameters.AddWithValue(MySqlCommand.Parameters[i+1].ToString(), parameter);
-
-        //}
-
-        //SqlParameter parameterReturnValue = new SqlParameter("ReturnValue", SqlDbType.Int, 4);
-        //parameterReturnValue.Direction = ParameterDirection.ReturnValue;
-        //MySqlCommand.Parameters.Add(parameterReturnValue);
-
-
-
-
-        //foreach (object item in Params)
-        //{
-        //    MySqlCommand.Parameters.AddWithValue("ExpertId",item);
-        //}
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        DataSet MyDataSet = new DataSet();
-
-        //  mySqlConnection.Open();
-        MySqlDataAdapter.Fill(MyDataSet);
-        mySqlConnection.Close();
-        return MyDataSet;
     }
 
     public static DataSet GetDataSetFromSPMultiParameters(string storedProcedureName, Hashtable Params)
