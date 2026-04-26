@@ -13,6 +13,9 @@ import {
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 import PageLoader from '../../lib/PageLoader';
+import ExportButtons from '../../lib/ExportButtons';
+import { buildScheduleHandlers } from '../../lib/export';
+import { readUserData } from '../../auth/userData';
 
 // ============================================================================
 // Types
@@ -252,7 +255,26 @@ function emptySrcTgt(): SrcTgtObj {
 // Draggable / Droppable components
 // ============================================================================
 
-function DraggableFreeTeacher({ teacher }: { teacher: FreeTeacher }) {
+// Small day-of-week label helper used by the tooltip.
+function dayName(n: number | string | null | undefined): string {
+  const v = Number(n);
+  return ['', 'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'][v] || '';
+}
+
+interface FreeTeacherTooltipInfo {
+  Frontaly?: string | number;
+  Tafkid?: string;
+  Professional?: string;
+  FreeDay?: string | number | null;
+}
+
+function DraggableFreeTeacher({
+  teacher,
+  info,
+}: {
+  teacher: FreeTeacher;
+  info?: FreeTeacherTooltipInfo;
+}) {
   const payload: DragTeacherPayload = {
     kind: 'freeTeacher',
     TeacherId: teacher.TeacherId,
@@ -262,23 +284,137 @@ function DraggableFreeTeacher({ teacher }: { teacher: FreeTeacher }) {
     id: `freeTeacher-${teacher.TeacherId}`,
     data: payload,
   });
+  // Tooltip uses position:fixed so ancestors with overflow:hidden/auto
+  // (the dockbar's .panel-body) can't clip it. We compute coords on
+  // mouseenter and pass them down to the portal.
+  const [tipPos, setTipPos] = useState<{ x: number; y: number } | null>(null);
+  const pillRef = useRef<HTMLDivElement | null>(null);
+
+  const handleEnter = () => {
+    if (isDragging) return;
+    const el = pillRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    // Anchor tip above the pill, horizontally centered
+    setTipPos({ x: r.left + r.width / 2, y: r.top });
+  };
+  const handleLeave = () => setTipPos(null);
+
   return (
-    <div
-      ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      className="btn btn-success btn-round selected"
-      style={{
-        float: 'right',
-        margin: 2,
-        opacity: isDragging ? 0.4 : 1,
-        cursor: 'move',
-        userSelect: 'none',
-      }}
-    >
-      <span>{teacher.TeacherName}</span> ({teacher.FreeHour})
-    </div>
+    <>
+      <div
+        ref={(el) => {
+          setNodeRef(el);
+          pillRef.current = el;
+        }}
+        {...listeners}
+        {...attributes}
+        className="btn btn-success btn-round selected free-teacher-pill"
+        style={{
+          float: 'right',
+          margin: 2,
+          opacity: isDragging ? 0.4 : 1,
+          cursor: 'move',
+          userSelect: 'none',
+        }}
+        onMouseEnter={handleEnter}
+        onMouseLeave={handleLeave}
+      >
+        <span>{teacher.TeacherName}</span>
+        {teacher.FreeHour ? <span style={{ opacity: 0.85, marginInlineStart: 4, fontSize: '0.76rem' }}>({teacher.FreeHour})</span> : null}
+      </div>
+      {tipPos && (
+        <div
+          className="ft-tip ft-tip--portal"
+          role="tooltip"
+          style={{
+            position: 'fixed',
+            left: tipPos.x,
+            top: tipPos.y,
+            transform: 'translate(-50%, -100%) translateY(-10px)',
+          }}
+        >
+          <div className="ft-tip__name">{teacher.TeacherName}</div>
+          <div className="ft-tip__rows">
+            {info?.Tafkid && (
+              <div className="ft-tip__row">
+                <i className="fa fa-id-badge ft-tip__ic" /> תפקיד: <strong>{info.Tafkid}</strong>
+              </div>
+            )}
+            {info?.Professional && (
+              <div className="ft-tip__row">
+                <i className="fa fa-book ft-tip__ic" /> מקצוע: <strong>{info.Professional}</strong>
+              </div>
+            )}
+            {info?.Frontaly != null && info.Frontaly !== '' && (
+              <div className="ft-tip__row">
+                <i className="fa fa-clock-o ft-tip__ic" /> שעות שבועיות: <strong>{info.Frontaly}</strong>
+              </div>
+            )}
+            {info?.FreeDay != null && Number(info.FreeDay) > 0 && (
+              <div className="ft-tip__row">
+                <i className="fa fa-calendar ft-tip__ic" /> יום חופשי: <strong>{dayName(info.FreeDay)}</strong>
+              </div>
+            )}
+            {(!info || (!info.Tafkid && !info.Professional && info.Frontaly == null)) && (
+              <div className="ft-tip__row" style={{ color: '#9ca3af', fontStyle: 'italic' }}>
+                אין מידע נוסף
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
+}
+
+// Maps profession names to an emoji + color palette. Keywords are matched
+// against the name (substring) so partial matches still style correctly.
+// If nothing matches we fall back to a hash-based color so every profession
+// still gets a distinct look.
+const PRO_THEMES: Array<{ match: RegExp; icon: string; grad: string; shadow: string; border: string }> = [
+  { match: /מתמט|חשבון|מספר/,         icon: '🔢', grad: 'linear-gradient(135deg, #dbeafe, #93c5fd)', shadow: 'rgba(37,99,235,0.35)',  border: '#3b82f6' },
+  { match: /אנגל|English/i,            icon: '🔤', grad: 'linear-gradient(135deg, #fee2e2, #fca5a5)', shadow: 'rgba(220,38,38,0.35)',   border: '#dc2626' },
+  { match: /עברי|קריא|כתיב|לשון/,      icon: '📖', grad: 'linear-gradient(135deg, #fef3c7, #fcd34d)', shadow: 'rgba(217,119,6,0.35)',   border: '#d97706' },
+  { match: /תנ.?ך|מקרא|תורה|דת|יהד/,   icon: '📜', grad: 'linear-gradient(135deg, #fde68a, #f59e0b)', shadow: 'rgba(180,83,9,0.35)',    border: '#b45309' },
+  { match: /תפיל|תפלה|בית.?כנס/,       icon: '🕍', grad: 'linear-gradient(135deg, #e0e7ff, #818cf8)', shadow: 'rgba(79,70,229,0.35)',   border: '#4f46e5' },
+  { match: /היסטור/,                    icon: '🏛️', grad: 'linear-gradient(135deg, #fef3c7, #d97706)', shadow: 'rgba(146,64,14,0.35)',    border: '#92400e' },
+  { match: /גיאוגרפ|מולד|אזרח/,        icon: '🗺️', grad: 'linear-gradient(135deg, #d1fae5, #6ee7b7)', shadow: 'rgba(16,185,129,0.35)',  border: '#059669' },
+  { match: /מדע|טבע|ביולוג|כימ|פיזיק/, icon: '🔬', grad: 'linear-gradient(135deg, #cffafe, #67e8f9)', shadow: 'rgba(8,145,178,0.35)',   border: '#0891b2' },
+  { match: /מחשב|תכנות|טכנולוג|רובוט/, icon: '💻', grad: 'linear-gradient(135deg, #e0f2fe, #38bdf8)', shadow: 'rgba(2,132,199,0.35)',   border: '#0284c7' },
+  { match: /ספור|גופני|התעמל|שחיה/,    icon: '⚽', grad: 'linear-gradient(135deg, #dcfce7, #4ade80)', shadow: 'rgba(22,163,74,0.35)',   border: '#16a34a' },
+  { match: /מוזיק|נגינ|שיר|תזמור/,     icon: '🎵', grad: 'linear-gradient(135deg, #fce7f3, #f472b6)', shadow: 'rgba(219,39,119,0.35)',  border: '#db2777' },
+  { match: /אומנ|אמנ|ציור|יצירה/,      icon: '🎨', grad: 'linear-gradient(135deg, #f3e8ff, #c084fc)', shadow: 'rgba(147,51,234,0.35)',  border: '#9333ea' },
+  { match: /דרמה|תיאטרו|משחק/,         icon: '🎭', grad: 'linear-gradient(135deg, #fae8ff, #e879f9)', shadow: 'rgba(192,38,211,0.35)',  border: '#c026d3' },
+  { match: /מלאכה|נגר|חרש|עבוד/,       icon: '🔨', grad: 'linear-gradient(135deg, #ffedd5, #fb923c)', shadow: 'rgba(234,88,12,0.35)',   border: '#ea580c' },
+  { match: /חינוך.?חבר|כישור|חייהחבר/, icon: '🤝', grad: 'linear-gradient(135deg, #fef3c7, #facc15)', shadow: 'rgba(202,138,4,0.35)',   border: '#ca8a04' },
+  { match: /חינוך/,                    icon: '🎓', grad: 'linear-gradient(135deg, #dbeafe, #60a5fa)', shadow: 'rgba(37,99,235,0.35)',   border: '#2563eb' },
+  { match: /שעת.?חב|חברה/,             icon: '👥', grad: 'linear-gradient(135deg, #ede9fe, #a78bfa)', shadow: 'rgba(124,58,237,0.35)',  border: '#7c3aed' },
+  { match: /פרטני|תגבור|סיוע/,         icon: '🧑‍🏫', grad: 'linear-gradient(135deg, #fff1f2, #fda4af)', shadow: 'rgba(225,29,72,0.35)',   border: '#e11d48' },
+  { match: /שה.?ה|שהייה/,              icon: '⏳', grad: 'linear-gradient(135deg, #f1f5f9, #cbd5e1)', shadow: 'rgba(71,85,105,0.30)',   border: '#64748b' },
+  { match: /אשכול/,                    icon: '🧩', grad: 'linear-gradient(135deg, #ccfbf1, #5eead4)', shadow: 'rgba(13,148,136,0.35)',  border: '#0d9488' },
+];
+
+const FALLBACK_GRADIENTS: Array<{ grad: string; border: string; shadow: string }> = [
+  { grad: 'linear-gradient(135deg, #fde68a, #f59e0b)', border: '#d97706', shadow: 'rgba(217,119,6,0.35)' },
+  { grad: 'linear-gradient(135deg, #bfdbfe, #3b82f6)', border: '#1d4ed8', shadow: 'rgba(29,78,216,0.35)' },
+  { grad: 'linear-gradient(135deg, #fbcfe8, #ec4899)', border: '#be185d', shadow: 'rgba(190,24,93,0.35)' },
+  { grad: 'linear-gradient(135deg, #bbf7d0, #22c55e)', border: '#15803d', shadow: 'rgba(21,128,61,0.35)' },
+  { grad: 'linear-gradient(135deg, #c7d2fe, #818cf8)', border: '#4338ca', shadow: 'rgba(67,56,202,0.35)' },
+  { grad: 'linear-gradient(135deg, #fecaca, #ef4444)', border: '#b91c1c', shadow: 'rgba(185,28,28,0.35)' },
+  { grad: 'linear-gradient(135deg, #a7f3d0, #10b981)', border: '#047857', shadow: 'rgba(4,120,87,0.35)' },
+  { grad: 'linear-gradient(135deg, #fed7aa, #f97316)', border: '#c2410c', shadow: 'rgba(194,65,12,0.35)' },
+];
+
+function proTheme(name: string): { icon: string; grad: string; shadow: string; border: string } {
+  for (const t of PRO_THEMES) {
+    if (t.match.test(name)) return { icon: t.icon, grad: t.grad, shadow: t.shadow, border: t.border };
+  }
+  // Deterministic fallback by hashing the profession name
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  const pick = FALLBACK_GRADIENTS[Math.abs(h) % FALLBACK_GRADIENTS.length];
+  return { icon: '📚', grad: pick.grad, shadow: pick.shadow, border: pick.border };
 }
 
 function DraggableProfessional({ pro }: { pro: Professional }) {
@@ -291,21 +427,24 @@ function DraggableProfessional({ pro }: { pro: Professional }) {
     id: `pro-${pro.ProfessionalId}`,
     data: payload,
   });
+  const theme = proTheme(pro.Name);
   return (
     <div
       ref={setNodeRef}
       {...listeners}
       {...attributes}
-      className="btn btn-primary btn-round"
+      className="pro-pill"
       style={{
-        float: 'right',
-        margin: 2,
         opacity: isDragging ? 0.4 : 1,
-        cursor: 'move',
-        userSelect: 'none',
-      }}
+        background: theme.grad,
+        borderColor: theme.border,
+        '--pro-shadow': theme.shadow,
+        '--pro-border': theme.border,
+      } as React.CSSProperties}
+      title={pro.Name}
     >
-      {pro.Name}
+      <span className="pro-pill__icon" aria-hidden="true">{theme.icon}</span>
+      <span className="pro-pill__name">{pro.Name}</span>
     </div>
   );
 }
@@ -318,7 +457,10 @@ function FreeTeacherDropZone({ children }: { children: React.ReactNode }) {
       ref={setNodeRef}
       className="panel-body"
       style={{
-        height: 150,
+        // Height grows with content (the pills wrap), but capped so the
+        // dock never swallows the page when many teachers are returned.
+        minHeight: 56,
+        maxHeight: 150,
         overflow: 'auto',
         background: isOver ? '#fff0d4' : undefined,
       }}
@@ -352,6 +494,7 @@ function AssignBadge({
   highlightClassId,
   onBadgeClick,
   onTeacherRightClick,
+  teacherInfo,
 }: {
   slot: AssignSlot;
   highlightTeacherId: string;
@@ -362,6 +505,7 @@ function AssignBadge({
     teacherId: string | number,
     classId: string | number,
   ) => void;
+  teacherInfo?: FreeTeacherTooltipInfo;
 }) {
   const { primary, extras } = slot;
   const theme = primary.AssignmentId ? (primary.IsAuto === 1 ? 'info' : 'primary') : 'danger';
@@ -410,10 +554,25 @@ function AssignBadge({
     data: dropPayload,
   });
 
+  const cellRef = useRef<HTMLElement | null>(null);
   const setNodeRef = (el: HTMLElement | null) => {
     draggable.setNodeRef(el);
     droppable.setNodeRef(el);
+    cellRef.current = el;
   };
+
+  // Tooltip state for the schedule cell: shown on hover when the slot has
+  // a teacher assigned. Coordinates use position:fixed so overflow of the
+  // grid container can't clip the tip.
+  const [cellTipPos, setCellTipPos] = useState<{ x: number; y: number } | null>(null);
+  const handleCellEnter = () => {
+    if (!primary.TeacherName) return; // empty cells → no tooltip
+    const el = cellRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setCellTipPos({ x: r.left + r.width / 2, y: r.top });
+  };
+  const handleCellLeave = () => setCellTipPos(null);
 
   // highlight check: does this slot contain the highlighted teacher + class?
   const allTeacherIds: string[] = [primary.TeacherId, ...extras.map((e) => e.TeacherId)]
@@ -441,7 +600,19 @@ function AssignBadge({
       </span>,
     );
   } else {
-    teacherSpans.push(<span key="blank">&nbsp;</span>);
+    teacherSpans.push(
+      <span
+        key="blank"
+        style={{
+          color: '#9ca3af',
+          fontStyle: 'italic',
+          fontSize: 11,
+          fontWeight: 500,
+        }}
+      >
+        אין שיבוץ
+      </span>,
+    );
   }
   for (const ex of extras) {
     teacherSpans.push(
@@ -458,31 +629,141 @@ function AssignBadge({
 
   const teacherDisplay = primary.Ihud ? <u>{teacherSpans}</u> : <>{teacherSpans}</>;
 
+  const hakNum = Number(primary.Hakbatza ?? 0);
+  const ihudNum = Number(primary.Ihud ?? 0);
+  // Same palette as TeacherClass/TeacherHours so colors stay consistent across the app
+  const assignPalette = (kind: 'H' | 'I', n: number): string => {
+    if (!n) return 'transparent';
+    const hPalette = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#ddd6fe', '#a7f3d0', '#fecaca'];
+    const iPalette = ['#c4b5fd', '#67e8f9', '#fcd34d', '#f9a8d4', '#86efac', '#fca5a5', '#93c5fd', '#fdba74'];
+    const palette = kind === 'H' ? hPalette : iPalette;
+    return palette[(n - 1) % palette.length];
+  };
+
   const style: React.CSSProperties = {
     zIndex: 10,
     margin: 2,
     cursor: hasAssignment ? 'move' : 'default',
     background: droppable.isOver ? '#cfe8ff' : undefined,
     opacity: draggable.isDragging ? 0.4 : 1,
+    position: 'relative',
+    ...(ihudNum > 0
+      ? { boxShadow: `inset 0 0 0 2px ${assignPalette('I', ihudNum)}` }
+      : null),
     ...(isHighlighted
       ? { backgroundColor: '#ffeb3b', boxShadow: '0 0 8px #ff9800' }
       : null),
   };
 
   return (
-    <div
-      ref={setNodeRef}
-      {...(hasAssignment ? draggable.listeners : {})}
-      {...(hasAssignment ? draggable.attributes : {})}
-      className={`btn btn-${theme} btnWorker`}
-      style={style}
-      onClick={() => onBadgeClick(slot)}
-    >
-      <span style={{ fontWeight: 'bold' }}>
-        {primary.Professional ? `${primary.Professional} -` : ''}
-      </span>{' '}
-      {teacherDisplay}
-    </div>
+    <>
+      <div
+        ref={setNodeRef}
+        {...(hasAssignment ? draggable.listeners : {})}
+        {...(hasAssignment ? draggable.attributes : {})}
+        className={`btn btn-${theme} btnWorker`}
+        style={style}
+        onClick={() => onBadgeClick(slot)}
+        onMouseEnter={handleCellEnter}
+        onMouseLeave={handleCellLeave}
+      >
+        {(hakNum > 0 || ihudNum > 0) && (
+          <span
+            style={{
+              position: 'absolute',
+              top: 1,
+              insetInlineEnd: 2,
+              display: 'inline-flex',
+              gap: 2,
+              pointerEvents: 'none',
+            }}
+          >
+            {hakNum > 0 && (
+              <span
+                title={`הקבצה ${hakNum}`}
+                style={{
+                  background: assignPalette('H', hakNum),
+                  color: '#1f2937',
+                  padding: '1px 4px',
+                  borderRadius: 3,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                }}
+              >
+                ה{hakNum}
+              </span>
+            )}
+            {ihudNum > 0 && (
+              <span
+                title={`איחוד ${ihudNum}`}
+                style={{
+                  background: assignPalette('I', ihudNum),
+                  color: '#1f2937',
+                  padding: '1px 4px',
+                  borderRadius: 3,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                }}
+              >
+                א{ihudNum}
+              </span>
+            )}
+          </span>
+        )}
+        <span style={{ fontWeight: 'bold' }}>
+          {primary.Professional ? `${primary.Professional} -` : ''}
+        </span>{' '}
+        {teacherDisplay}
+      </div>
+      {cellTipPos && primary.TeacherName && (
+        <div
+          className="ft-tip ft-tip--portal"
+          role="tooltip"
+          style={{
+            position: 'fixed',
+            left: cellTipPos.x,
+            top: cellTipPos.y,
+            transform: 'translate(-50%, -100%) translateY(-10px)',
+          }}
+        >
+          <div className="ft-tip__name">{primary.TeacherName}</div>
+          <div className="ft-tip__rows">
+            {teacherInfo?.Tafkid && (
+              <div className="ft-tip__row">
+                <i className="fa fa-id-badge ft-tip__ic" /> תפקיד: <strong>{teacherInfo.Tafkid}</strong>
+              </div>
+            )}
+            {(primary.Professional || teacherInfo?.Professional) && (
+              <div className="ft-tip__row">
+                <i className="fa fa-book ft-tip__ic" /> מקצוע: <strong>{primary.Professional || teacherInfo?.Professional}</strong>
+              </div>
+            )}
+            {teacherInfo?.Frontaly != null && teacherInfo.Frontaly !== '' && (
+              <div className="ft-tip__row">
+                <i className="fa fa-clock-o ft-tip__ic" /> שעות שבועיות: <strong>{teacherInfo.Frontaly}</strong>
+              </div>
+            )}
+            {teacherInfo?.FreeDay != null && Number(teacherInfo.FreeDay) > 0 && (
+              <div className="ft-tip__row">
+                <i className="fa fa-calendar ft-tip__ic" /> יום חופשי: <strong>{dayName(teacherInfo.FreeDay)}</strong>
+              </div>
+            )}
+            {hakNum > 0 && (
+              <div className="ft-tip__row">
+                <i className="fa fa-object-group ft-tip__ic" /> הקבצה: <strong>{hakNum}</strong>
+              </div>
+            )}
+            {ihudNum > 0 && (
+              <div className="ft-tip__row">
+                <i className="fa fa-link ft-tip__ic" /> איחוד: <strong>{ihudNum}</strong>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -790,8 +1071,16 @@ export default function Assign() {
 
   const loadFreeTeachers = useCallback((classId: string) => {
     setSelectedClassId(classId);
+    // Empty classId → "הצג הכל": we use the dedicated endpoint that returns
+    // only teachers whose working hours match at least one empty (class,
+    // hour) slot. Teachers that can't actually help stay hidden.
+    if (!classId) {
+      return ajax<FreeTeacher[]>('Assign_GetFreeTeachersForEmpty')
+        .then((data) => setFreeTeachers(Array.isArray(data) ? data : []))
+        .catch((err) => console.error('Assign_GetFreeTeachersForEmpty', err));
+    }
     return ajax<FreeTeacher[]>('Assign_GetFreeTeacher', { ClassId: classId })
-      .then((data) => setFreeTeachers(data ?? []))
+      .then((data) => setFreeTeachers(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Assign_GetFreeTeacher', err));
   }, []);
 
@@ -823,6 +1112,57 @@ export default function Assign() {
   }, [allAssignments, layerId]);
 
   const grid = useMemo(() => buildGrid(assignments), [assignments]);
+
+  // Coverage stats for the headline pill. A slot is counted per class per
+  // (day, hour) cell that exists in the grid — so classes with fewer
+  // school hours don't get penalized for being shorter.
+  const coverage = useMemo(() => {
+    const classCount = grid.classes.length;
+    let totalCells = 0;
+    let filledCells = 0;
+    for (const [, slots] of grid.cells) {
+      for (const s of slots) {
+        totalCells++;
+        if (s.primary.TeacherId) filledCells++;
+      }
+    }
+    // Fallback when grid.cells doesn't include every possible cell: compute
+    // from assignments vs. a 5-day × 9-hour baseline.
+    if (totalCells === 0) {
+      totalCells = classCount * 5 * 9;
+      filledCells = assignments.filter((a) => a.TeacherId).length;
+    }
+    const pct = totalCells > 0 ? Math.round((filledCells / totalCells) * 100) : 0;
+    return { filledCells, totalCells, pct, classCount };
+  }, [grid, assignments]);
+
+  // A map of full teacher details for the tooltip on the dockbar hover.
+  // We load once from `Teacher_GetTeacherList` and reuse.
+  interface FullTeacher {
+    TeacherId: number | string;
+    FirstName?: string;
+    LastName?: string;
+    Frontaly?: string | number;
+    FreeDay?: string | number | null;
+    Tafkid?: string;
+    TafkidId?: number | string;
+    Professional?: string;
+    ProfessionalId?: number | string | null;
+  }
+  const [teacherDetails, setTeacherDetails] = useState<Map<string, FullTeacher>>(new Map());
+  useEffect(() => {
+    if (!configurationId) return;
+    (async () => {
+      try {
+        const all = await ajax<FullTeacher[]>('Teacher_GetTeacherList', { TeacherId: '' });
+        const m = new Map<string, FullTeacher>();
+        for (const t of all || []) m.set(String(t.TeacherId), t);
+        setTeacherDetails(m);
+      } catch (e) {
+        console.error('Teacher_GetTeacherList (details) failed', e);
+      }
+    })();
+  }, [configurationId]);
 
   // --- dnd-kit ---
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -1010,9 +1350,10 @@ export default function Assign() {
       onDragEnd={handleDragEnd}
       onDragCancel={() => setActiveDrag(null)}
     >
-      <div className="assign-page">
+      <div className="assign-page assign-page--with-side">
       {initialLoading && <PageLoader title="טוען מערכת בית הספר" subtitle="מאחזר כיתות, מורים ומקצועות..." />}
-      <div className="col-md-12 assign-page__main" style={{ paddingBottom: 180 }}>
+
+      <div className="assign-page__main" style={{ paddingBottom: 180 }}>
         <div className="row dvWeek">
           <div className="panel panel-info">
             <div className="panel-heading assign-layer-bar">
@@ -1033,6 +1374,24 @@ export default function Assign() {
                   </label>
                 ))}
               </div>
+              <div
+                className="assign-coverage-pill"
+                title={`שובצו ${coverage.filledCells} מתוך ${coverage.totalCells} משבצות`}
+              >
+                <div className="assign-coverage-pill__track">
+                  <div
+                    className="assign-coverage-pill__fill"
+                    style={{ width: `${Math.min(100, coverage.pct)}%` }}
+                  />
+                </div>
+                <div className="assign-coverage-pill__label">
+                  <i className="fa fa-check-circle" />
+                  <strong>{coverage.pct}%</strong> שובץ
+                  <span className="assign-coverage-pill__fraction">
+                    ({coverage.filledCells}/{coverage.totalCells})
+                  </span>
+                </div>
+              </div>
               <button
                 type="button"
                 className="btn btn-info btn-sm assign-print-btn"
@@ -1040,6 +1399,32 @@ export default function Assign() {
               >
                 <i className="fa fa-print" /> הדפס מערכת
               </button>
+              <div style={{ marginInlineStart: 'auto' }}>
+                {(() => {
+                  const ud = readUserData();
+                  const schoolName = ud?.Name ?? 'בית הספר';
+                  const logoUrl = ud?.SchoolId ? window.location.origin + `/assets/images/SchoolLogo/${ud.SchoolId}_.png` : undefined;
+                  const classList = grid.classes.map((c) => ({ ClassId: c.ClassId, ClassName: c.ClassName }));
+                  const handlers = buildScheduleHandlers({
+                    schoolName,
+                    title: 'מערכת שעות שבועית' + (layerId !== '0' ? ' — ' + (LAYERS.find((l) => l.id === layerId)?.label ?? '') : ''),
+                    subtitle: `מערכת מלאה לפי שכבות`,
+                    filename: 'school-schedule-' + layerId,
+                    classes: classList,
+                    assignments: assignments.map((a) => ({
+                      ClassId: a.ClassId,
+                      ClassName: a.ClassName,
+                      HourId: a.HourId,
+                      TeacherName: a.TeacherName,
+                      Professional: a.Professional,
+                      Hakbatza: a.Hakbatza,
+                      Ihud: a.Ihud,
+                    })),
+                    logoUrl,
+                  });
+                  return <ExportButtons {...handlers} compact />;
+                })()}
+              </div>
             </div>
             <div className="panel-body assign-grid">
               {grid.classes.length === 0 && (
@@ -1106,15 +1491,27 @@ export default function Assign() {
                                   className={`assign-schedule__cell day-${dayId}${slot ? '' : ' is-vacant'}`}
                                   title={`${cls.ClassName} · ${DAY_NAMES[dayId]} שעה ${seq} · ${time}`}
                                 >
-                                  {slot ? (
-                                    <AssignBadge
-                                      slot={slot}
-                                      highlightTeacherId={highlightTeacherId}
-                                      highlightClassId={highlightClassId}
-                                      onBadgeClick={handleBadgeClick}
-                                      onTeacherRightClick={handleTeacherRightClick}
-                                    />
-                                  ) : (
+                                  {slot ? (() => {
+                                    const tdet = teacherDetails.get(String(slot.primary.TeacherId ?? ''));
+                                    const tInfo: FreeTeacherTooltipInfo | undefined = tdet
+                                      ? {
+                                          Frontaly: tdet.Frontaly,
+                                          Tafkid: tdet.Tafkid,
+                                          Professional: tdet.Professional,
+                                          FreeDay: tdet.FreeDay,
+                                        }
+                                      : undefined;
+                                    return (
+                                      <AssignBadge
+                                        slot={slot}
+                                        highlightTeacherId={highlightTeacherId}
+                                        highlightClassId={highlightClassId}
+                                        onBadgeClick={handleBadgeClick}
+                                        onTeacherRightClick={handleTeacherRightClick}
+                                        teacherInfo={tInfo}
+                                      />
+                                    );
+                                  })() : (
                                     <span className="assign-schedule__empty" aria-hidden="true">
                                       +
                                     </span>
@@ -1134,50 +1531,62 @@ export default function Assign() {
         </div>
       </div>
 
-      {/* ---- bottom fixed: free teachers + professionals ---- */}
-      <div className="assign-dockbar">
-        <div className="assign-dockbar__col assign-dockbar__col--teachers">
-          <div className="panel panel-primary">
-            <div className="panel-heading">
-              <h3 className="panel-title">
-                <i className="fa fa-user-plus" /> מורים פנויים{' '}
-                <a
-                  className="assign-dockbar__link"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => loadFreeTeachers('')}
-                >
-                  הצג הכל
-                </a>
-              </h3>
+      {/* Vertical professionals column — placed AFTER main so the CSS grid
+          puts it in column 2 (= visual left in RTL), keeping main at 1fr */}
+      <aside className="assign-pros-side">
+        <div className="panel panel-primary">
+          <div className="panel-heading">
+            <h3 className="panel-title">
+              <i className="fa fa-book" /> מקצועות
+            </h3>
+          </div>
+          <ProDropZone>
+            {professionals.length === 0 && (
+              <div className="assign-dockbar__empty">אין מקצועות טעונים עדיין</div>
+            )}
+            {professionals.map((p) => (
+              <DraggableProfessional key={p.ProfessionalId} pro={p} />
+            ))}
+          </ProDropZone>
+        </div>
+      </aside>
+
+      {/* ---- bottom fixed: free teachers only. Hidden entirely when
+          no matching teachers exist so the dock doesn't clutter the UI. */}
+      {freeTeachers.length > 0 && (
+        <div className="assign-dockbar assign-dockbar--solo">
+          <div className="assign-dockbar__col assign-dockbar__col--teachers">
+            <div className="panel panel-primary">
+              <div className="panel-heading">
+                <h3 className="panel-title">
+                  <i className="fa fa-user-plus" /> מורים פנויים{' '}
+                  <a
+                    className="assign-dockbar__link"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => loadFreeTeachers('')}
+                  >
+                    הצג הכל
+                  </a>
+                </h3>
+              </div>
+              <FreeTeacherDropZone>
+                {freeTeachers.map((t) => {
+                  const det = teacherDetails.get(String(t.TeacherId));
+                  const info: FreeTeacherTooltipInfo | undefined = det
+                    ? {
+                        Frontaly: det.Frontaly,
+                        Tafkid: det.Tafkid,
+                        Professional: det.Professional,
+                        FreeDay: det.FreeDay,
+                      }
+                    : undefined;
+                  return <DraggableFreeTeacher key={t.TeacherId} teacher={t} info={info} />;
+                })}
+              </FreeTeacherDropZone>
             </div>
-            <FreeTeacherDropZone>
-              {freeTeachers.length === 0 && (
-                <div className="assign-dockbar__empty">גרור מורים לכיתה או לחץ על "הצג הכל"</div>
-              )}
-              {freeTeachers.map((t) => (
-                <DraggableFreeTeacher key={t.TeacherId} teacher={t} />
-              ))}
-            </FreeTeacherDropZone>
           </div>
         </div>
-        <div className="assign-dockbar__col assign-dockbar__col--pros">
-          <div className="panel panel-primary">
-            <div className="panel-heading">
-              <h3 className="panel-title">
-                <i className="fa fa-book" /> מקצועות
-              </h3>
-            </div>
-            <ProDropZone>
-              {professionals.length === 0 && (
-                <div className="assign-dockbar__empty">אין מקצועות טעונים עדיין</div>
-              )}
-              {professionals.map((p) => (
-                <DraggableProfessional key={p.ProfessionalId} pro={p} />
-              ))}
-            </ProDropZone>
-          </div>
-        </div>
-      </div>
+      )}
       </div>
 
       {/* Drag overlay ghost */}

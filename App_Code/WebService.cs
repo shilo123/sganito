@@ -927,6 +927,213 @@ public class WebService : System.Web.Services.WebService
             HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
     }
+    // =========================================================
+    // Directly set the Hakbatza/Ihud number on a ClassTeacher row.
+    // Empty or "0" clears the field. Used by the in-class "edit group"
+    // modal in TeacherClass. Returns { res: 0 } on success.
+    // =========================================================
+    [WebMethod]
+    public void Class_SetGroupNumber()
+    {
+        string ClassTeacherId = GetParams("ClassTeacherId");
+        string Hakbatza = GetParams("Hakbatza");
+        string Ihud = GetParams("Ihud");
+
+        if (string.IsNullOrEmpty(ClassTeacherId) || ClassTeacherId == "0")
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[{\"res\":1,\"err\":\"missing ClassTeacherId\"}]");
+            return;
+        }
+
+        string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+        int hakVal = Helper.ConvertToInt(string.IsNullOrEmpty(Hakbatza) ? "0" : Hakbatza);
+        int ihudVal = Helper.ConvertToInt(string.IsNullOrEmpty(Ihud) ? "0" : Ihud);
+        int ctId = Helper.ConvertToInt(ClassTeacherId);
+        int cfgId = Helper.ConvertToInt(cId);
+
+        // Store 0 as NULL to match the data convention used elsewhere
+        string hakSql = hakVal > 0 ? hakVal.ToString() : "NULL";
+        string ihudSql = ihudVal > 0 ? ihudVal.ToString() : "NULL";
+        string sql = "UPDATE ClassTeacher SET Hakbatza=" + hakSql + ", Ihud=" + ihudSql +
+                     " WHERE ClassTeacherId=" + ctId + " AND ConfigurationId=" + cfgId;
+        Dal.ExecuteNonQuery(sql);
+
+        HttpContext.Current.Response.Clear();
+        HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+        HttpContext.Current.Response.Write("[{\"res\":0}]");
+    }
+
+    // =========================================================
+    // Returns the list of Hakbatza/Ihud groups across all classes of the
+    // current configuration. Used by UI to show a groups summary and to
+    // suggest existing numbers when editing. Returns an array of rows:
+    //   { Kind: "H"|"I", Number, ClassId, ClassName, TeacherId,
+    //     TeacherName, ClassTeacherId, Hour }
+    // =========================================================
+    [WebMethod]
+    public void Class_GetGroups()
+    {
+        string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+        int cfgId = Helper.ConvertToInt(cId);
+        string sql = @"
+SELECT
+  CASE WHEN ISNULL(ct.Ihud,0) > 0 THEN 'I' ELSE 'H' END AS Kind,
+  CASE WHEN ISNULL(ct.Ihud,0) > 0 THEN ct.Ihud ELSE ct.Hakbatza END AS Number,
+  ct.ClassId,
+  c.ClassName,
+  ct.TeacherId,
+  ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ct.ClassTeacherId,
+  ct.Hour
+FROM ClassTeacher ct
+JOIN Class c ON c.ClassId = ct.ClassId
+LEFT JOIN Teacher t ON t.TeacherId = ct.TeacherId
+WHERE ct.ConfigurationId = " + cfgId + @"
+  AND (ISNULL(ct.Hakbatza,0) > 0 OR ISNULL(ct.Ihud,0) > 0)
+ORDER BY Kind, Number, c.ClassName, TeacherName";
+        DataTable dt = Dal.GetDataTable(sql);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    // =========================================================
+    // Validates Hakbatza/Ihud groups and returns any problems that would
+    // prevent the auto-scheduler from placing them together. Current checks:
+    //   - Free-day intersection (do all members have at least one common
+    //     working day across the 5-day week?)
+    //   - Hakbatza uniqueness (does every member of a Hakbatza group
+    //     actually teach the same class?)
+    //   - Ihud spread (does the Ihud span >1 class? if only 1 it's really
+    //     a Hakbatza)
+    // Returns an array of { Kind, Number, Severity, Message, MemberCount }.
+    // =========================================================
+    [WebMethod]
+    public void Class_ValidateGroups()
+    {
+        try
+        {
+        if (HttpContext.Current.Request.Cookies["UserData"] == null)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+        int cfgId = Helper.ConvertToInt(cId);
+
+        string sql = @"
+SELECT
+  ct.ClassTeacherId, ct.ClassId, ct.TeacherId,
+  ISNULL(ct.Hakbatza,0) AS Hakbatza,
+  ISNULL(ct.Ihud,0) AS Ihud,
+  c.ClassName,
+  ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ISNULL(t.FreeDay,0) AS FreeDay
+FROM ClassTeacher ct
+JOIN Class c ON c.ClassId = ct.ClassId
+LEFT JOIN Teacher t ON t.TeacherId = ct.TeacherId
+WHERE ct.ConfigurationId = " + cfgId + @"
+  AND (ISNULL(ct.Hakbatza,0) > 0 OR ISNULL(ct.Ihud,0) > 0)";
+        DataTable dt = Dal.GetDataTable(sql);
+
+        // Group rows by Hakbatza or Ihud key
+        Dictionary<string, List<DataRow>> groups = new Dictionary<string, List<DataRow>>();
+        Dictionary<string, string> kindByKey = new Dictionary<string, string>();
+        Dictionary<string, int> numberByKey = new Dictionary<string, int>();
+        foreach (DataRow r in dt.Rows)
+        {
+            int hak = Helper.ConvertToInt(r["Hakbatza"].ToString());
+            int ihud = Helper.ConvertToInt(r["Ihud"].ToString());
+            if (ihud > 0)
+            {
+                string k = "I_" + ihud;
+                if (!groups.ContainsKey(k)) { groups[k] = new List<DataRow>(); kindByKey[k] = "I"; numberByKey[k] = ihud; }
+                groups[k].Add(r);
+            }
+            if (hak > 0)
+            {
+                string k = "H_" + r["ClassId"].ToString() + "_" + hak;
+                if (!groups.ContainsKey(k)) { groups[k] = new List<DataRow>(); kindByKey[k] = "H"; numberByKey[k] = hak; }
+                groups[k].Add(r);
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.Append("[");
+        bool first = true;
+        foreach (KeyValuePair<string, List<DataRow>> kv in groups)
+        {
+            string kind = kindByKey[kv.Key];
+            int number = numberByKey[kv.Key];
+            List<DataRow> members = kv.Value;
+
+            // Check 1: common working day (1..5 are school days)
+            HashSet<int> workingDaysIntersect = null;
+            foreach (DataRow m in members)
+            {
+                int freeDay = Helper.ConvertToInt(m["FreeDay"].ToString());
+                HashSet<int> working = new HashSet<int>();
+                for (int d = 1; d <= 5; d++) if (d != freeDay) working.Add(d);
+                if (workingDaysIntersect == null) workingDaysIntersect = working;
+                else workingDaysIntersect.IntersectWith(working);
+            }
+            int commonDays = workingDaysIntersect != null ? workingDaysIntersect.Count : 0;
+
+            string severity = "ok";
+            string message = "";
+            if (commonDays == 0)
+            {
+                severity = "error";
+                message = "אין יום משותף לכל חברי הקבוצה (ימי חופשי חוסמים הכל)";
+            }
+            else if (commonDays <= 2)
+            {
+                severity = "warning";
+                message = "רק " + commonDays + " ימים משותפים לכל החברים — סיכון גבוה";
+            }
+
+            // Check 2: Ihud spread
+            if (kind == "I")
+            {
+                HashSet<string> classes = new HashSet<string>();
+                foreach (DataRow m in members) classes.Add(m["ClassId"].ToString());
+                if (classes.Count <= 1)
+                {
+                    severity = severity == "error" ? "error" : "warning";
+                    string extra = "איחוד על כיתה אחת בלבד — כנראה התכוונת להקבצה";
+                    message = string.IsNullOrEmpty(message) ? extra : (message + " · " + extra);
+                }
+            }
+
+            if (!first) sb.Append(",");
+            first = false;
+            sb.Append("{");
+            sb.Append("\"Kind\":\"").Append(kind).Append("\",");
+            sb.Append("\"Number\":").Append(number).Append(",");
+            sb.Append("\"MemberCount\":").Append(members.Count).Append(",");
+            sb.Append("\"CommonDays\":").Append(commonDays).Append(",");
+            sb.Append("\"Severity\":\"").Append(severity).Append("\",");
+            sb.Append("\"Message\":\"").Append(message.Replace("\"", "'")).Append("\"");
+            sb.Append("}");
+        }
+        sb.Append("]");
+
+        HttpContext.Current.Response.Clear();
+        HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+        HttpContext.Current.Response.Write(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.StatusCode = 200;
+            string msg = (ex.Message ?? "").Replace("\"", "'").Replace("\n", " ").Replace("\r", " ");
+            HttpContext.Current.Response.Write("[{\"Kind\":\"E\",\"Number\":0,\"MemberCount\":0,\"CommonDays\":0,\"Severity\":\"error\",\"Message\":\"" + msg + "\"}]");
+        }
+    }
+
     [WebMethod]
     public void Class_SetTeacherToClass()
     {
@@ -959,17 +1166,27 @@ public class WebService : System.Web.Services.WebService
 
 
 
+    // Serialise concurrent Assign_ShibutzAuto calls per configuration. Running
+    // two in parallel leads to one deleting rows the other is reading, leaving
+    // "0 saved" even though data exists. We lock on an object kept per
+    // configId and refuse concurrent calls while a run is in progress.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, object>
+        _shibutzRunLocks = new System.Collections.Concurrent.ConcurrentDictionary<int, object>();
+
     [WebMethod(EnableSession = true)]
     public void Assign_ShibutzAuto()
     {
+        // Use a per-configuration lock so only one scheduler can run at a
+        // time. Concurrent runs race on DeleteAssignAuto / Save and lead to
+        // empty results. Additional calls block until the first completes.
+        int configurationId = Helper.ConvertToInt(
+            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]
+        );
+        object lockObj = _shibutzRunLocks.GetOrAdd(configurationId, _ => new object());
+        lock (lockObj)
+        {
         try
     {
-        // to do add paremter ConfigId
-
-        int configurationId = Helper.ConvertToInt(
-        HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]
-      );
-
         // Reset live progress status at the very beginning
         Shibutz.ResetLiveStatus(configurationId);
 
@@ -1042,6 +1259,7 @@ public class WebService : System.Web.Services.WebService
                 HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
             }
         }
+        } // end lock
     }
 
     [WebMethod(EnableSession = true)]
@@ -1527,6 +1745,7 @@ WHERE t.ConfigurationId = " + cId;
             int teachersTouched = 0;
             int quotaUpdated = 0;
             var details = new List<string>();
+            var detailsFull = new List<string>();
 
             // Process homeroom teachers FIRST (they "anchor" the grid at hour 1)
             var teacherOrder = new List<int>();
@@ -1637,6 +1856,7 @@ WHERE t.ConfigurationId = " + cId;
                 // "available" in those slots; the scheduler only fills what it
                 // needs).
                 int added = 0;
+                List<int> addedHourIds = new List<int>();
                 foreach (int hourId in desiredSlots)
                 {
                     if (currentHours.Contains(hourId)) continue;
@@ -1644,6 +1864,7 @@ WHERE t.ConfigurationId = " + cId;
                     {
                         Dal.ExeSp("Teacher_SetTeacherHours", teacherId.ToString(), hourId.ToString(), "1", configId);
                         currentHours.Add(hourId);
+                        addedHourIds.Add(hourId);
                         added++;
                     }
                     catch { /* race/duplicate - skip */ }
@@ -1655,6 +1876,23 @@ WHERE t.ConfigurationId = " + cId;
                     teachersTouched++;
                     string tag = isHomeroom ? " (מחנך)" : "";
                     details.Add(teacherName + tag + ": +" + added + " שעות (דרוש " + totalRequired + ")");
+
+                    // Structured entry for the client-side report modal.
+                    System.Text.StringBuilder hoursJson = new System.Text.StringBuilder();
+                    hoursJson.Append("[");
+                    for (int k = 0; k < addedHourIds.Count; k++)
+                    {
+                        if (k > 0) hoursJson.Append(",");
+                        hoursJson.Append(addedHourIds[k]);
+                    }
+                    hoursJson.Append("]");
+                    detailsFull.Add(
+                        "{\"TeacherId\":" + teacherId +
+                        ",\"TeacherName\":\"" + teacherName.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"" +
+                        ",\"IsHomeroom\":" + (isHomeroom ? "true" : "false") +
+                        ",\"Added\":" + added +
+                        ",\"Required\":" + totalRequired +
+                        ",\"HourIds\":" + hoursJson.ToString() + "}");
                 }
             }
 
@@ -1673,6 +1911,15 @@ WHERE t.ConfigurationId = " + cId;
             {
                 if (d > 0) sb.Append(",");
                 sb.Append("\"").Append(details[d].Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
+            }
+            sb.Append("]");
+            // Structured per-teacher breakdown used by the UI to render a
+            // "hours added per teacher" report modal.
+            sb.Append(",\"DetailsFull\":[");
+            for (int d = 0; d < detailsFull.Count; d++)
+            {
+                if (d > 0) sb.Append(",");
+                sb.Append(detailsFull[d]);
             }
             sb.Append("]}");
             HttpContext.Current.Response.Write(sb.ToString());
@@ -2519,6 +2766,98 @@ ORDER BY sh.HourId";
         }
     }
 
+    // =========================================================
+    // Fill ALL remaining empty cells in the schedule grid with
+    // any available teacher, ignoring ClassTeacher demand.
+    // For each (ClassId, HourId) that's empty:
+    //   1. Prefer the homeroom teacher of that class (if free and has TeacherHours at that hour).
+    //   2. Else pick the least-loaded teacher with TeacherHours at that hour and free at (Day, Hour).
+    // Used as a final pass after Assign_ShibutzAuto so the school grid has no "אין שיבוץ" cells.
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_FillEmptySlots()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+
+            // 1) Find all empty cells: every (Class, SchoolHours) without a TeacherAssignment of HourTypeId=1.
+            string sqlEmpty = @"
+SELECT c.ClassId, sh.HourId, ISNULL(t.TeacherId, 0) AS HomeroomTeacherId
+FROM Class c
+CROSS JOIN SchoolHours sh
+LEFT JOIN Teacher t ON t.ManageClassId = c.ClassId AND t.ConfigurationId = " + cId + @"
+WHERE c.ConfigurationId = " + cId + @"
+  AND sh.ConfigurationId = " + cId + @"
+  AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+  AND NOT EXISTS (
+    SELECT 1 FROM TeacherAssignment ta
+    WHERE ta.ConfigurationId = " + cId + @"
+      AND ta.HourId = sh.HourId
+      AND ta.ClassId = c.ClassId
+      AND ta.HourTypeId = 1
+  )
+ORDER BY c.ClassId, sh.HourId";
+            DataTable dtEmpty = Dal.GetDataTable(sqlEmpty);
+
+            int filled = 0;
+            int stillEmpty = 0;
+            SqlConnection con = Dal.OpenConnection();
+            try
+            {
+                for (int i = 0; i < dtEmpty.Rows.Count; i++)
+                {
+                    int classId = Helper.ConvertToInt(dtEmpty.Rows[i]["ClassId"].ToString());
+                    int hourId = Helper.ConvertToInt(dtEmpty.Rows[i]["HourId"].ToString());
+                    int homeroomId = Helper.ConvertToInt(dtEmpty.Rows[i]["HomeroomTeacherId"].ToString());
+
+                    // 2) Pick a teacher: homeroom first if available, else least-loaded teacher.
+                    string sqlPick = @"
+SELECT TOP 1 t.TeacherId, t.ProfessionalId,
+  CASE WHEN t.ManageClassId = " + classId + @" THEN 0 ELSE 1 END AS HomeroomRank,
+  ISNULL((SELECT COUNT(*) FROM TeacherAssignment ta2
+          WHERE ta2.TeacherId = t.TeacherId AND ta2.ConfigurationId = " + cId + @"), 0) AS LoadCount
+FROM Teacher t
+INNER JOIN TeacherHours th ON th.TeacherId = t.TeacherId AND th.HourId = " + hourId + @" AND th.ConfigurationId = " + cId + @"
+WHERE t.ConfigurationId = " + cId + @"
+  AND NOT EXISTS (
+    SELECT 1 FROM TeacherAssignment tb
+    WHERE tb.ConfigurationId = " + cId + @"
+      AND tb.HourId = " + hourId + @"
+      AND tb.TeacherId = t.TeacherId
+  )
+ORDER BY HomeroomRank ASC, LoadCount ASC, t.TeacherId ASC";
+                    DataTable dtPick = Dal.GetDataTable(sqlPick);
+                    if (dtPick.Rows.Count == 0)
+                    {
+                        stillEmpty++;
+                        continue;
+                    }
+
+                    int teacherId = Helper.ConvertToInt(dtPick.Rows[0]["TeacherId"].ToString());
+                    int prof = Helper.ConvertToInt(dtPick.Rows[0]["ProfessionalId"].ToString());
+
+                    Dal.ExeSpBig(con, "Assign_SetAssignAuto", cId, teacherId, hourId, 1, classId, prof, 0, 0);
+                    filled++;
+                    // unused homeroomId - prefix-compiler hint
+                    if (homeroomId == 0) { /* class without homeroom - covered by HomeroomRank ordering */ }
+                }
+            }
+            finally { Dal.CloseConnection(con); }
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Filled\":" + filled + ",\"StillEmpty\":" + stillEmpty + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
     [WebMethod]
     public void Assign_GetDataForAssignAuto()
     {
@@ -2581,6 +2920,75 @@ ORDER BY sh.HourId";
         string ClassId = GetParams("ClassId");
         DataTable dt = Dal.ExeSp("Assign_GetFreeTeacher", ClassId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    // =========================================================
+    // Returns teachers who are a plausible fit for at least ONE
+    // empty (ClassId, HourId) slot in the current configuration.
+    // A "fit" means: the teacher teaches that class (row in
+    // ClassTeacher), has that hour in TeacherHours (i.e., works
+    // at that time), and is not already assigned somewhere else
+    // at the same hour. Used by the "הצג הכל" shortcut in the
+    // Assign page so the dock never lists irrelevant teachers.
+    // =========================================================
+    [WebMethod]
+    public void Assign_GetFreeTeachersForEmpty()
+    {
+        try
+        {
+        if (HttpContext.Current.Request.Cookies["UserData"] == null)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+        int cfgId = Helper.ConvertToInt(cId);
+
+        // Pre-aggregated set approach avoids O(teachers × classes × hours)
+        // nested NOT EXISTS — the previous version timed out.
+        string sql = @"
+;WITH filled AS (
+  SELECT DISTINCT ClassId, HourId FROM TeacherAssignment
+  WHERE ConfigurationId = " + cfgId + @" AND HourTypeId = 1
+),
+busyTeacher AS (
+  SELECT DISTINCT TeacherId, HourId FROM TeacherAssignment
+  WHERE ConfigurationId = " + cfgId + @" AND HourTypeId = 1
+)
+SELECT DISTINCT
+  t.TeacherId,
+  ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  '' AS FreeHour
+FROM Teacher t
+INNER JOIN ClassTeacher ct
+  ON ct.TeacherId = t.TeacherId
+ AND ct.ConfigurationId = t.ConfigurationId
+INNER JOIN TeacherHours th
+  ON th.TeacherId = t.TeacherId
+ AND th.ConfigurationId = t.ConfigurationId
+INNER JOIN SchoolHours sh
+  ON sh.HourId = th.HourId
+ AND sh.ConfigurationId = t.ConfigurationId
+ AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+LEFT JOIN filled f
+  ON f.ClassId = ct.ClassId AND f.HourId = th.HourId
+LEFT JOIN busyTeacher bt
+  ON bt.TeacherId = t.TeacherId AND bt.HourId = th.HourId
+WHERE t.ConfigurationId = " + cfgId + @"
+  AND f.ClassId IS NULL    -- (class, hour) slot is empty
+  AND bt.TeacherId IS NULL -- teacher isn't busy elsewhere at that hour
+ORDER BY TeacherName";
+        DataTable dt = Dal.GetDataTable(sql);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}]");
+        }
     }
     [WebMethod]
     public void Assign_GetAssignment()

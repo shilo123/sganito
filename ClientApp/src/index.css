@@ -1931,6 +1931,88 @@ input[type='radio'] {
 }
 
 /* ============================================================
+   ASSIGN — fancy loading card (spinner + timer)
+   ============================================================ */
+.assign-loading-card {
+  max-width: 460px;
+  width: 92%;
+  padding: 2.2rem 2.4rem 1.8rem;
+  border: 1px solid rgba(33, 150, 243, 0.12);
+  box-shadow:
+    0 25px 60px -20px rgba(13, 71, 161, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+  position: relative;
+  overflow: hidden;
+}
+.assign-loading-card::before {
+  content: '';
+  position: absolute;
+  inset: -50% -20%;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(33, 150, 243, 0.18), transparent 55%),
+    radial-gradient(circle at 70% 70%, rgba(0, 188, 212, 0.18), transparent 55%);
+  animation: assign-loading-glow 6s ease-in-out infinite alternate;
+  z-index: 0;
+}
+.assign-loading-card > * {
+  position: relative;
+  z-index: 1;
+}
+@keyframes assign-loading-glow {
+  0%   { transform: rotate(0deg)   scale(1); }
+  100% { transform: rotate(180deg) scale(1.15); }
+}
+.assign-loading-spinner {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 1.1rem;
+  position: relative;
+}
+.assign-loading-spinner span {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  animation: assign-loading-spin 1.4s linear infinite;
+}
+.assign-loading-spinner span:nth-child(1) {
+  border-top-color: #2196f3;
+}
+.assign-loading-spinner span:nth-child(2) {
+  inset: 8px;
+  border-top-color: #00bcd4;
+  animation-duration: 1.8s;
+  animation-direction: reverse;
+}
+.assign-loading-spinner span:nth-child(3) {
+  inset: 16px;
+  border-top-color: #1565c0;
+  animation-duration: 2.2s;
+}
+@keyframes assign-loading-spin {
+  to { transform: rotate(360deg); }
+}
+.assign-loading-timer {
+  margin-top: 0.95rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: linear-gradient(135deg, rgba(33, 150, 243, 0.1), rgba(0, 188, 212, 0.12));
+  color: #0d47a1;
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 0.4rem 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(33, 150, 243, 0.2);
+  font-family: var(--font-display);
+  letter-spacing: 0.5px;
+}
+.assign-loading-timer .fa {
+  color: #2196f3;
+}
+
+/* ============================================================
    TOAST — app-wide notification stack (top-start in RTL)
    ============================================================ */
 .toast-stack {
@@ -3496,12 +3578,48 @@ input[type='radio'] {
   margin-inline-start: 0.25rem;
 }
 
-/* Teachers sidebar panel */
+/* Teachers sidebar panel — sticky so it follows the user when scrolling through the classes grid */
 .tc-page__teachers {
   position: sticky;
   top: 80px;
+  align-self: start;
+  max-height: calc(100vh - 100px);
+  z-index: 10;
 }
 .tc-teachers-panel { margin: 0; }
+.tc-teachers-panel .panel-body {
+  /* fit inside the visible viewport so the panel itself doesn't push out of the sticky box */
+  max-height: calc(100vh - 200px) !important;
+}
+
+/* Distinct visual styles per teacher role in the sidebar.
+   tafkid 1 = homeroom (blue), 2 = professional (green), 3 = admin (red).
+   We lean on the existing tafkidTheme() classes and add a bolder gradient +
+   a thick inline-end border so the category is readable at a glance. */
+.tc-teachers-panel .panel-body .btn.btn-primary.draggable {
+  border-inline-end: 4px solid #1d4ed8 !important;
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
+}
+.tc-teachers-panel .panel-body .btn.btn-success.draggable {
+  border-inline-end: 4px solid #047857 !important;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+}
+.tc-teachers-panel .panel-body .btn.btn-danger.draggable {
+  border-inline-end: 4px solid #b91c1c !important;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+}
+/* Legend above the teacher list so the user recognizes the color coding */
+.tc-teachers-panel .panel-body .tc-role-legend {
+  display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 8px 10px;
+  border-bottom: 1px dashed #cbd5e1; margin-bottom: 8px;
+  font-size: 10.5px; color: #475569;
+}
+.tc-teachers-panel .panel-body .tc-role-legend-item {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.tc-teachers-panel .panel-body .tc-role-legend-dot {
+  width: 10px; height: 10px; border-radius: 3px; display: inline-block;
+}
 .tc-teachers-panel .panel-heading {
   padding: 0.85rem 1rem !important;
   background: linear-gradient(135deg, var(--teal) 0%, #0e7490 100%) !important;
@@ -4243,10 +4361,17 @@ input[type='radio'] {
   word-break: break-word;
 }
 
-/* Fixed dock bar at bottom */
+/* Fixed dock bar at bottom — flush-aligned with the main schedule column.
+   Start (right in RTL) skips the sidebar. End (left in RTL) skips the
+   vertical professionals panel (210px) + grid gap (1rem). */
 .assign-dockbar {
   position: fixed;
-  inset-inline: 0;
+  /* Align with the main schedule column. End = pros width + grid gap +
+     outer #main-content horizontal padding (~33.75px, taken here as
+     ~2.1rem). Tuned so the dockbar's left edge matches the schedule
+     grid's left edge. */
+  inset-inline-start: calc(var(--sidebar-width, 0) + 2.1rem);
+  inset-inline-end: calc(210px + 1rem + 2.1rem);
   bottom: 0;
   z-index: 40;
   display: grid;
@@ -4258,6 +4383,416 @@ input[type='radio'] {
   -webkit-backdrop-filter: blur(12px) saturate(160%);
   border-top: 1px solid var(--line);
   box-shadow: 0 -8px 30px -12px rgba(12, 14, 21, 0.12);
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+}
+/* Solo mode — professionals moved to the left side column. Only the free
+   teacher strip remains in the dockbar, so use a single column. */
+.assign-dockbar--solo { grid-template-columns: minmax(0, 1fr); }
+
+/* ---- Vertical professionals column (on visual left / logical end) ---- */
+.assign-page--with-side {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  gap: 1rem;
+  align-items: start;
+}
+/* Stretch the sticky sidebar from just under the top nav all the way
+   to the viewport bottom. The dockbar is position:fixed and overlays
+   the lower portion — its backdrop-filter gives a clean blur transition
+   so the aside visually reaches "all the way down". */
+.assign-pros-side {
+  position: sticky;
+  top: 86px;
+  align-self: start;
+  height: calc(100vh - 86px - 12px);
+  margin-bottom: 12px;
+  /* Sit under the dockbar's blur overlay */
+  z-index: 5;
+}
+.assign-pros-side > .panel {
+  margin: 0 !important;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 24px -8px rgba(15, 23, 42, 0.18), 0 2px 4px rgba(15, 23, 42, 0.05);
+  border: none !important;
+}
+.assign-pros-side .panel-heading {
+  padding: 0.75rem 1rem !important;
+  background: linear-gradient(135deg, #4c1d95 0%, #6d28d9 50%, #7c3aed 100%) !important;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.18) !important;
+  position: relative;
+}
+.assign-pros-side .panel-heading::before { display: none !important; }
+.assign-pros-side .panel-title {
+  font-size: 0.95rem !important;
+  font-weight: 700 !important;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #fff !important;
+  letter-spacing: 0.3px;
+}
+.assign-pros-side .panel-title i {
+  font-size: 1rem;
+  opacity: 0.95;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
+}
+/* The drop-zone holding the draggable pros: scrollable, full height */
+.assign-pros-side > .panel > :last-child {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.7rem 0.6rem !important;
+  background: linear-gradient(180deg, #faf5ff 0%, #f3e8ff 100%);
+  display: flex !important;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+/* Custom scrollbar for the pros list */
+.assign-pros-side > .panel > :last-child::-webkit-scrollbar { width: 6px; }
+.assign-pros-side > .panel > :last-child::-webkit-scrollbar-track { background: transparent; }
+.assign-pros-side > .panel > :last-child::-webkit-scrollbar-thumb {
+  background: rgba(124, 58, 237, 0.3);
+  border-radius: 3px;
+}
+.assign-pros-side > .panel > :last-child::-webkit-scrollbar-thumb:hover {
+  background: rgba(124, 58, 237, 0.5);
+}
+/* Unique per-profession pill: colored gradient background + emoji icon.
+   The gradient/border come from inline style (set by proTheme() in JS)
+   so each subject gets a distinct look. This overrides any .btn styling. */
+.assign-pros-side .pro-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem 0.6rem 0.55rem;
+  border-radius: 12px;
+  border: 1.5px solid var(--pro-border, #cbd5e1);
+  min-height: 46px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: #0f172a;
+  cursor: grab;
+  user-select: none;
+  box-shadow: 0 2px 6px -2px var(--pro-shadow, rgba(15,23,42,0.12));
+  transition: transform 0.18s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+.assign-pros-side .pro-pill::after {
+  /* Accent strip on the right (visual) edge of each pill */
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 5px;
+  background: var(--pro-border, #64748b);
+  opacity: 0.6;
+}
+.assign-pros-side .pro-pill:hover {
+  transform: translateX(-3px) scale(1.02);
+  box-shadow: 0 10px 22px -6px var(--pro-shadow, rgba(15,23,42,0.25));
+  filter: brightness(1.04) saturate(1.15);
+}
+.assign-pros-side .pro-pill:active { cursor: grabbing; transform: translateX(-1px) scale(0.99); }
+.assign-pros-side .pro-pill__icon {
+  font-size: 1.15rem;
+  line-height: 1;
+  flex-shrink: 0;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+.assign-pros-side .pro-pill__name {
+  flex: 1;
+  min-width: 0;
+  text-align: start;
+  line-height: 1.25;
+  word-break: break-word;
+  white-space: normal;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+@media (max-width: 900px) {
+  .assign-page--with-side { grid-template-columns: 1fr; }
+  .assign-pros-side { position: static; height: auto; max-height: 260px; }
+  .assign-pros-side > .panel > :last-child {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+/* ============================================================
+   Class status strip — tiny coverage pill in the top nav.
+   Click the pill to expand a dropdown with per-layer details.
+   Hidden on /Assign/Assign (which has its own coverage pill).
+   ============================================================ */
+.class-status-strip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  float: right;
+  margin-top: 6px;
+  margin-right: 8px;
+}
+.class-status-strip__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 10px;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  box-shadow: 0 2px 6px -2px rgba(5, 150, 105, 0.5);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+.class-status-strip__summary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px -2px rgba(5, 150, 105, 0.55);
+}
+.class-status-strip__summary i { font-size: 0.9rem; }
+.class-status-strip__summary strong { font-size: 0.95rem; }
+.class-status-strip__frac { opacity: 0.85; font-size: 0.72rem; font-weight: 500; }
+.class-status-strip__caret { font-size: 0.7rem; opacity: 0.8; margin-inline-start: 2px; }
+
+.class-status-strip__dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  inset-inline-end: 0;
+  min-width: 320px;
+  max-width: 460px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 20px 40px -12px rgba(15, 23, 42, 0.35), 0 6px 14px rgba(15, 23, 42, 0.12);
+  z-index: 3000;
+  direction: rtl;
+  animation: class-status-dropdown-in 0.15s ease-out;
+}
+@keyframes class-status-dropdown-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.class-status-strip__dropdown-header {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+  color: #fff;
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+  letter-spacing: 0.2px;
+}
+.class-status-strip__dropdown-body { padding: 8px 12px 12px; }
+.class-status-strip__layer-row {
+  padding: 8px 0;
+  border-bottom: 1px dashed #e2e8f0;
+}
+.class-status-strip__layer-row:last-child { border-bottom: none; }
+.class-status-strip__layer-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+.class-status-strip__layer-head strong { flex: 1; }
+.class-status-strip__letter {
+  background: linear-gradient(135deg, #fef3c7 0%, #fcd34d 100%);
+  color: #78350f;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 800;
+  font-size: 0.82rem;
+  min-width: 22px;
+  text-align: center;
+}
+.class-status-strip__layer-count {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.76rem;
+}
+.class-status-strip__layer-count.is-full {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+.class-status-strip__class-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.class-status-strip__cls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #9a3412;
+  white-space: nowrap;
+}
+.class-status-strip__cls.is-ok {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  border-color: #86efac;
+  color: #166534;
+}
+.class-status-strip__cls-h {
+  font-size: 0.66rem;
+  font-weight: 500;
+  opacity: 0.8;
+  margin-inline-start: 2px;
+  padding-inline-start: 4px;
+  border-inline-start: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+@media (max-width: 900px) {
+  .class-status-strip { float: none; margin: 4px 0; }
+  .class-status-strip__frac { display: none; }
+  .class-status-strip__dropdown { min-width: 280px; inset-inline-end: -10px; }
+}
+
+/* ============================================================
+   Coverage pill — shows "X% שובץ" in the layer bar.
+   ============================================================ */
+.assign-coverage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 6px 14px 7px;
+  background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+  border: 1.5px solid #6ee7b7;
+  border-radius: 999px;
+  color: #064e3b;
+  font-size: 0.82rem;
+  font-weight: 600;
+  box-shadow: 0 2px 6px -2px rgba(5, 150, 105, 0.25);
+  position: relative;
+  overflow: hidden;
+  min-width: 200px;
+}
+.assign-coverage-pill__track {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+}
+.assign-coverage-pill__fill {
+  height: 100%;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.35) 100%);
+  transition: width 0.5s ease;
+}
+.assign-coverage-pill__label {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+.assign-coverage-pill__label i { color: #059669; }
+.assign-coverage-pill__label strong { font-size: 1rem; color: #047857; }
+.assign-coverage-pill__fraction { font-weight: 500; font-size: 0.76rem; color: #047857; opacity: 0.85; }
+
+/* ============================================================
+   Free-teacher pill tooltip — rendered via React as a portal-ish
+   position:fixed element at document root level, so ancestors
+   with overflow:hidden/auto (the dockbar panel) can't clip it.
+   The component passes inline style={left, top, transform}.
+   ============================================================ */
+.free-teacher-pill { position: relative; }
+.ft-tip.ft-tip--portal {
+  min-width: 220px;
+  max-width: 280px;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+  color: #1e293b;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.5;
+  box-shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.25), 0 4px 10px rgba(15, 23, 42, 0.08);
+  pointer-events: none;
+  z-index: 9999;
+  text-align: start;
+  direction: rtl;
+  animation: ft-tip-in 0.15s ease-out;
+}
+@keyframes ft-tip-in {
+  from { opacity: 0; transform: translate(-50%, -100%) translateY(-2px) scale(0.96); }
+  to { opacity: 1; }
+}
+.ft-tip.ft-tip--portal::after {
+  /* Small arrow pointing down from the tooltip toward the pill */
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: #ffffff;
+  filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.15));
+}
+.ft-tip.ft-tip--portal .ft-tip__name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #1e40af;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed #cbd5e1;
+}
+.ft-tip.ft-tip--portal .ft-tip__row { color: #334155; }
+.ft-tip.ft-tip--portal .ft-tip__row strong { color: #0f172a; }
+.ft-tip.ft-tip--portal .ft-tip__ic { color: #64748b; }
+.ft-tip__name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #fbbf24;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.18);
+}
+.ft-tip__rows { display: flex; flex-direction: column; gap: 4px; }
+.ft-tip__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+}
+.ft-tip__row strong { color: #fff; margin-inline-start: 3px; }
+.ft-tip__ic {
+  width: 14px;
+  font-size: 11px;
+  color: #94a3b8;
+  flex-shrink: 0;
+  text-align: center;
 }
 .assign-dockbar__col .panel {
   margin: 0 !important;

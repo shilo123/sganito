@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { ajax } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
@@ -8,6 +8,7 @@ interface ClassStatusRow {
   ClassName: string;
   ClassHour: number;
   HourSchool: number;
+  LayerId?: number | null;
 }
 
 const NAV_ITEMS = [
@@ -27,11 +28,44 @@ export default function MasterLayout() {
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
     try { return localStorage.getItem('sidebarExpanded') === '1'; } catch { return false; }
   });
+  const [statusDetailsOpen, setStatusDetailsOpen] = useState(false);
+
+  // Close the status dropdown on any outside click
+  useEffect(() => {
+    if (!statusDetailsOpen) return;
+    const close = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest('.class-status-strip')) setStatusDetailsOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [statusDetailsOpen]);
 
   useEffect(() => {
     if (!user) return;
     ajax<ClassStatusRow[]>('Class_GetClassStatus').then(setClasses).catch(() => setClasses([]));
   }, [user, location.pathname]);
+
+  // Auto-collapse the side navigation ONLY on the transition INTO the
+  // school schedule page (/Assign/Assign exactly — not AssignMatrix or
+  // AssignConfig), and re-expand ONLY on the transition OUT of it.
+  // Moving between any other tabs leaves the sidebar untouched so the
+  // user's manual choice is respected.
+  const isSchedulePath = (p: string) => p === '/Assign/Assign' || p === '/Assign/Assign/';
+  const prevPathRef = useRef<string>('__init__');
+  useEffect(() => {
+    const prev = prevPathRef.current;
+    const now = location.pathname;
+    const isAssign = isSchedulePath(now);
+    if (prev === '__init__') {
+      if (isAssign) setSidebarExpanded(false);
+    } else {
+      const wasAssign = isSchedulePath(prev);
+      if (!wasAssign && isAssign) setSidebarExpanded(false);
+      else if (wasAssign && !isAssign) setSidebarExpanded(true);
+    }
+    prevPathRef.current = now;
+  }, [location.pathname]);
 
   const toggleSidebar = () => {
     setSidebarExpanded(prev => {
@@ -57,18 +91,98 @@ export default function MasterLayout() {
             <div className="menu-control hidden-xs">
               <a href="javascript:void(0)"><i className="fa fa-bars"></i></a>
             </div>
-            <ul style={{ float: 'right', marginTop: 5, marginRight: 7 }}>
-              {classes.map((c, i) => (
-                <li key={i}>
+            {/* Class status summary — hidden on the main schedule page
+                where the built-in coverage pill already shows this info.
+                On other screens, show a compact per-layer summary rather
+                than 23 identical pills. */}
+            {!isSchedulePath(location.pathname) && (() => {
+              if (classes.length === 0) return null;
+              // Group classes by LayerId (with fallback to first letter of ClassName).
+              const byLayer = new Map<string, ClassStatusRow[]>();
+              const LAYER_LETTERS = ['', "א'", "ב'", "ג'", "ד'", "ה'", "ו'"];
+              for (const c of classes) {
+                const layerKey = c.LayerId && c.LayerId >= 1 && c.LayerId <= 6
+                  ? LAYER_LETTERS[c.LayerId]
+                  : ((c.ClassName || '?').trim().charAt(0) || '?');
+                const list = byLayer.get(layerKey) ?? [];
+                list.push(c);
+                byLayer.set(layerKey, list);
+              }
+              // Overall percentage = sum(ClassHour) / sum(HourSchool). Counting
+              // classes that are EXACTLY at 100% was too strict — most classes
+              // hover around 85-95% so nothing ever showed as "done".
+              const totalHours = classes.reduce((a, c) => a + (Number(c.HourSchool) || 0), 0);
+              const filledHours = classes.reduce((a, c) => a + (Number(c.ClassHour) || 0), 0);
+              const overallPct = totalHours > 0 ? Math.round((filledHours / totalHours) * 100) : 0;
+              const totalClasses = classes.length;
+              const totalDone = classes.filter((c) => c.ClassHour === c.HourSchool).length;
+              const sortedLayers = Array.from(byLayer.entries()).sort((a, b) =>
+                a[0].localeCompare(b[0], 'he'),
+              );
+              return (
+                <div className="class-status-strip" aria-label="סטטוס שיבוץ כיתות">
                   <button
-                    style={{ paddingRight: 10, paddingLeft: 10 }}
-                    className={`btn ${c.ClassHour === c.HourSchool ? 'btn-success' : 'ls-red-btn'} btn-round btn-xs btnArea`}
+                    type="button"
+                    className="class-status-strip__summary"
+                    title={`שובצו ${filledHours} מתוך ${totalHours} שעות (${totalDone}/${totalClasses} כיתות הושלמו במלואן) — לחץ לפירוט`}
+                    onClick={() => setStatusDetailsOpen((v) => !v)}
+                    aria-expanded={statusDetailsOpen}
                   >
-                    {c.ClassName}
+                    <i className="fa fa-check-circle" />
+                    <strong>{overallPct}%</strong>
+                    <span className="class-status-strip__frac">({filledHours}/{totalHours})</span>
+                    <i className={`fa fa-chevron-${statusDetailsOpen ? 'up' : 'down'} class-status-strip__caret`} />
                   </button>
-                </li>
-              ))}
-            </ul>
+                  {statusDetailsOpen && (
+                    <div className="class-status-strip__dropdown" role="dialog">
+                      <div className="class-status-strip__dropdown-header">
+                        סטטוס שיבוץ לפי שכבות
+                      </div>
+                      <div className="class-status-strip__dropdown-body">
+                        {sortedLayers.map(([layer, list]) => {
+                          const layerFilled = list.reduce((a, c) => a + (Number(c.ClassHour) || 0), 0);
+                          const layerTotal = list.reduce((a, c) => a + (Number(c.HourSchool) || 0), 0);
+                          const layerPct = layerTotal > 0 ? Math.round((layerFilled / layerTotal) * 100) : 0;
+                          const full = layerPct >= 100;
+                          return (
+                            <div key={layer} className="class-status-strip__layer-row">
+                              <div className="class-status-strip__layer-head">
+                                <span className="class-status-strip__letter">{layer}</span>
+                                <strong>שכבה {layer}</strong>
+                                <span className={`class-status-strip__layer-count${full ? ' is-full' : ''}`}>
+                                  {layerPct}% · {layerFilled}/{layerTotal}
+                                  {full && <i className="fa fa-check" style={{ marginInlineStart: 4 }} />}
+                                </span>
+                              </div>
+                              <div className="class-status-strip__class-list">
+                                {list
+                                  .slice()
+                                  .sort((a, b) => a.ClassName.localeCompare(b.ClassName, 'he'))
+                                  .map((c) => {
+                                    const ok = c.ClassHour === c.HourSchool;
+                                    return (
+                                      <span
+                                        key={c.ClassId ?? c.ClassName}
+                                        className={`class-status-strip__cls${ok ? ' is-ok' : ''}`}
+                                        title={`${c.ClassName}: ${c.ClassHour}/${c.HourSchool} שעות`}
+                                      >
+                                        {c.ClassName}
+                                        <span className="class-status-strip__cls-h">
+                                          {c.ClassHour}/{c.HourSchool}
+                                        </span>
+                                      </span>
+                                    );
+                                  })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </div>
       </nav>

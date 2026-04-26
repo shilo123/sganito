@@ -189,9 +189,13 @@ public class Shibutz
         // ============================================================
         // STEP 0: PRE-ASSIGN HOMEROOM TEACHERS TO HOUR 1
         // ============================================================
-        LogStep("start: pre-assign homeroom teachers to hour 1");
+        LogStep("מציב מחנכים לשעה הראשונה של היום");
         AssignHomeroomToHour1();
-        LogStep("homeroom hour-1 assigned");
+        LogStep("מחנכים שובצו לשעה 1 בכיתות האם");
+
+        // Extend opening into a 2-3 hour consecutive block per day (home class only)
+        ExtendHomeroomOpeningBlock();
+        LogStep("מרחיב פתיחת יום של מחנכים לבלוק של 2-3 שעות");
 
         // group by time (Hour, Day) - early hours first
         Dictionary<int, List<HourSlot>> byTime = BuildTimeBuckets();
@@ -211,7 +215,7 @@ public class Shibutz
 
         // Fill remaining hour 1 slots directly (non-homeroom teachers)
         for (int i = 0; i < hour1Keys.Count; i++) DirectFill(byTime[hour1Keys[i]]);
-        LogStep("initial direct-fill for hour 1 done");
+        LogStep("מילוי ראשוני של שעה 1 הושלם");
 
         // Main pipeline iterations - early-stop when no progress OR when the
         // previous iteration made only small gains (<5% improvement).
@@ -220,11 +224,12 @@ public class Shibutz
         int totalSlots = _allSlots.Count;
         for (int iteration = 0; iteration < 3; iteration++)
         {
-            if (IsCancelRequested(_configurationId)) { LogStep("cancel requested — aborting"); break; }
+            if (IsCancelRequested(_configurationId)) { LogStep("בקשת עצירה התקבלה — מפסיק"); break; }
             int redsBeforeIter = CountRedSlots();
             if (redsBeforeIter == 0) break;
 
             // Hour 1 pipeline
+            LogStep("סבב " + (iteration + 1) + " — משבץ שעות פתיחה של כל הכיתות");
             for (int i = 0; i < hour1Keys.Count; i++)
             {
                 if (IsCancelRequested(_configurationId)) break;
@@ -236,8 +241,9 @@ public class Shibutz
                 LocalSwapFill(slots);
                 DeepChainFill(slots, CHAIN_DEPTH);
             }
-            if (IsCancelRequested(_configurationId)) { LogStep("cancel requested — aborting"); break; }
+            if (IsCancelRequested(_configurationId)) { LogStep("בקשת עצירה התקבלה — מפסיק"); break; }
             // Other hours pipeline
+            LogStep("סבב " + (iteration + 1) + " — משבץ שעות המשך של כל הכיתות");
             for (int i = 0; i < otherKeys.Count; i++)
             {
                 if (IsCancelRequested(_configurationId)) break;
@@ -252,24 +258,24 @@ public class Shibutz
 
             int redsAfterIter = CountRedSlots();
             int gain = redsBeforeIter - redsAfterIter;
-            LogStep("pipeline iteration " + (iteration + 1) + " done (gain " + gain + ")");
+            LogStep("סבב שיבוץ " + (iteration + 1) + " הושלם (שובצו עוד " + gain + " משבצות)");
 
             if (gain <= 0)
             {
-                LogStep("no progress — early stop");
+                LogStep("אין התקדמות נוספת — מסיים סבבים");
                 break;
             }
             // Less than 5% improvement - later iterations are unlikely to help
             if (gain * 20 < redsBeforeIter)
             {
-                LogStep("diminishing returns (<5% improvement) — early stop");
+                LogStep("שיפור נמוך (פחות מ-5%) — מסיים סבבים");
                 break;
             }
             // After iteration 1, if reds already below 10% of total, stop.
             // Remaining holes are structural; expensive cleanup won't close them.
             if (iteration == 0 && redsAfterIter * 10 < totalSlots)
             {
-                LogStep("iter1 reached <10% reds — skipping further iterations");
+                LogStep("הגענו למתחת ל-10% חוסרים — מדלג על סבבים נוספים");
                 break;
             }
         }
@@ -282,23 +288,23 @@ public class Shibutz
         {
             CrossTimeSwapFill();
             int redsAfterCTS = CountRedSlots();
-            LogStep("cross-time swap (reds " + redsBeforeCTS + " -> " + redsAfterCTS + ")");
+            LogStep("החלפות בין זמנים (חוסרים " + redsBeforeCTS + " → " + redsAfterCTS + ")");
             if (redsAfterCTS < redsBeforeCTS)
             {
                 FillTeachersMissingHours();
-                LogStep("fill teachers missing hours done");
+                LogStep("השלמת שעות חסרות למורים הושלמה");
             }
         }
         else
         {
-            LogStep("all slots filled after main pipeline");
+            LogStep("כל המשבצות שובצו — מסיים את הפייפליין הראשי");
         }
 
         // Hakbatza/Ihud post-process (fast now that bumping is removed)
         int redsBeforeHak = CountRedSlots();
         ExpandHakbatzaIhudAssignments();
         int redsAfterHak = CountRedSlots();
-        LogStep("hakbatza/ihud expansion done");
+        LogStep("הרחבת הקבצות ואיחודים הושלמה");
 
         // Only do extra fix pass if Hakbatza actually increased reds (a tradeoff happened)
         // Otherwise the pipeline already converged - no point wasting time.
@@ -311,7 +317,7 @@ public class Shibutz
                 SmartSwapFill(slots);
                 DeepChainFill(slots, CHAIN_DEPTH);
             }
-            LogStep("post-hakbatza cleanup (reds " + redsAfterHak + " -> " + CountRedSlots() + ")");
+            LogStep("ניקוי אחרי הקבצות/איחודים (חוסרים " + redsAfterHak + " → " + CountRedSlots() + ")");
             ExpandHakbatzaIhudAssignments();
         }
 
@@ -549,6 +555,81 @@ public class Shibutz
             }
         }
         LogHomeroom("=== AssignHomeroomToHour1 END ===");
+    }
+
+    // =========================================================
+    // Extend each homeroom's opening into a 2-3 hour block in the home class.
+    // Pass 1: add hour 2 to every day the homeroom opens hour 1.
+    // Pass 2: add hour 3 to every day where pass 1 succeeded.
+    // Distribution across days comes for free because pass 1 completes
+    // before pass 2 starts — so a day never gets 3 hours unless every
+    // opening day already has 2.
+    // Soft constraint: skips a day if remaining is 0, teacher isn't in
+    // TeachList for that (class, hour), slot is already taken, etc.
+    // =========================================================
+    private void ExtendHomeroomOpeningBlock()
+    {
+        LogHomeroom("=== ExtendHomeroomOpeningBlock START ===");
+
+        foreach (KeyValuePair<int, int> kv in _homeroomByClass)
+        {
+            int classId = kv.Key;
+            int teacherId = kv.Value;
+
+            // Days where the homeroom already opens hour 1 in the home class
+            List<int> openingDays = new List<int>();
+            for (int i = 0; i < _allSlots.Count; i++)
+            {
+                HourSlot s = _allSlots[i];
+                if (s.ClassId == classId && s.Hour == 1 && s.AssignedTeacherId == teacherId)
+                    openingDays.Add(s.Day);
+            }
+            if (openingDays.Count == 0) continue;
+            openingDays.Sort();
+
+            string cname = _classNames.ContainsKey(classId) ? _classNames[classId] : ("Class" + classId);
+            string tname = _teacherNames.ContainsKey(teacherId) ? _teacherNames[teacherId] : ("T" + teacherId);
+
+            // Pass 1 (hour 2) then pass 2 (hour 3) — round-robin across days
+            for (int targetHour = 2; targetHour <= 3; targetHour++)
+            {
+                for (int d = 0; d < openingDays.Count; d++)
+                {
+                    int day = openingDays[d];
+
+                    string rk = Key(classId, teacherId);
+                    if (!_remaining.ContainsKey(rk) || _remaining[rk] <= 0)
+                    {
+                        LogHomeroom(string.Format("STOP: {0} T{1} - no remaining hours (hour {2})", cname, teacherId, targetHour));
+                        break;
+                    }
+
+                    HourSlot target = null;
+                    for (int i = 0; i < _allSlots.Count; i++)
+                    {
+                        HourSlot s = _allSlots[i];
+                        if (s.ClassId == classId && s.Day == day && s.Hour == targetHour)
+                        {
+                            target = s;
+                            break;
+                        }
+                    }
+                    if (target == null) continue;
+                    if (target.AssignedTeacherId > 0) continue;
+                    if (target.Candidates == null || target.Candidates.Count == 0) continue;
+
+                    ClassTeacher homeroomCt = FindTeacherInCandidates(target.Candidates, teacherId);
+                    if (homeroomCt == null) continue;
+
+                    if (!CanAssign(target, homeroomCt)) continue;
+
+                    ApplyAssign(target, homeroomCt);
+                    LogHomeroom(string.Format("EXTEND: {0} Day{1} Hour{2} -> {3}", cname, day, targetHour, tname));
+                }
+            }
+        }
+
+        LogHomeroom("=== ExtendHomeroomOpeningBlock END ===");
     }
 
     private bool HasManageClassIdMatch(HourSlot slot)

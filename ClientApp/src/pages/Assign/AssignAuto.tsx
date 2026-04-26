@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ajax } from '../../api/client';
 import { useToast } from '../../lib/toast';
 
@@ -32,26 +32,17 @@ interface DiagnosticRow {
   AvailableHourSlots: number;      // actual hours usable for teaching (SchoolHours intersection)
 }
 
-interface LiveStatusClass {
-  ClassId: number;
-  ClassName: string;
-  TotalSlots: number;
-  FilledSlots: number;
-}
-interface LiveStatus {
-  IsRunning: boolean;
-  ElapsedMs: number;
-  TotalSlots: number;
-  RedSlots: number;
-  CurrentStep: string;
-  Classes: LiveStatusClass[];
-}
-
 type DeleteType = -1 | 0 | 1;
 
 // ---- Constants ----
 
 const DAY_NAMES = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'];
+
+function formatElapsed(seconds: number): string {
+  const mm = Math.floor(seconds / 60);
+  const ss = seconds % 60;
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+}
 
 // ---- Component ----
 
@@ -71,54 +62,40 @@ export default function AssignAuto() {
 
   const [diagnostic, setDiagnostic] = useState<DiagnosticRow[]>([]);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
+  // Authoritative count of empty cells in the grid (from DB) — shown in the
+  // diagnostic dialog. Can differ from diagnostic.length (unmet ClassTeacher
+  // requirements) so we keep both and show emptyCellsState as the headline.
+  const [emptyCellsState, setEmptyCellsState] = useState(0);
 
-  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
-
-  // Recovery prompt - shown when the scheduler finished with gaps that
-  // could potentially be fixed by adding more TeacherHours and re-running.
-  const [recoveryPrompt, setRecoveryPrompt] = useState<{
-    missingCount: number;
-    teachersToFix: number;  // distinct teachers with missing assignments
-    alreadyTried: boolean;  // true if we already tried fixing once
-  } | null>(null);
+  // Busy flag for the in-dialog auto-fix button.
   const [recoveryBusy, setRecoveryBusy] = useState(false);
-  const [recoveryAutoSetFreeDay, setRecoveryAutoSetFreeDay] = useState(false);
 
-  // Conflict resolution modal - second tier of auto-fix for hard conflicts
-  interface ResolutionProposals {
-    TotalMissing: number;
-    AffectedTeachers: number;
-    Proposals: {
-      ClearFreeDayTeachers: Array<{ TeacherId: number; Name: string; FreeDay: number; Missing: number }>;
-      ReduceClassTeacherRows: Array<{ ClassId: number; TeacherId: number; ClassName: string; TeacherName: string; From: number; To: number; Delta: number }>;
-      SyncHakbatzaFreeDay: Array<{ GroupKey: string; MajorityFreeDay: number; Members: Array<{ TeacherId: number; FreeDay: number }> }>;
-    };
-  }
-  const [conflictModal, setConflictModal] = useState<ResolutionProposals | null>(null);
-  const [conflictBusy, setConflictBusy] = useState(false);
-  const [cfOptClearFreeDay, setCfOptClearFreeDay] = useState(false);
-  const [cfOptReduceCT, setCfOptReduceCT] = useState(true);
-  const [cfOptSyncHak, setCfOptSyncHak] = useState(true);
-
-  // Cancellation: shown only during the main Assign_ShibutzAuto run.
-  const [cancelSent, setCancelSent] = useState(false);
-  async function cancelCurrentShibutz() {
-    if (cancelSent) return;
-    setCancelSent(true);
-    try {
-      await fetch('/WebService.asmx/Assign_CancelShibutz', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-        body: '',
-        credentials: 'include',
-      });
-      toast.info('בקשת עצירה נשלחה — ממתין שהשיבוץ יסיים את הצעד הנוכחי...');
-    } catch (e) {
-      console.error('cancel shibutz failed', e);
-      toast.error('לא ניתן לשלוח בקשת עצירה');
-      setCancelSent(false);
+  // Elapsed seconds counter while the loading overlay is visible.
+  const [elapsedSec, setElapsedSec] = useState(0);
+  useEffect(() => {
+    if (!isLoading) {
+      setElapsedSec(0);
+      return;
     }
+    setElapsedSec(0);
+    const startedAt = Date.now();
+    const id = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isLoading]);
+
+  // Report modal shown after "תקן שעות מורים אוטומטית" — lists each teacher
+  // that had hours added, with the specific slots (day + hour).
+  interface RecoveryReportEntry {
+    TeacherId: number;
+    TeacherName: string;
+    IsHomeroom: boolean;
+    Added: number;
+    Required: number;
+    HourIds: number[];
   }
+  const [recoveryReport, setRecoveryReport] = useState<RecoveryReportEntry[] | null>(null);
 
   async function fetchShibutzErrors(): Promise<{
     errors: ShibutzErrorRow[];
@@ -159,22 +136,6 @@ export default function AssignAuto() {
     setSuccessAlert(true);
   }
 
-  async function fetchLiveStatus(): Promise<LiveStatus | null> {
-    try {
-      const raw = await fetch('/WebService.asmx/Assign_GetShibutzLiveStatus', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-        body: '',
-        credentials: 'include',
-      });
-      if (!raw.ok) return null;
-      const data = await raw.json();
-      return (data && typeof data === 'object') ? (data as LiveStatus) : null;
-    } catch {
-      return null;
-    }
-  }
-
   async function fetchDiagnostic(): Promise<DiagnosticRow[]> {
     try {
       const data = await ajax<DiagnosticRow[]>('Assign_GetShibutzDiagnostic');
@@ -193,29 +154,23 @@ export default function AssignAuto() {
     setShowResults(false);
     setShowDiagnostic(false);
     setDiagnostic([]);
-    setLiveStatus(null);
-    setCancelSent(false);
+    setEmptyCellsState(0);
     setLoadingTitle('מבצע שיבוץ אוטומטי');
     setIsLoading(true);
 
-    // Start live polling every 1s while the main call runs
-    let pollHandle: ReturnType<typeof setInterval> | null = null;
-    const startPolling = () => {
-      pollHandle = setInterval(async () => {
-        const st = await fetchLiveStatus();
-        if (st) setLiveStatus(st);
-      }, 1000);
-    };
-    startPolling();
-
     try {
       await ajax('Assign_ShibutzAuto');
-      if (pollHandle) clearInterval(pollHandle);
-      // Switch the loading screen to an honest "verifying" state and stop
-      // showing the stale in-memory LiveStatus (which counts filled slots,
-      // not unmet ClassTeacher requirements — those can differ).
-      setLoadingTitle('מאמת תוצאות מול נתונים');
-      setLiveStatus(null);
+
+      // Final pass: fill any remaining empty cells with available teachers
+      // (homeroom first, then least-loaded teacher with free TeacherHours at
+      // that hour). Without this, ClassTeacher demand < SchoolHours capacity
+      // leaves visible "אין שיבוץ" cells in the school grid.
+      setLoadingTitle('משלים משבצות ריקות');
+      try {
+        await ajax('Assign_FillEmptySlots');
+      } catch (e) {
+        console.error('Assign_FillEmptySlots failed', e);
+      }
 
       const diag = await fetchDiagnostic();
       setDiagnostic(diag);
@@ -230,13 +185,13 @@ export default function AssignAuto() {
 
       const result = await fetchShibutzErrors();
       setSavedCount(Math.max(0, result.savedCount));
+      setErrors(result.errors);
 
-      // Single source of truth: DB state. Only "success" if BOTH the grid
-      // is fully filled AND every ClassTeacher requirement is met.
-      const fullyComplete = emptyCells === 0 && diag.length === 0;
+      // Success when every ClassTeacher requirement is met. Empty cells in
+      // the grid (no demand from ClassTeacher) are normal — they correspond
+      // to break/recess/free periods, NOT to scheduling failures.
+      const fullyComplete = diag.length === 0;
 
-      // Hide the loading overlay BEFORE opening the next modal so the user
-      // never sees the old "805/805 all green" next to a "80 חוסרים" popup.
       setIsLoading(false);
 
       if (fullyComplete) {
@@ -244,49 +199,45 @@ export default function AssignAuto() {
         setShowResults(true);
         setSuccessAlert(true);
       } else {
-        // Partial success - offer auto-recovery (add teacher hours + retry)
-        const distinctTeachers = new Set(diag.map((d) => d.TeacherId)).size;
-        setRecoveryPrompt({
-          missingCount: diag.length,
-          teachersToFix: distinctTeachers,
-          alreadyTried: false,
-        });
+        setEmptyCellsState(emptyCells);
+        setErrorCount(emptyCells);
+        setShowDiagnostic(true);
+        setSuccessAlert(true);
       }
     } catch (e) {
-      if (pollHandle) clearInterval(pollHandle);
       console.error('Assign_ShibutzAuto failed', e);
       toast.error('אירעה שגיאה בזמן ביצוע השיבוץ האוטומטי. אנא נסה שוב.');
       setIsLoading(false);
     } finally {
-      if (pollHandle) clearInterval(pollHandle);
-      // safety net only; normal flow already cleared isLoading above
       setIsLoading(false);
     }
   }
 
   // Recovery flow: auto-add TeacherHours (smart) + re-run the scheduler.
-  // Called from the "try to fix automatically" button in the recovery prompt.
+  // Triggered from the "try auto-fix" button inside the diagnostic report.
   async function runRecoveryAndRetry() {
     if (recoveryBusy) return;
-    const alreadyTried = recoveryPrompt?.alreadyTried === true;
     setRecoveryBusy(true);
+    setShowDiagnostic(false);
     setLoadingTitle('מוסיף שעות עבודה למורים ומנסה שוב...');
     setIsLoading(true);
     try {
       // Step 1: smart auto-assign of teacher working hours
       let addedHours = 0;
       let quotaUpdated = 0;
+      let report: RecoveryReportEntry[] = [];
       try {
         const raw = await fetch('/WebService.asmx/Teacher_AutoAssignHoursSmart', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-          body: 'AutoSetHomeroomFreeDay=' + (recoveryAutoSetFreeDay ? '1' : '0'),
+          body: 'AutoSetHomeroomFreeDay=0',
           credentials: 'include',
         });
         if (raw.ok) {
           const data = await raw.json();
           addedHours = Number(data?.Added || 0);
           quotaUpdated = Number(data?.QuotaUpdated || 0);
+          if (Array.isArray(data?.DetailsFull)) report = data.DetailsFull as RecoveryReportEntry[];
         }
       } catch (e) {
         console.error('Teacher_AutoAssignHoursSmart (recovery) failed', e);
@@ -294,7 +245,6 @@ export default function AssignAuto() {
 
       // Step 2: re-run the scheduler
       setLoadingTitle('מריץ שוב את השיבוץ האוטומטי...');
-      setLiveStatus(null);
       await ajax('Assign_ShibutzAuto');
       await new Promise((r) => setTimeout(r, 400));
 
@@ -313,11 +263,13 @@ export default function AssignAuto() {
 
       const result = await fetchShibutzErrors();
       setSavedCount(Math.max(0, result.savedCount));
+      setErrors(result.errors);
 
-      // Hide loading BEFORE opening the next modal
-      setRecoveryPrompt(null);
       setIsLoading(false);
       setRecoveryBusy(false);
+
+      // Show the per-teacher hours report when any teacher was touched.
+      if (report.length > 0) setRecoveryReport(report);
 
       if (emptyCells === 0 && diag.length === 0) {
         setResultMode('success');
@@ -327,21 +279,13 @@ export default function AssignAuto() {
           ? `השיבוץ הושלם (הוספנו ${addedHours} שעות ל-${quotaUpdated} מורים)`
           : 'השיבוץ הושלם';
         toast.success(prefix);
-        return;
-      } else if (alreadyTried) {
-        // Already retried once - show the diagnostic without another prompt
-        setErrorCount(diag.length);
+      } else {
+        // Still gaps — reopen the diagnostic with the updated numbers
+        setEmptyCellsState(emptyCells);
+        setErrorCount(emptyCells);
         setShowDiagnostic(true);
         setSuccessAlert(true);
-        toast.warning('לא ניתן היה לפתור אוטומטית את כל החוסרים. מוצגים החוסרים שנותרו.');
-      } else {
-        // Offer ONE more round
-        const distinctTeachers = new Set(diag.map((d) => d.TeacherId)).size;
-        setRecoveryPrompt({
-          missingCount: diag.length,
-          teachersToFix: distinctTeachers,
-          alreadyTried: true,
-        });
+        toast.warning(`נותרו ${emptyCells} משבצות לא משובצות לאחר התיקון האוטומטי`);
       }
     } catch (e) {
       console.error('runRecoveryAndRetry failed', e);
@@ -350,107 +294,6 @@ export default function AssignAuto() {
       setRecoveryBusy(false);
       setIsLoading(false);
     }
-  }
-
-  async function openConflictResolutions() {
-    try {
-      const raw = await fetch('/WebService.asmx/Assign_GetConflictResolutions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-        body: '',
-        credentials: 'include',
-      });
-      if (!raw.ok) throw new Error('HTTP ' + raw.status);
-      const data = (await raw.json()) as ResolutionProposals;
-      setShowDiagnostic(false);
-      setConflictModal(data);
-      // Sensible defaults: if there are hakbatza conflicts, sync them; if any
-      // teacher has a FreeDay + missing hours, clear them; always offer
-      // reduce-CT as the guaranteed-success fallback (defaults off).
-      setCfOptSyncHak((data?.Proposals?.SyncHakbatzaFreeDay?.length ?? 0) > 0);
-      setCfOptClearFreeDay((data?.Proposals?.ClearFreeDayTeachers?.length ?? 0) > 0);
-      setCfOptReduceCT(false);
-    } catch (e) {
-      console.error('Assign_GetConflictResolutions failed', e);
-      toast.error('לא ניתן לטעון את הצעות פתרון הקונפליקטים');
-    }
-  }
-
-  async function applyConflictsAndRetry() {
-    if (!conflictModal || conflictBusy) return;
-    if (!cfOptClearFreeDay && !cfOptReduceCT && !cfOptSyncHak) {
-      toast.warning('בחר לפחות שינוי אחד להחלה');
-      return;
-    }
-    setConflictBusy(true);
-    setLoadingTitle('מחיל שינויים ומריץ שיבוץ מחדש...');
-    setIsLoading(true);
-    try {
-      // Apply selected resolutions
-      const body =
-        'ClearFreeDay=' + (cfOptClearFreeDay ? '1' : '0') +
-        '&ReduceCT=' + (cfOptReduceCT ? '1' : '0') +
-        '&SyncHakbatza=' + (cfOptSyncHak ? '1' : '0');
-      const raw = await fetch('/WebService.asmx/Assign_ApplyConflictResolutions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-        body,
-        credentials: 'include',
-      });
-      if (!raw.ok) throw new Error('HTTP ' + raw.status);
-      const applied = await raw.json();
-
-      // Rerun scheduler
-      setLoadingTitle('מריץ את השיבוץ מחדש...');
-      await ajax('Assign_ShibutzAuto');
-      await new Promise((r) => setTimeout(r, 400));
-
-      // Verify
-      setLoadingTitle('מאמת תוצאות מול נתונים');
-      const diag = await fetchDiagnostic();
-      setDiagnostic(diag);
-      let emptyCells = 0;
-      try {
-        const es = await ajax<{ EmptySlots?: number }>('Assign_GetEmptySlotsCount');
-        emptyCells = Number(es?.EmptySlots ?? 0);
-      } catch { emptyCells = diag.length; }
-      const result = await fetchShibutzErrors();
-      setSavedCount(Math.max(0, result.savedCount));
-
-      setConflictModal(null);
-      setIsLoading(false);
-      setConflictBusy(false);
-
-      const summary = [
-        `${applied?.ClearedFreeDay ?? 0} ימי חופשי בוטלו`,
-        `${applied?.ReducedClassTeacher ?? 0} דרישות הופחתו`,
-        `${applied?.SyncedHakbatzaFreeDay ?? 0} סנכרוני הקבצה`,
-      ].filter((s) => !s.startsWith('0 ')).join(' | ') || 'השינויים הוחלו';
-
-      if (emptyCells === 0 && diag.length === 0) {
-        setResultMode('success');
-        setShowResults(true);
-        setSuccessAlert(true);
-        toast.success('השיבוץ הושלם! (' + summary + ')');
-      } else {
-        setErrorCount(diag.length);
-        setShowDiagnostic(true);
-        toast.warning(summary + ' | עדיין ' + diag.length + ' חוסרים');
-      }
-    } catch (e) {
-      console.error('applyConflictsAndRetry failed', e);
-      toast.error('שגיאה בהחלת השינויים');
-      setIsLoading(false);
-      setConflictBusy(false);
-    }
-  }
-
-  function dismissRecoveryAndShowDiagnostic() {
-    const diagLen = recoveryPrompt?.missingCount ?? diagnostic.length;
-    setRecoveryPrompt(null);
-    setErrorCount(diagLen);
-    setShowDiagnostic(true);
-    setSuccessAlert(true);
   }
 
   async function doAutoAddTeacherHours(): Promise<{ added: number; teachers: number; details: string[] } | null> {
@@ -601,122 +444,18 @@ export default function AssignAuto() {
     <div style={{ direction: 'rtl' }}>
       {isLoading && (
         <div className="action-loading" role="status" aria-live="polite">
-          <div className="action-loading__card" style={{ maxWidth: 720, width: '90%', position: 'relative' }}>
-            {liveStatus && (
-              <button
-                type="button"
-                onClick={cancelCurrentShibutz}
-                disabled={cancelSent}
-                title="עצור את השיבוץ האוטומטי"
-                style={{
-                  position: 'absolute',
-                  bottom: 10,
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  background: cancelSent ? '#9ca3af' : '#dc2626',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 6,
-                  padding: '6px 18px',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: cancelSent ? 'wait' : 'pointer',
-                  zIndex: 2,
-                  boxShadow: '0 2px 8px -2px rgba(0,0,0,0.25)',
-                }}
-              >
-                <i className="fa fa-stop" style={{ marginLeft: 6 }} />
-                {cancelSent ? 'עוצר...' : 'עצור שיבוץ'}
-              </button>
-            )}
+          <div className="action-loading__card assign-loading-card">
+            <div className="assign-loading-spinner" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
             <div className="action-loading__title">{loadingTitle}...</div>
-            {liveStatus ? (
-              <>
-                <div className="action-loading__sub">
-                  {liveStatus.CurrentStep || 'מעבד...'}
-                  {liveStatus.ElapsedMs > 0 && ` • ${Math.round(liveStatus.ElapsedMs / 1000)}s`}
-                </div>
-                {liveStatus.TotalSlots > 0 && (
-                  <div style={{ margin: '12px 0', fontSize: 14, textAlign: 'center' }}>
-                    <strong style={{ color: '#2e7d32' }}>
-                      {liveStatus.TotalSlots - liveStatus.RedSlots}
-                    </strong>{' '}
-                    משבצות שובצו מתוך <strong>{liveStatus.TotalSlots}</strong>
-                    {liveStatus.RedSlots > 0 && (
-                      <>
-                        {' '}· נותרו <strong style={{ color: '#d32f2f' }}>{liveStatus.RedSlots}</strong>
-                      </>
-                    )}
-                  </div>
-                )}
-                {liveStatus.Classes && liveStatus.Classes.length > 0 && (
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))',
-                      gap: 6,
-                      marginTop: 10,
-                      maxHeight: 220,
-                      overflowY: 'auto',
-                      padding: 4,
-                    }}
-                  >
-                    {[...liveStatus.Classes]
-                      .sort((a, b) => a.ClassName.localeCompare(b.ClassName, 'he'))
-                      .map((c) => {
-                        const pct = c.TotalSlots > 0 ? (c.FilledSlots / c.TotalSlots) * 100 : 0;
-                        const done = c.FilledSlots === c.TotalSlots;
-                        return (
-                          <div
-                            key={c.ClassId}
-                            style={{
-                              padding: '6px 8px',
-                              borderRadius: 6,
-                              background: done
-                                ? 'linear-gradient(135deg, #a5d6a7, #66bb6a)'
-                                : 'linear-gradient(135deg, #fff3e0, #ffcc80)',
-                              color: done ? '#1b5e20' : '#e65100',
-                              fontSize: 12,
-                              fontWeight: 600,
-                              textAlign: 'center',
-                              position: 'relative',
-                              overflow: 'hidden',
-                            }}
-                            title={`${c.FilledSlots}/${c.TotalSlots}`}
-                          >
-                            <div style={{ position: 'relative', zIndex: 2 }}>
-                              {c.ClassName}
-                              <br />
-                              <span style={{ fontSize: 10, fontWeight: 400 }}>
-                                {c.FilledSlots}/{c.TotalSlots}
-                              </span>
-                            </div>
-                            {!done && (
-                              <div
-                                style={{
-                                  position: 'absolute',
-                                  bottom: 0,
-                                  left: 0,
-                                  right: 0,
-                                  height: 3,
-                                  background: '#4caf50',
-                                  width: `${pct}%`,
-                                  transition: 'width 0.4s ease',
-                                }}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <div className="action-loading__sub">אנא המתן, התהליך עשוי לקחת מספר שניות</div>
-                <div className="action-loading__bar" />
-              </>
-            )}
+            <div className="action-loading__sub">אנא המתן, התהליך עשוי לקחת מספר שניות</div>
+            <div className="action-loading__bar" />
+            <div className="assign-loading-timer" aria-live="off">
+              <i className="fa fa-clock-o" /> {formatElapsed(elapsedSec)}
+            </div>
           </div>
         </div>
       )}
@@ -770,262 +509,6 @@ export default function AssignAuto() {
         </div>
       </div>
 
-      {/* Recovery prompt - offered when the scheduler finished with gaps
-          that might be fixable by auto-adding more working hours to teachers. */}
-      {recoveryPrompt && (
-        <div
-          className="modal"
-          style={{
-            display: 'block',
-            background: 'rgba(0,0,0,0.55)',
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            zIndex: 1060,
-            overflow: 'auto',
-          }}
-          onClick={() => { if (!recoveryBusy) dismissRecoveryAndShowDiagnostic(); }}
-        >
-          <div
-            className="modal-dialog"
-            style={{ direction: 'rtl', maxWidth: 560, marginTop: '8vh' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="modal-content" style={{ borderRadius: 12, overflow: 'hidden' }}>
-              <div style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', padding: '16px 22px', color: '#fff' }}>
-                <h4 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>
-                  <i className="fa fa-exclamation-triangle" style={{ marginLeft: 8 }} />
-                  השיבוץ הסתיים עם חוסרים
-                </h4>
-              </div>
-              <div className="modal-body" style={{ padding: '20px 22px' }}>
-                <p style={{ fontSize: 15, marginBottom: 14 }}>
-                  <strong>{recoveryPrompt.missingCount}</strong> דרישות של{' '}
-                  <strong>{recoveryPrompt.teachersToFix}</strong> מורים לא שובצו במלואן.
-                </p>
-                <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 6, color: '#374151' }}>
-                  אנחנו יכולים לנסות לפתור את זה אוטומטית:
-                </p>
-                <ul style={{ fontSize: 13, lineHeight: 1.8, color: '#4b5563', marginBottom: 16, paddingInlineStart: 22 }}>
-                  <li>נוסיף שעות עבודה לכל מורה שצריך יותר שעות</li>
-                  <li>נעדכן מכסות (Frontaly) במורים עם מכסה ישנה</li>
-                  <li>נריץ את השיבוץ שוב אוטומטית</li>
-                  <li>יום חופשי, הקבצה/איחוד ישמרו</li>
-                </ul>
-                {recoveryPrompt.alreadyTried && (
-                  <div style={{ padding: 10, background: '#fef3c7', borderRadius: 6, fontSize: 13, marginBottom: 12, color: '#92400e' }}>
-                    <i className="fa fa-info-circle" style={{ marginLeft: 6 }} />
-                    ניסינו כבר תיקון אחד. זה ניסיון נוסף עם יותר התאמות.
-                  </div>
-                )}
-                <label
-                  style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: 10,
-                    padding: '10px 12px',
-                    background: '#f3f4f6',
-                    border: '1px solid #d1d5db',
-                    borderRadius: 8,
-                    cursor: recoveryBusy ? 'not-allowed' : 'pointer',
-                    fontSize: 13,
-                    opacity: recoveryBusy ? 0.6 : 1,
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={recoveryAutoSetFreeDay}
-                    disabled={recoveryBusy}
-                    onChange={(e) => setRecoveryAutoSetFreeDay(e.target.checked)}
-                    style={{ width: 18, height: 18, cursor: 'inherit', marginTop: 2 }}
-                  />
-                  <span style={{ flex: 1, textAlign: 'right', lineHeight: 1.5 }}>
-                    <strong>הגדר אוטומטית יום חופשי למחנכים</strong>
-                    <br />
-                    <span style={{ fontSize: 12, color: '#6b7280' }}>
-                      למחנכים ללא יום חופשי - ייבחר יום עם הכי פחות שעות קיימות
-                    </span>
-                  </span>
-                </label>
-              </div>
-              <div className="modal-footer" style={{ display: 'flex', gap: 10, padding: '14px 22px', borderTop: '1px solid #e5e7eb' }}>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => runRecoveryAndRetry()}
-                  disabled={recoveryBusy}
-                  style={{
-                    background: '#d97706',
-                    color: '#fff',
-                    fontWeight: 700,
-                    padding: '9px 18px',
-                    borderRadius: 6,
-                    border: 'none',
-                    fontSize: 14,
-                    cursor: recoveryBusy ? 'wait' : 'pointer',
-                    opacity: recoveryBusy ? 0.7 : 1,
-                  }}
-                >
-                  {recoveryBusy ? (
-                    <><span className="spinner" /> מנסה...</>
-                  ) : (
-                    <><i className="fa fa-magic" style={{ marginLeft: 6 }} />כן, נסה לפתור אוטומטית</>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-default"
-                  onClick={dismissRecoveryAndShowDiagnostic}
-                  disabled={recoveryBusy}
-                  style={{ padding: '9px 18px', fontSize: 14 }}
-                >
-                  לא, הצג לי את החוסרים
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Conflict resolution modal - admin-approved structural fixes */}
-      {conflictModal && (
-        <div
-          className="modal"
-          style={{
-            display: 'block',
-            background: 'rgba(0,0,0,0.55)',
-            position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
-            zIndex: 1065, overflow: 'auto',
-          }}
-          onClick={() => { if (!conflictBusy) setConflictModal(null); }}
-        >
-          <div
-            className="modal-dialog"
-            style={{ direction: 'rtl', maxWidth: 720, marginTop: '5vh' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="modal-content" style={{ borderRadius: 12, overflow: 'hidden' }}>
-              <div style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%)', padding: '16px 22px', color: '#fff' }}>
-                <h4 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>
-                  <i className="fa fa-wrench" style={{ marginLeft: 8 }} />
-                  פתרון קונפליקטים מתקדם
-                </h4>
-                <div style={{ fontSize: 13, opacity: 0.9, marginTop: 4 }}>
-                  עדיין חסרים {conflictModal.TotalMissing} דרישות של {conflictModal.AffectedTeachers} מורים.
-                  סמן אילו שינויים לבצע:
-                </div>
-              </div>
-              <div className="modal-body" style={{ padding: '18px 22px', maxHeight: '55vh', overflowY: 'auto' }}>
-
-                {/* Option 1: sync hakbatza free days */}
-                <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: 12, background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: 8, marginBottom: 10, cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={cfOptSyncHak}
-                    onChange={(e) => setCfOptSyncHak(e.target.checked)}
-                    disabled={conflictBusy || conflictModal.Proposals.SyncHakbatzaFreeDay.length === 0}
-                    style={{ width: 18, height: 18, marginTop: 2 }}
-                  />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: '#5b21b6' }}>
-                      סנכרון יום חופשי בקבוצות הקבצה/איחוד ({conflictModal.Proposals.SyncHakbatzaFreeDay.length} קבוצות)
-                    </div>
-                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-                      מורים באותה הקבצה/איחוד חייבים ללמד יחד. אם יש להם ימי חופשי שונים — הם חוסמים אחד את השני.
-                      נשנה את כולם ליום חופשי של הרוב בקבוצה.
-                    </div>
-                  </div>
-                </label>
-
-                {/* Option 2: clear free day for teachers with gaps */}
-                <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: 12, background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, marginBottom: 10, cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={cfOptClearFreeDay}
-                    onChange={(e) => setCfOptClearFreeDay(e.target.checked)}
-                    disabled={conflictBusy || conflictModal.Proposals.ClearFreeDayTeachers.length === 0}
-                    style={{ width: 18, height: 18, marginTop: 2 }}
-                  />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: '#92400e' }}>
-                      ביטול יום חופשי ({conflictModal.Proposals.ClearFreeDayTeachers.length} מורים)
-                    </div>
-                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-                      מורים עם חוסרים + יום חופשי קבוע. ביטול היום החופשי ייתן למתזמן יותר גמישות.
-                    </div>
-                    {conflictModal.Proposals.ClearFreeDayTeachers.length > 0 && (
-                      <details style={{ fontSize: 12, marginTop: 6 }}>
-                        <summary style={{ cursor: 'pointer', color: '#78350f' }}>ראה רשימה</summary>
-                        <div style={{ maxHeight: 110, overflowY: 'auto', fontSize: 11, marginTop: 4, color: '#57534e' }}>
-                          {conflictModal.Proposals.ClearFreeDayTeachers.map((t) => (
-                            <div key={t.TeacherId}>• {t.Name} (חסרים {t.Missing})</div>
-                          ))}
-                        </div>
-                      </details>
-                    )}
-                  </div>
-                </label>
-
-                {/* Option 3: reduce ClassTeacher to match actual */}
-                <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: 12, background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 8, marginBottom: 10, cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={cfOptReduceCT}
-                    onChange={(e) => setCfOptReduceCT(e.target.checked)}
-                    disabled={conflictBusy || conflictModal.Proposals.ReduceClassTeacherRows.length === 0}
-                    style={{ width: 18, height: 18, marginTop: 2 }}
-                  />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: '#991b1b' }}>
-                      הפחתת דרישות כיתה למה שהושג בפועל ({conflictModal.Proposals.ReduceClassTeacherRows.length} שורות)
-                    </div>
-                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-                      מקבל את המצב: ClassTeacher.Hour יעודכן לכמות שכבר שובצה. <strong>מבטיח הצלחה 100%</strong>, אבל זו החלטה אמיתית להוריד דרישות.
-                    </div>
-                    {conflictModal.Proposals.ReduceClassTeacherRows.length > 0 && (
-                      <details style={{ fontSize: 12, marginTop: 6 }}>
-                        <summary style={{ cursor: 'pointer', color: '#7f1d1d' }}>ראה רשימה</summary>
-                        <div style={{ maxHeight: 110, overflowY: 'auto', fontSize: 11, marginTop: 4, color: '#57534e' }}>
-                          {conflictModal.Proposals.ReduceClassTeacherRows.map((r) => (
-                            <div key={r.ClassId + '_' + r.TeacherId}>• {r.TeacherName} ב-{r.ClassName}: {r.From}→{r.To}</div>
-                          ))}
-                        </div>
-                      </details>
-                    )}
-                  </div>
-                </label>
-              </div>
-              <div className="modal-footer" style={{ display: 'flex', gap: 10, padding: '14px 22px', borderTop: '1px solid #e5e7eb' }}>
-                <button
-                  type="button"
-                  onClick={applyConflictsAndRetry}
-                  disabled={conflictBusy}
-                  style={{
-                    background: '#7c3aed', color: '#fff', fontWeight: 700,
-                    padding: '9px 18px', borderRadius: 6, border: 'none', fontSize: 14,
-                    cursor: conflictBusy ? 'wait' : 'pointer', opacity: conflictBusy ? 0.7 : 1,
-                  }}
-                >
-                  {conflictBusy ? (<><span className="spinner" /> מחיל...</>) : (
-                    <><i className="fa fa-check" style={{ marginLeft: 6 }} />החל ונסה שוב</>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-default"
-                  onClick={() => setConflictModal(null)}
-                  disabled={conflictBusy}
-                  style={{ padding: '9px 18px', fontSize: 14 }}
-                >
-                  ביטול
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Diagnostic modal (new) */}
       {showDiagnostic && (
@@ -1068,9 +551,79 @@ export default function AssignAuto() {
               </div>
               <div className="modal-body">
                 <div className="alert alert-warning" style={{ marginBottom: 15 }}>
-                  <strong>שובצו {savedCount} שעות.</strong> לא ניתן היה לשבץ את{' '}
-                  <strong>{diagnostic.length}</strong> השעות הבאות. בדוק את ההמלצות מטה.
+                  <strong>שובצו {savedCount} שעות</strong> מתוך{' '}
+                  <strong>{savedCount + emptyCellsState}</strong>. לא ניתן היה לשבץ{' '}
+                  <strong style={{ color: '#d32f2f' }}>{emptyCellsState}</strong> משבצות.{' '}
+                  {diagnostic.length > 0 ? (
+                    <>בדוק את ההמלצות מטה.</>
+                  ) : (
+                    <>לא זוהה חוסר ברמת מורה-כיתה — ייתכן שמדובר בהתנגשות מבנית (הקבצה/איחוד/יום חופשי). פירוט המשבצות והסיבות מטה.</>
+                  )}
                 </div>
+
+                {/* Per-slot failure list — shown when diagnostic has no
+                    teacher-level rows but there ARE empty cells. The
+                    backend attaches a reason string to every unassigned
+                    slot (candidate count, consecutive blocks, hakbatza
+                    conflicts, etc.) via AnalyzeWhyNotAssigned. */}
+                {diagnostic.length === 0 && errors.length > 0 && (() => {
+                  const DAY_NAMES = ['', 'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'];
+                  const byClass = new Map<number, { name: string; items: ShibutzErrorRow[] }>();
+                  for (const e of errors) {
+                    if (!e.ClassId) continue;
+                    const entry = byClass.get(e.ClassId);
+                    if (entry) entry.items.push(e);
+                    else byClass.set(e.ClassId, { name: e.ClassName, items: [e] });
+                  }
+                  const classList = Array.from(byClass.entries()).sort((a, b) =>
+                    a[1].name.localeCompare(b[1].name, 'he'),
+                  );
+                  return (
+                    <div
+                      className="alert"
+                      style={{
+                        marginBottom: 15,
+                        background: '#fff7ed',
+                        border: '1px solid #fdba74',
+                        borderLeft: '4px solid #ea580c',
+                        padding: 12,
+                      }}
+                    >
+                      <strong style={{ display: 'block', marginBottom: 8, color: '#9a3412' }}>
+                        <i className="fa fa-list-ul" style={{ marginLeft: 6 }} />
+                        משבצות שלא שובצו — {errors.length} סה״כ:
+                      </strong>
+                      <div style={{ maxHeight: 320, overflowY: 'auto', paddingInlineEnd: 4 }}>
+                        {classList.map(([cid, { name, items }]) => (
+                          <details
+                            key={cid}
+                            open={classList.length <= 3}
+                            style={{ marginBottom: 6, background: '#fff', borderRadius: 6, border: '1px solid #fed7aa', padding: '6px 10px' }}
+                          >
+                            <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#7c2d12' }}>
+                              {name}{' '}
+                              <span style={{ color: '#6b7280', fontWeight: 400, fontSize: 12 }}>
+                                ({items.length} משבצות)
+                              </span>
+                            </summary>
+                            <ul style={{ marginTop: 6, marginBottom: 0, paddingInlineStart: 18, fontSize: 13 }}>
+                              {items.map((it, idx) => (
+                                <li key={idx} style={{ marginBottom: 4, lineHeight: 1.5 }}>
+                                  <span style={{ color: '#9a3412', fontWeight: 600 }}>
+                                    יום {DAY_NAMES[it.Day] || it.Day} · שעה {it.Hour}
+                                  </span>
+                                  {it.Message && (
+                                    <span style={{ color: '#4b5563' }}> — {it.Message}</span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {(() => {
                   const capacityIssues = diagnostic.filter(
@@ -1238,36 +791,15 @@ export default function AssignAuto() {
                 <button
                   type="button"
                   className="btn"
-                  onClick={() => {
-                    const distinct = new Set(diagnostic.map((d) => d.TeacherId)).size;
-                    setShowDiagnostic(false);
-                    setRecoveryPrompt({
-                      missingCount: diagnostic.length,
-                      teachersToFix: distinct,
-                      alreadyTried: false,
-                    });
-                  }}
-                  style={{ background: '#d97706', color: '#fff', fontWeight: 700, border: 'none', padding: '8px 16px', borderRadius: 6 }}
+                  onClick={() => runRecoveryAndRetry()}
+                  disabled={recoveryBusy}
+                  style={{ background: '#d97706', color: '#fff', fontWeight: 700, border: 'none', padding: '8px 16px', borderRadius: 6, opacity: recoveryBusy ? 0.7 : 1, cursor: recoveryBusy ? 'wait' : 'pointer' }}
                 >
-                  <i className="fa fa-magic" style={{ marginLeft: 6 }} /> תקן שעות מורים אוטומטית ונסה שוב
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={openConflictResolutions}
-                  style={{ background: '#7c3aed', color: '#fff', fontWeight: 700, border: 'none', padding: '8px 16px', borderRadius: 6 }}
-                >
-                  <i className="fa fa-wrench" style={{ marginLeft: 6 }} /> פתרון קונפליקטים מתקדם
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-warning"
-                  onClick={() => {
-                    setShowDiagnostic(false);
-                    doForceAssign();
-                  }}
-                >
-                  <i className="fa fa-bolt" /> שבץ בכל זאת
+                  {recoveryBusy ? (
+                    <><span className="spinner" style={{ marginLeft: 6 }} />מנסה לפתור...</>
+                  ) : (
+                    <><i className="fa fa-magic" style={{ marginLeft: 6 }} /> תקן שעות מורים אוטומטית ונסה שוב</>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -1283,6 +815,106 @@ export default function AssignAuto() {
       )}
 
       {/* Results modal */}
+      {/* Hours-added report — shown after auto-fix recovery runs */}
+      {recoveryReport && recoveryReport.length > 0 && (() => {
+        const DAY_LBL = ['', 'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'];
+        // Group hours per teacher by day for readability
+        const bucketed = recoveryReport
+          .slice()
+          .sort((a, b) => b.Added - a.Added)
+          .map((e) => {
+            const perDay = new Map<number, number[]>();
+            for (const hid of e.HourIds) {
+              const day = Math.floor(hid / 10);
+              const hour = hid % 10;
+              const arr = perDay.get(day) ?? [];
+              arr.push(hour);
+              perDay.set(day, arr);
+            }
+            return { entry: e, perDay };
+          });
+        const totalAdded = recoveryReport.reduce((a, e) => a + e.Added, 0);
+        return (
+          <div
+            className="modal"
+            style={{ display: 'block', background: 'rgba(0,0,0,0.55)', position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1070, overflow: 'auto' }}
+            onClick={() => setRecoveryReport(null)}
+          >
+            <div
+              className="modal-dialog"
+              style={{ direction: 'rtl', maxWidth: 720, marginTop: '5vh' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-content" style={{ borderRadius: 12, overflow: 'hidden' }}>
+                <div style={{ background: 'linear-gradient(135deg, #0f766e 0%, #0d9488 100%)', padding: '16px 22px', color: '#fff' }}>
+                  <h4 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>
+                    <i className="fa fa-clock-o" style={{ marginLeft: 8 }} />
+                    דוח הגדרת שעות — {totalAdded} שעות נוספו ל-{recoveryReport.length} מורים
+                  </h4>
+                  <div style={{ fontSize: 13, opacity: 0.9, marginTop: 4 }}>
+                    הפירוט הבא מראה לכל מורה אילו שעות עבודה נוספו לו
+                  </div>
+                </div>
+                <div className="modal-body" style={{ padding: '16px 20px', maxHeight: '60vh', overflowY: 'auto' }}>
+                  {bucketed.map(({ entry, perDay }) => (
+                    <div
+                      key={entry.TeacherId}
+                      style={{
+                        marginBottom: 10,
+                        padding: '10px 12px',
+                        background: entry.IsHomeroom ? '#fef3c7' : '#f1f5f9',
+                        border: `1px solid ${entry.IsHomeroom ? '#fcd34d' : '#cbd5e1'}`,
+                        borderRadius: 8,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <strong style={{ color: '#0f172a' }}>{entry.TeacherName}</strong>
+                        {entry.IsHomeroom && (
+                          <span style={{ fontSize: 11, background: '#f59e0b', color: '#fff', padding: '1px 6px', borderRadius: 4, fontWeight: 700 }}>מחנך</span>
+                        )}
+                        <span style={{ marginInlineStart: 'auto', fontSize: 13, color: '#047857', fontWeight: 700 }}>
+                          + {entry.Added} שעות
+                        </span>
+                        <span style={{ fontSize: 11, color: '#6b7280' }}>(דרוש {entry.Required})</span>
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {Array.from(perDay.entries())
+                          .sort((a, b) => a[0] - b[0])
+                          .map(([day, hours]) => (
+                            <span
+                              key={day}
+                              style={{
+                                background: '#fff',
+                                border: '1px solid #e2e8f0',
+                                padding: '3px 8px',
+                                borderRadius: 6,
+                                fontSize: 12,
+                                color: '#334155',
+                              }}
+                            >
+                              <strong>{DAY_LBL[day] || '?'}</strong>:{' '}
+                              {hours.sort((a, b) => a - b).join(', ')}
+                            </span>
+                          ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="modal-footer" style={{ padding: '12px 20px', borderTop: '1px solid #e5e7eb' }}>
+                  <button
+                    type="button"
+                    className="btn btn-info"
+                    onClick={() => setRecoveryReport(null)}
+                  >
+                    סגור
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showResults && (
         <div
           className="modal"

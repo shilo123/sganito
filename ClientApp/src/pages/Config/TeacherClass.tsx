@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useToast } from '../../lib/toast';
+import ExportButtons from '../../lib/ExportButtons';
+import { buildExportHandlers } from '../../lib/export';
 
 // ---------- types returned by backend SPs ----------
 interface TafkidRow {
@@ -154,6 +156,129 @@ export default function TeacherClass() {
     ihud?: string | null;
     classTeacherId?: number | null;
   } | null>(null);
+
+  // ---------- group (hakbatza / ihud) edit modal ----------
+  const [groupModal, setGroupModal] = useState<{
+    classId: number;
+    className: string;
+    // All ClassTeacherIds that currently share this pill (hakbatza members)
+    memberClassTeacherIds: number[];
+    teacherNames: string; // for display
+    currentHakbatza: number;
+    currentIhud: number;
+  } | null>(null);
+  const [groupKind, setGroupKind] = useState<'none' | 'hakbatza' | 'ihud'>('none');
+  const [groupNumber, setGroupNumber] = useState<string>('');
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [showGroupsPanel, setShowGroupsPanel] = useState(false);
+
+  // Create-group wizard state. When `wizardKind` is non-null the modal opens.
+  // The user picks a class (hakbatza only), selects members, and either joins
+  // an existing group or gets auto-assigned a fresh number.
+  const [wizardKind, setWizardKind] = useState<'hakbatza' | 'ihud' | null>(null);
+  const [wizardClassId, setWizardClassId] = useState<number | ''>('');
+  const [wizardSelectedCtIds, setWizardSelectedCtIds] = useState<Set<number>>(new Set());
+  const [wizardJoinNumber, setWizardJoinNumber] = useState<number | 'new'>('new');
+  const [wizardBusy, setWizardBusy] = useState(false);
+
+  function openWizard(kind: 'hakbatza' | 'ihud') {
+    setWizardKind(kind);
+    setWizardClassId('');
+    setWizardSelectedCtIds(new Set());
+    setWizardJoinNumber('new');
+  }
+  function closeWizard() {
+    if (wizardBusy) return;
+    setWizardKind(null);
+  }
+  function toggleWizardMember(ctId: number) {
+    setWizardSelectedCtIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(ctId)) next.delete(ctId);
+      else next.add(ctId);
+      return next;
+    });
+  }
+
+  async function saveWizard() {
+    if (!wizardKind || wizardBusy) return;
+    const members = Array.from(wizardSelectedCtIds);
+    if (members.length < 2) {
+      toast.warning('צריך לבחור לפחות 2 מורים לקבוצה');
+      return;
+    }
+    // Determine target number: either join existing, or pick next free
+    let target: number;
+    if (wizardJoinNumber === 'new') {
+      const existing = new Set<number>();
+      for (const r of classes) {
+        if (wizardKind === 'hakbatza') {
+          // Hakbatza is per-class; only consider the selected class
+          if (r.ClassId === wizardClassId) {
+            const n = Number(r.Hakbatza ?? 0);
+            if (n > 0) existing.add(n);
+          }
+        } else {
+          const n = Number(r.Ihud ?? 0);
+          if (n > 0) existing.add(n);
+        }
+      }
+      target = (Math.max(0, ...Array.from(existing))) + 1;
+    } else {
+      target = wizardJoinNumber;
+    }
+
+    setWizardBusy(true);
+    try {
+      for (const ctId of members) {
+        await ajax<DmlResult[]>('Class_SetGroupNumber', {
+          ClassTeacherId: ctId,
+          Hakbatza: wizardKind === 'hakbatza' ? target : 0,
+          Ihud: wizardKind === 'ihud' ? target : 0,
+        });
+      }
+      toast.success(
+        wizardKind === 'hakbatza'
+          ? `הקבצה ${target} נוצרה עם ${members.length} מורים`
+          : `איחוד ${target} נוצר עם ${members.length} מורים`,
+      );
+      setWizardKind(null);
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Wizard save failed', err);
+      toast.error('שמירת הקבוצה נכשלה');
+    } finally {
+      setWizardBusy(false);
+    }
+  }
+  // Validation issues per group (pulled from Class_ValidateGroups). Key =
+  // "H_<classId>_<number>" for hakbatza, "I_<number>" for ihud.
+  interface GroupValidation {
+    Kind: 'H' | 'I';
+    Number: number;
+    MemberCount: number;
+    CommonDays: number;
+    Severity: 'ok' | 'warning' | 'error';
+    Message: string;
+  }
+  const [groupValidations, setGroupValidations] = useState<Map<string, GroupValidation>>(new Map());
+
+  const loadGroupValidations = useCallback(async () => {
+    try {
+      const data = await ajax<GroupValidation[]>('Class_ValidateGroups');
+      const m = new Map<string, GroupValidation>();
+      for (const g of data || []) {
+        m.set(g.Kind + '_' + g.Number, g);
+      }
+      setGroupValidations(m);
+    } catch (err) {
+      console.error('Class_ValidateGroups failed', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showGroupsPanel) loadGroupValidations();
+  }, [showGroupsPanel, loadGroupValidations, classes]);
 
   // ---------- initial loads ----------
   const loadCombos = useCallback(async () => {
@@ -514,6 +639,118 @@ export default function TeacherClass() {
     }
   }
 
+  // ---------- group helpers ----------
+  // Deterministic color from a group number so Hakbatza/Ihud groups stay
+  // visually stable across renders (and across re-sorts) — the user
+  // associates "green = Hakbatza 4" rather than having to read the number.
+  function groupColor(kind: 'H' | 'I', n: number): { bg: string; fg: string } {
+    if (!n) return { bg: 'transparent', fg: '#6b7280' };
+    const hPalette = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#ddd6fe', '#a7f3d0', '#fecaca'];
+    const iPalette = ['#c4b5fd', '#67e8f9', '#fcd34d', '#f9a8d4', '#86efac', '#fca5a5', '#93c5fd', '#fdba74'];
+    const palette = kind === 'H' ? hPalette : iPalette;
+    const color = palette[(n - 1) % palette.length];
+    return { bg: color, fg: '#1f2937' };
+  }
+
+  function openGroupModal(
+    classId: number,
+    className: string,
+    memberIds: number[],
+    teacherNames: string,
+    hakbatza: number,
+    ihud: number,
+  ) {
+    setGroupModal({
+      classId,
+      className,
+      memberClassTeacherIds: memberIds,
+      teacherNames,
+      currentHakbatza: hakbatza,
+      currentIhud: ihud,
+    });
+    if (ihud > 0) {
+      setGroupKind('ihud');
+      setGroupNumber(String(ihud));
+    } else if (hakbatza > 0) {
+      setGroupKind('hakbatza');
+      setGroupNumber(String(hakbatza));
+    } else {
+      setGroupKind('none');
+      setGroupNumber('');
+    }
+  }
+
+  async function saveGroupModal() {
+    if (!groupModal || groupBusy) return;
+    setGroupBusy(true);
+    try {
+      let hakVal = 0;
+      let ihudVal = 0;
+      if (groupKind === 'hakbatza') {
+        hakVal = Number(groupNumber) || 0;
+        if (hakVal <= 0) {
+          toast.warning('יש להזין מספר הקבצה תקין (>0)');
+          setGroupBusy(false);
+          return;
+        }
+      } else if (groupKind === 'ihud') {
+        ihudVal = Number(groupNumber) || 0;
+        if (ihudVal <= 0) {
+          toast.warning('יש להזין מספר איחוד תקין (>0)');
+          setGroupBusy(false);
+          return;
+        }
+      }
+      for (const ctId of groupModal.memberClassTeacherIds) {
+        await ajax<DmlResult[]>('Class_SetGroupNumber', {
+          ClassTeacherId: ctId,
+          Hakbatza: hakVal,
+          Ihud: ihudVal,
+        });
+      }
+      setGroupModal(null);
+      loadClasses(layerId);
+      toast.success('הקבוצה עודכנה');
+    } catch (err) {
+      console.error('Class_SetGroupNumber failed', err);
+      toast.error('שמירת הקבוצה נכשלה');
+    } finally {
+      setGroupBusy(false);
+    }
+  }
+
+  // Build a summary of all groups in the current layer from the loaded
+  // class rows (no extra API call needed — the data is already here).
+  interface GroupSummary {
+    kind: 'H' | 'I';
+    number: number;
+    members: Array<{ classId: number; className: string; teacherName: string }>;
+  }
+  function buildGroupsSummary(): GroupSummary[] {
+    const map = new Map<string, GroupSummary>();
+    for (const r of classes) {
+      const hak = Number(r.Hakbatza ?? 0);
+      const ihud = Number(r.Ihud ?? 0);
+      if (!r.TeacherId) continue;
+      if (ihud > 0) {
+        const key = 'I_' + ihud;
+        const entry = map.get(key) ?? { kind: 'I' as const, number: ihud, members: [] };
+        entry.members.push({ classId: r.ClassId, className: r.ClassName, teacherName: r.TeacherName });
+        map.set(key, entry);
+      }
+      if (hak > 0) {
+        const key = 'H_' + r.ClassId + '_' + hak;
+        const entry = map.get(key) ?? { kind: 'H' as const, number: hak, members: [] };
+        entry.members.push({ classId: r.ClassId, className: r.ClassName, teacherName: r.TeacherName });
+        map.set(key, entry);
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'I' ? -1 : 1;
+      return a.number - b.number;
+    });
+  }
+
   // Edit hours inline (Type=4)
   async function setHourToTeacherInClass(
     classId: number,
@@ -578,6 +815,10 @@ export default function TeacherClass() {
       Ihud: string | null;
       Hour: number | string | null;
       displayRaw: string; // pre-joined w/ <br>, optionally wrapped in <u>
+      // All ClassTeacherIds collapsed into this pill (for hakbatza groups,
+      // a pill may represent 2+ teachers — we need every id when the user
+      // edits the group so all members stay in sync).
+      memberClassTeacherIds: number[];
     }>;
   }
 
@@ -602,6 +843,8 @@ export default function TeacherClass() {
       if (r.ClassTeacherId != null && Number(r.ClassTeacherId) > 0) {
         const hakbatza = r.Hakbatza;
         let teacherName = r.TeacherName ?? '';
+        const memberIds: number[] = [];
+        if (r.ClassTeacherId != null) memberIds.push(Number(r.ClassTeacherId));
         let j = i;
         if (hakbatza) {
           while (
@@ -610,6 +853,7 @@ export default function TeacherClass() {
             r.ClassId === rows[j + 1].ClassId
           ) {
             teacherName = teacherName + '<br>' + (rows[j + 1].TeacherName ?? '');
+            if (rows[j + 1].ClassTeacherId != null) memberIds.push(Number(rows[j + 1].ClassTeacherId));
             j++;
           }
         }
@@ -625,6 +869,7 @@ export default function TeacherClass() {
           Ihud: lastRow.Ihud,
           Hour: lastRow.Hour,
           displayRaw,
+          memberClassTeacherIds: memberIds,
         });
         i = j;
       }
@@ -690,7 +935,152 @@ export default function TeacherClass() {
               >
                 <i className="fa fa-plus" /> הוסף כיתה לשכבה המסומנת
               </button>
+              <button
+                type="button"
+                className="btn btn-warning btn-sm"
+                style={{ marginInlineStart: 6, fontWeight: 700 }}
+                onClick={() => openWizard('hakbatza')}
+                title="צור הקבצה חדשה — מורים באותה כיתה שילמדו באותה שעה כקבוצות רמה"
+              >
+                <i className="fa fa-plus" /> הקבצה חדשה
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                style={{ marginInlineStart: 6, fontWeight: 700 }}
+                onClick={() => openWizard('ihud')}
+                title="צור איחוד חדש — מורים מכיתות שונות שילמדו באותה שעה"
+              >
+                <i className="fa fa-plus" /> איחוד חדש
+              </button>
+              <button
+                type="button"
+                className="btn btn-info btn-sm"
+                style={{ marginInlineStart: 6 }}
+                onClick={() => setShowGroupsPanel((v) => !v)}
+                title="הצג/הסתר רשימת הקבצות ואיחודים בשכבה"
+              >
+                <i className="fa fa-object-group" /> {showGroupsPanel ? 'הסתר קבוצות' : 'הצג קבוצות'}
+              </button>
+              {/* Export zone — kept in its own pill on the far side so it never
+                  gets confused with action controls like "הוסף כיתה". */}
+              <div style={{ marginInlineStart: 'auto' }}>
+                {(() => {
+                  const currentLayer = LAYERS.find((l) => l.id === layerId);
+                  const layerName = currentLayer?.label ?? '';
+                  const exportRows = classes
+                    .filter((r) => r.TeacherId && r.ClassTeacherId)
+                    .map((r) => {
+                      const teacher = teachers.find((t) => t.TeacherId === r.TeacherId);
+                      const tafkid = tafkidOpts.find((x) => x.TafkidId === r.TafkidId)?.Name ?? '';
+                      return {
+                        ClassName: r.ClassName,
+                        TeacherName: r.TeacherName,
+                        Tafkid: tafkid,
+                        Professional: teacher?.Frontaly ?? '',
+                        Hour: r.Hour ?? '',
+                        Hakbatza: r.Hakbatza ?? '',
+                        Ihud: r.Ihud ?? '',
+                      };
+                    });
+                  const handlers = buildExportHandlers({
+                    title: 'הגדרות כיתות ומורים — ' + layerName,
+                    subtitle: `הודפס ב-${new Date().toLocaleDateString('he-IL')}`,
+                    filename: 'teacher-class-' + layerId,
+                    rows: exportRows,
+                    columns: [
+                      { key: 'ClassName', label: 'כיתה' },
+                      { key: 'TeacherName', label: 'מורה' },
+                      { key: 'Tafkid', label: 'תפקיד' },
+                      { key: 'Professional', label: 'מקצוע' },
+                      { key: 'Hour', label: 'שעות', align: 'center' },
+                      { key: 'Hakbatza', label: 'הקבצה', align: 'center' },
+                      { key: 'Ihud', label: 'איחוד', align: 'center' },
+                    ],
+                  });
+                  return <ExportButtons {...handlers} compact />;
+                })()}
+              </div>
             </div>
+            {showGroupsPanel && (() => {
+              const summary = buildGroupsSummary();
+              if (summary.length === 0) {
+                return (
+                  <div style={{ padding: 12, background: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: 13, color: '#6b7280' }}>
+                    אין הקבצות או איחודים מוגדרים בשכבה זו.
+                  </div>
+                );
+              }
+              return (
+                <div style={{ padding: 12, background: '#f9fafb', borderBottom: '1px solid #e5e7eb', maxHeight: 180, overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {summary.map((g) => {
+                      const col = groupColor(g.kind, g.number);
+                      const label = g.kind === 'H' ? `ה${g.number}` : `א${g.number}`;
+                      const kindName = g.kind === 'H' ? 'הקבצה' : 'איחוד';
+                      const validation = groupValidations.get(g.kind + '_' + g.number);
+                      const borderColor = validation?.Severity === 'error'
+                        ? '#dc2626'
+                        : validation?.Severity === 'warning'
+                        ? '#ea580c'
+                        : col.bg;
+                      const bgTint = validation?.Severity === 'error'
+                        ? '#fef2f2'
+                        : validation?.Severity === 'warning'
+                        ? '#fff7ed'
+                        : '#fff';
+                      return (
+                        <div
+                          key={g.kind + '_' + g.number + '_' + (g.members[0]?.classId ?? 0)}
+                          style={{
+                            border: `2px solid ${borderColor}`,
+                            background: bgTint,
+                            borderRadius: 6,
+                            padding: 8,
+                            minWidth: 180,
+                            fontSize: 12,
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                            <span style={{ background: col.bg, color: col.fg, padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                              {label}
+                            </span>
+                            <strong>{kindName}</strong>
+                            <span style={{ color: '#6b7280' }}>· {g.members.length} חברים</span>
+                            {validation?.Severity === 'error' && (
+                              <i className="fa fa-times-circle" title={validation.Message} style={{ color: '#dc2626', marginInlineStart: 'auto' }} />
+                            )}
+                            {validation?.Severity === 'warning' && (
+                              <i className="fa fa-exclamation-triangle" title={validation.Message} style={{ color: '#ea580c', marginInlineStart: 'auto' }} />
+                            )}
+                          </div>
+                          {validation && validation.Severity !== 'ok' && (
+                            <div style={{
+                              fontSize: 11,
+                              color: validation.Severity === 'error' ? '#991b1b' : '#9a3412',
+                              background: validation.Severity === 'error' ? '#fee2e2' : '#ffedd5',
+                              padding: '4px 6px',
+                              borderRadius: 4,
+                              marginBottom: 6,
+                              lineHeight: 1.4,
+                            }}>
+                              {validation.Message}
+                            </div>
+                          )}
+                          <div style={{ color: '#374151', lineHeight: 1.5 }}>
+                            {g.members.map((m, i) => (
+                              <div key={i}>
+                                <span style={{ color: '#6b7280' }}>{m.className}:</span> {m.teacherName}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
             <div className="panel-body" style={{ overflow: 'auto' }}>
               <div
                 className="droppable"
@@ -732,11 +1122,16 @@ export default function TeacherClass() {
                           onDragOver={allowDrop}
                           onDrop={(e) => onDropOnClass(e, panel.ClassId)}
                         >
-                          {panel.teachers.map((t) => (
+                          {panel.teachers.map((t) => {
+                            const hakNum = Number(t.Hakbatza ?? 0);
+                            const ihudNum = Number(t.Ihud ?? 0);
+                            const hakColor = hakNum > 0 ? groupColor('H', hakNum) : null;
+                            const ihudColor = ihudNum > 0 ? groupColor('I', ihudNum) : null;
+                            return (
                             <div
                               key={`${panel.ClassId}_${t.TeacherId}_${t.ClassTeacherId ?? ''}`}
                               className="draggable droppable"
-                              style={{ marginBottom: 3 }}
+                              style={{ marginBottom: 3, position: 'relative' }}
                               draggable
                               onDragStart={(e) =>
                                 onDragStartTeacherInClass(e, {
@@ -760,13 +1155,107 @@ export default function TeacherClass() {
                             >
                               <div
                                 className={`btn btn-${tafkidTheme(t.TafkidId)} btn-round`}
-                                style={{ width: '65%', marginLeft: 2 }}
-                                // displayRaw may include <br> / <u> — matches aspx template
+                                style={{
+                                  width: '55%',
+                                  marginLeft: 2,
+                                  border: ihudColor ? `2px solid ${ihudColor.bg}` : undefined,
+                                  boxShadow: ihudColor ? `0 0 0 1px ${ihudColor.bg} inset` : undefined,
+                                }}
                                 dangerouslySetInnerHTML={{ __html: t.displayRaw }}
                               />
+                              {/* Group badges: Hakbatza/Ihud numbers shown as colored pills.
+                                  Click on a badge opens the edit modal. */}
+                              <span
+                                style={{ display: 'inline-flex', gap: 2, verticalAlign: 'middle' }}
+                              >
+                                {hakNum > 0 && hakColor && (
+                                  <span
+                                    title={`הקבצה ${hakNum} — לחץ לעריכה`}
+                                    onClick={() =>
+                                      openGroupModal(
+                                        panel.ClassId,
+                                        panel.ClassName,
+                                        t.memberClassTeacherIds,
+                                        t.TeacherName.replace(/<br>/g, ' + '),
+                                        hakNum,
+                                        ihudNum,
+                                      )
+                                    }
+                                    style={{
+                                      cursor: 'pointer',
+                                      background: hakColor.bg,
+                                      color: hakColor.fg,
+                                      padding: '2px 6px',
+                                      borderRadius: 4,
+                                      fontSize: 11,
+                                      fontWeight: 700,
+                                      lineHeight: 1.2,
+                                      userSelect: 'none',
+                                    }}
+                                  >
+                                    ה{hakNum}
+                                  </span>
+                                )}
+                                {ihudNum > 0 && ihudColor && (
+                                  <span
+                                    title={`איחוד ${ihudNum} — לחץ לעריכה`}
+                                    onClick={() =>
+                                      openGroupModal(
+                                        panel.ClassId,
+                                        panel.ClassName,
+                                        t.memberClassTeacherIds,
+                                        t.TeacherName.replace(/<br>/g, ' + '),
+                                        hakNum,
+                                        ihudNum,
+                                      )
+                                    }
+                                    style={{
+                                      cursor: 'pointer',
+                                      background: ihudColor.bg,
+                                      color: ihudColor.fg,
+                                      padding: '2px 6px',
+                                      borderRadius: 4,
+                                      fontSize: 11,
+                                      fontWeight: 700,
+                                      lineHeight: 1.2,
+                                      userSelect: 'none',
+                                    }}
+                                  >
+                                    א{ihudNum}
+                                  </span>
+                                )}
+                                {hakNum === 0 && ihudNum === 0 && (
+                                  <span
+                                    title="הוסף להקבצה / איחוד"
+                                    onClick={() =>
+                                      openGroupModal(
+                                        panel.ClassId,
+                                        panel.ClassName,
+                                        t.memberClassTeacherIds,
+                                        t.TeacherName.replace(/<br>/g, ' + '),
+                                        0,
+                                        0,
+                                      )
+                                    }
+                                    style={{
+                                      cursor: 'pointer',
+                                      background: '#e5e7eb',
+                                      color: '#6b7280',
+                                      padding: '2px 6px',
+                                      borderRadius: 4,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      lineHeight: 1.2,
+                                      userSelect: 'none',
+                                    }}
+                                  >
+                                    +
+                                  </span>
+                                )}
+                              </span>
                               <input
                                 type="text"
-                                style={{ width: '33%', float: 'left' }}
+                                style={{ width: '25%', float: 'left' }}
                                 className="form-control"
                                 defaultValue={t.Hour != null ? String(t.Hour) : ''}
                                 onBlur={(e) =>
@@ -781,7 +1270,8 @@ export default function TeacherClass() {
                                 }
                               />
                             </div>
-                          ))}
+                          );
+                          })}
                         </div>
                       </div>
                     </div>
@@ -810,11 +1300,25 @@ export default function TeacherClass() {
             </div>
             <div
               className="panel-body droppable"
-              style={{ height: 700, overflow: 'auto' }}
+              style={{ overflow: 'auto' }}
               onDragOver={allowDrop}
               onDrop={onDropOnTeacherPanel}
             >
-              <div>
+              <div className="tc-role-legend">
+                <span className="tc-role-legend-item">
+                  <span className="tc-role-legend-dot" style={{ background: '#2563eb' }} />
+                  מחנך/ת
+                </span>
+                <span className="tc-role-legend-item">
+                  <span className="tc-role-legend-dot" style={{ background: '#10b981' }} />
+                  מקצועי/ת
+                </span>
+                <span className="tc-role-legend-item">
+                  <span className="tc-role-legend-dot" style={{ background: '#ef4444' }} />
+                  מנהלה
+                </span>
+              </div>
+              <div style={{ marginTop: 16 }}>
                 {teacherGroups.map((grp, gi) => (
                   <div key={`grp_${gi}_${grp.tafkidId}`}>
                     {gi > 0 && <div style={{ clear: 'both' }}></div>}
@@ -879,6 +1383,456 @@ export default function TeacherClass() {
           </li>
         </ul>
       )}
+
+      {/* Group edit modal (Hakbatza/Ihud) */}
+      {groupModal && (
+        <div
+          className="modal fade in"
+          role="dialog"
+          style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)' }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !groupBusy) setGroupModal(null);
+          }}
+        >
+          <div className="modal-dialog" style={{ direction: 'rtl', maxWidth: 520 }}>
+            <div className="modal-content">
+              <div className="modal-header" style={{ background: '#f0f9ff', borderBottom: '2px solid #0284c7' }}>
+                <button
+                  type="button"
+                  className="close"
+                  onClick={() => !groupBusy && setGroupModal(null)}
+                  aria-label="Close"
+                >
+                  &times;
+                </button>
+                <h4 className="modal-title" style={{ color: '#075985' }}>
+                  <i className="fa fa-object-group" /> הקבצה / איחוד
+                </h4>
+              </div>
+              <div className="modal-body">
+                <div style={{ marginBottom: 14, fontSize: 13, color: '#374151' }}>
+                  <div><strong>כיתה:</strong> {groupModal.className}</div>
+                  <div><strong>מורה:</strong> <span dangerouslySetInnerHTML={{ __html: groupModal.teacherNames }} /></div>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>סוג שיוך:</label>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <label style={{ cursor: 'pointer', padding: '6px 10px', background: groupKind === 'none' ? '#e0e7ff' : '#f3f4f6', borderRadius: 6, fontSize: 13 }}>
+                      <input
+                        type="radio"
+                        name="gkind"
+                        checked={groupKind === 'none'}
+                        onChange={() => { setGroupKind('none'); setGroupNumber(''); }}
+                        style={{ marginInlineEnd: 6 }}
+                      />
+                      ללא (עצמאי)
+                    </label>
+                    <label style={{ cursor: 'pointer', padding: '6px 10px', background: groupKind === 'hakbatza' ? '#fef3c7' : '#f3f4f6', borderRadius: 6, fontSize: 13 }}>
+                      <input
+                        type="radio"
+                        name="gkind"
+                        checked={groupKind === 'hakbatza'}
+                        onChange={() => setGroupKind('hakbatza')}
+                        style={{ marginInlineEnd: 6 }}
+                      />
+                      הקבצה (חלוקה בכיתה לקבוצות רמה)
+                    </label>
+                    <label style={{ cursor: 'pointer', padding: '6px 10px', background: groupKind === 'ihud' ? '#ddd6fe' : '#f3f4f6', borderRadius: 6, fontSize: 13 }}>
+                      <input
+                        type="radio"
+                        name="gkind"
+                        checked={groupKind === 'ihud'}
+                        onChange={() => setGroupKind('ihud')}
+                        style={{ marginInlineEnd: 6 }}
+                      />
+                      איחוד (בין כיתות)
+                    </label>
+                  </div>
+                </div>
+
+                {(groupKind === 'hakbatza' || groupKind === 'ihud') && (() => {
+                  // Suggest existing numbers of the chosen kind for quick pick
+                  const existing = new Set<number>();
+                  for (const r of classes) {
+                    if (groupKind === 'hakbatza') {
+                      const n = Number(r.Hakbatza ?? 0);
+                      if (n > 0 && r.ClassId === groupModal.classId) existing.add(n);
+                    } else {
+                      const n = Number(r.Ihud ?? 0);
+                      if (n > 0) existing.add(n);
+                    }
+                  }
+                  const sorted = Array.from(existing).sort((a, b) => a - b);
+                  const nextFree = (sorted[sorted.length - 1] ?? 0) + 1;
+                  return (
+                    <div style={{ marginBottom: 14 }}>
+                      <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
+                        מספר {groupKind === 'hakbatza' ? 'הקבצה' : 'איחוד'}:
+                      </label>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <input
+                          type="number"
+                          min={1}
+                          className="form-control"
+                          style={{ width: 90, display: 'inline-block' }}
+                          value={groupNumber}
+                          onChange={(e) => setGroupNumber(e.target.value)}
+                          placeholder="מס'"
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-default"
+                          onClick={() => setGroupNumber(String(nextFree))}
+                        >
+                          הצעה: {nextFree}
+                        </button>
+                        {sorted.length > 0 && (
+                          <>
+                            <span style={{ color: '#6b7280', fontSize: 12 }}>קיימים:</span>
+                            {sorted.map((n) => {
+                              const col = groupColor(groupKind === 'hakbatza' ? 'H' : 'I', n);
+                              return (
+                                <button
+                                  key={n}
+                                  type="button"
+                                  onClick={() => setGroupNumber(String(n))}
+                                  style={{
+                                    background: col.bg,
+                                    color: col.fg,
+                                    border: `1px solid ${col.fg}40`,
+                                    padding: '2px 8px',
+                                    borderRadius: 4,
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  {groupKind === 'hakbatza' ? 'ה' : 'א'}{n}
+                                </button>
+                              );
+                            })}
+                          </>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6, lineHeight: 1.5 }}>
+                        {groupKind === 'hakbatza'
+                          ? 'מורים באותה כיתה שישתמשו באותו מספר הקבצה — ילמדו באותה שעה, כל אחד לקבוצת רמה אחרת.'
+                          : 'מורים בכיתות שונות שישתמשו באותו מספר איחוד — ילמדו באותה שעה, כל אחד בכיתתו.'}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={saveGroupModal}
+                  disabled={groupBusy}
+                >
+                  {groupBusy ? <><span className="spinner" /> שומר...</> : <><i className="fa fa-save" /> שמור</>}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-default"
+                  onClick={() => !groupBusy && setGroupModal(null)}
+                  disabled={groupBusy}
+                >
+                  ביטול
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create-group wizard (Hakbatza or Ihud) */}
+      {wizardKind && (() => {
+        const kind = wizardKind;
+        const isHak = kind === 'hakbatza';
+        const allClassTeacherRows = classes.filter((r) => r.ClassTeacherId && Number(r.ClassTeacherId) > 0);
+
+        // Hakbatza: teacher list depends on selected class; Ihud: all teachers in layer
+        const candidatePool = isHak
+          ? allClassTeacherRows.filter((r) => r.ClassId === wizardClassId)
+          : allClassTeacherRows;
+
+        // Compute existing group numbers for the "join existing" radio
+        const existingNumbers = new Set<number>();
+        for (const r of classes) {
+          if (isHak) {
+            if (wizardClassId && r.ClassId === wizardClassId) {
+              const n = Number(r.Hakbatza ?? 0);
+              if (n > 0) existingNumbers.add(n);
+            }
+          } else {
+            const n = Number(r.Ihud ?? 0);
+            if (n > 0) existingNumbers.add(n);
+          }
+        }
+        const sortedExisting = Array.from(existingNumbers).sort((a, b) => a - b);
+        const nextFree = (sortedExisting[sortedExisting.length - 1] ?? 0) + 1;
+
+        // Unique class list for class dropdown (hakbatza)
+        const uniqueClasses: Array<{ ClassId: number; ClassName: string }> = [];
+        const seenC = new Set<number>();
+        for (const r of classes) {
+          if (!seenC.has(r.ClassId)) {
+            seenC.add(r.ClassId);
+            uniqueClasses.push({ ClassId: r.ClassId, ClassName: r.ClassName });
+          }
+        }
+
+        // Group candidates by class for Ihud (render by class for clarity)
+        const ihudByClass = new Map<number, { className: string; items: ClassRow[] }>();
+        if (!isHak) {
+          for (const r of candidatePool) {
+            const entry = ihudByClass.get(r.ClassId);
+            if (entry) entry.items.push(r);
+            else ihudByClass.set(r.ClassId, { className: r.ClassName, items: [r] });
+          }
+        }
+
+        const titleColor = isHak ? '#d97706' : '#2563eb';
+        const titleBg = isHak ? '#fef3c7' : '#dbeafe';
+        const kindName = isHak ? 'הקבצה' : 'איחוד';
+
+        return (
+          <div
+            className="modal fade in"
+            role="dialog"
+            style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.55)' }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closeWizard();
+            }}
+          >
+            <div className="modal-dialog" style={{ direction: 'rtl', maxWidth: 640 }}>
+              <div className="modal-content">
+                <div className="modal-header" style={{ background: titleBg, borderBottom: `2px solid ${titleColor}` }}>
+                  <button
+                    type="button"
+                    className="close"
+                    onClick={closeWizard}
+                    aria-label="Close"
+                    disabled={wizardBusy}
+                  >
+                    &times;
+                  </button>
+                  <h4 className="modal-title" style={{ color: titleColor }}>
+                    <i className="fa fa-object-group" /> יצירת {kindName} חדשה
+                  </h4>
+                  <div style={{ fontSize: 12, color: '#4b5563', marginTop: 4, lineHeight: 1.5 }}>
+                    {isHak
+                      ? 'בחר כיתה, ואז סמן 2 מורים או יותר שילמדו באותה שעה כקבוצות רמה.'
+                      : 'סמן 2 מורים או יותר מכיתות שונות שילמדו באותה שעה (למשל חינוך גופני לכיתות א1/א2/א3).'}
+                  </div>
+                </div>
+                <div className="modal-body" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+                  {/* Step 1: class picker (hakbatza only) */}
+                  {isHak && (
+                    <div style={{ marginBottom: 14 }}>
+                      <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
+                        1. בחר כיתה:
+                      </label>
+                      <select
+                        className="form-control"
+                        value={wizardClassId}
+                        onChange={(e) => {
+                          setWizardClassId(e.target.value ? Number(e.target.value) : '');
+                          setWizardSelectedCtIds(new Set());
+                          setWizardJoinNumber('new');
+                        }}
+                        disabled={wizardBusy}
+                      >
+                        <option value="">— בחר כיתה —</option>
+                        {uniqueClasses.map((c) => (
+                          <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Step 2: member picker */}
+                  {(isHak ? wizardClassId : true) && (
+                    <div style={{ marginBottom: 14 }}>
+                      <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
+                        {isHak ? '2' : '1'}. סמן את המורים ({wizardSelectedCtIds.size} נבחרו):
+                      </label>
+                      {candidatePool.length === 0 ? (
+                        <div style={{ padding: 10, color: '#6b7280', fontSize: 13, background: '#f9fafb', borderRadius: 6 }}>
+                          {isHak
+                            ? 'אין מורים משובצים בכיתה זו. הוסף מורים לכיתה קודם (גרירה מהצד).'
+                            : 'אין מורים משובצים בשכבה זו.'}
+                        </div>
+                      ) : isHak ? (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, maxHeight: 220, overflowY: 'auto', padding: 4 }}>
+                          {candidatePool.map((r) => {
+                            const ctId = Number(r.ClassTeacherId);
+                            const existing = Number(r.Hakbatza ?? 0);
+                            const checked = wizardSelectedCtIds.has(ctId);
+                            return (
+                              <label
+                                key={ctId}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  padding: '6px 10px',
+                                  background: checked ? '#fef3c7' : '#f9fafb',
+                                  border: `1px solid ${checked ? '#f59e0b' : '#e5e7eb'}`,
+                                  borderRadius: 6,
+                                  cursor: 'pointer',
+                                  fontSize: 13,
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleWizardMember(ctId)}
+                                  disabled={wizardBusy}
+                                  style={{ cursor: 'pointer' }}
+                                />
+                                <span style={{ flex: 1 }}>{r.TeacherName}</span>
+                                {existing > 0 && (
+                                  <span style={{ fontSize: 10, background: '#fde68a', color: '#92400e', padding: '1px 5px', borderRadius: 3, fontWeight: 700 }}>
+                                    ה{existing}
+                                  </span>
+                                )}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div style={{ maxHeight: 260, overflowY: 'auto', padding: 4 }}>
+                          {Array.from(ihudByClass.entries())
+                            .sort((a, b) => a[1].className.localeCompare(b[1].className, 'he'))
+                            .map(([cid, { className, items }]) => (
+                              <div key={cid} style={{ marginBottom: 8 }}>
+                                <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, marginBottom: 4 }}>{className}</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                                  {items.map((r) => {
+                                    const ctId = Number(r.ClassTeacherId);
+                                    const existing = Number(r.Ihud ?? 0);
+                                    const checked = wizardSelectedCtIds.has(ctId);
+                                    return (
+                                      <label
+                                        key={ctId}
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: 6,
+                                          padding: '5px 8px',
+                                          background: checked ? '#dbeafe' : '#f9fafb',
+                                          border: `1px solid ${checked ? '#3b82f6' : '#e5e7eb'}`,
+                                          borderRadius: 5,
+                                          cursor: 'pointer',
+                                          fontSize: 12,
+                                        }}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={() => toggleWizardMember(ctId)}
+                                          disabled={wizardBusy}
+                                          style={{ cursor: 'pointer' }}
+                                        />
+                                        <span style={{ flex: 1 }}>{r.TeacherName}</span>
+                                        {existing > 0 && (
+                                          <span style={{ fontSize: 10, background: '#c4b5fd', color: '#4c1d95', padding: '1px 5px', borderRadius: 3, fontWeight: 700 }}>
+                                            א{existing}
+                                          </span>
+                                        )}
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Step 3: number picker */}
+                  {wizardSelectedCtIds.size >= 2 && (
+                    <div style={{ marginBottom: 10, padding: 10, background: '#f9fafb', borderRadius: 6 }}>
+                      <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
+                        {isHak ? '3' : '2'}. מספר {kindName}:
+                      </label>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                        <label style={{
+                          cursor: 'pointer',
+                          padding: '4px 10px',
+                          borderRadius: 5,
+                          background: wizardJoinNumber === 'new' ? titleBg : '#fff',
+                          border: `1px solid ${wizardJoinNumber === 'new' ? titleColor : '#d1d5db'}`,
+                          fontSize: 13,
+                          fontWeight: 600,
+                        }}>
+                          <input
+                            type="radio"
+                            checked={wizardJoinNumber === 'new'}
+                            onChange={() => setWizardJoinNumber('new')}
+                            disabled={wizardBusy}
+                            style={{ marginInlineEnd: 6 }}
+                          />
+                          חדש (מספר {nextFree})
+                        </label>
+                        {sortedExisting.map((n) => {
+                          const col = groupColor(isHak ? 'H' : 'I', n);
+                          const sel = wizardJoinNumber === n;
+                          return (
+                            <label
+                              key={n}
+                              style={{
+                                cursor: 'pointer',
+                                padding: '4px 10px',
+                                borderRadius: 5,
+                                background: sel ? col.bg : '#fff',
+                                border: `1px solid ${sel ? col.fg : '#d1d5db'}`,
+                                fontSize: 13,
+                                fontWeight: 600,
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                checked={sel}
+                                onChange={() => setWizardJoinNumber(n)}
+                                disabled={wizardBusy}
+                                style={{ marginInlineEnd: 6 }}
+                              />
+                              צרף ל-{isHak ? 'ה' : 'א'}{n}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="modal-footer">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={saveWizard}
+                    disabled={wizardBusy || wizardSelectedCtIds.size < 2}
+                  >
+                    {wizardBusy ? <><span className="spinner" /> שומר...</> : <><i className="fa fa-save" /> צור {kindName}</>}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-default"
+                    onClick={closeWizard}
+                    disabled={wizardBusy}
+                  >
+                    ביטול
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Class modal */}
       {showClassModal && (

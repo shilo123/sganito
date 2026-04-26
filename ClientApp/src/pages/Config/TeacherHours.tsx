@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 import { useToast } from '../../lib/toast';
+import ExportButtons from '../../lib/ExportButtons';
+import { buildExportHandlers } from '../../lib/export';
 
 interface Teacher {
   TeacherId: number | string;
@@ -376,6 +378,36 @@ export default function TeacherHours() {
     for (const r of teacherHours) m[String(r.HourId)] = r;
     return m;
   }, [teacherHours]);
+
+  // Map HourId -> { Hakbatza, Ihud } from teacher assignments.
+  // Lets each cell know if it's part of a group, so we can render a
+  // small badge and the user can see group membership at a glance.
+  const groupByHourId = useMemo(() => {
+    const m = new Map<string, { hak: number; ihud: number }>();
+    for (const a of teacherAssignments) {
+      const hid = String(a.HourId);
+      const hak = Number(a.Hakbatza ?? 0);
+      const ihud = Number(a.Ihud ?? 0);
+      if (hak > 0 || ihud > 0) {
+        const prev = m.get(hid);
+        m.set(hid, {
+          hak: prev ? (prev.hak || hak) : hak,
+          ihud: prev ? (prev.ihud || ihud) : ihud,
+        });
+      }
+    }
+    return m;
+  }, [teacherAssignments]);
+
+  // Same palette logic as TeacherClass so the colors match across screens.
+  function thGroupColor(kind: 'H' | 'I', n: number): { bg: string; fg: string } {
+    if (!n) return { bg: 'transparent', fg: '#6b7280' };
+    const hPalette = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#ddd6fe', '#a7f3d0', '#fecaca'];
+    const iPalette = ['#c4b5fd', '#67e8f9', '#fcd34d', '#f9a8d4', '#86efac', '#fca5a5', '#93c5fd', '#fdba74'];
+    const palette = kind === 'H' ? hPalette : iPalette;
+    const color = palette[(n - 1) % palette.length];
+    return { bg: color, fg: '#1f2937' };
+  }
 
   const dayCells = useMemo(() => {
     const out: Record<number, HourCell[]> = {};
@@ -981,8 +1013,48 @@ export default function TeacherHours() {
           )}
 
           <div className="panel panel-info">
-            <div className="panel-heading">
-              <h3 className="panel-title">&nbsp;בחירת מורה</h3>
+            <div className="panel-heading" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <h3 className="panel-title" style={{ margin: 0 }}>&nbsp;בחירת מורה</h3>
+              <div style={{ marginInlineStart: 'auto' }}>
+                {(() => {
+                  // Export the full teacher list (management view)
+                  const tafkidName = (id: unknown): string => {
+                    const row = tafkidOptions.find((t) => String(t.TafkidId) === String(id));
+                    return row?.Name ?? '';
+                  };
+                  const rows = teachers.map((t) => ({
+                    FirstName: t.FirstName ?? '',
+                    LastName: t.LastName ?? '',
+                    Tafkid: t.Tafkid ?? tafkidName(t.TafkidId),
+                    Professional: t.Professional ?? '',
+                    Email: t.Email ?? '',
+                    Frontaly: t.Frontaly ?? '',
+                    FreeDay: getDayInWeekString(t.FreeDay as number | string | null),
+                    Tz: t.Tz ?? '',
+                    TotalRequired: t.TotalRequired ?? '',
+                    AssignedCount: t.AssignedCount ?? '',
+                  }));
+                  const handlers = buildExportHandlers({
+                    title: 'רשימת מורים',
+                    subtitle: `הודפס ב-${new Date().toLocaleDateString('he-IL')}`,
+                    filename: 'teachers-list',
+                    rows,
+                    columns: [
+                      { key: 'FirstName', label: 'שם פרטי' },
+                      { key: 'LastName', label: 'שם משפחה' },
+                      { key: 'Tafkid', label: 'תפקיד' },
+                      { key: 'Professional', label: 'מקצוע' },
+                      { key: 'Frontaly', label: 'שעות שבועיות', align: 'center' },
+                      { key: 'FreeDay', label: 'יום חופשי' },
+                      { key: 'TotalRequired', label: 'נדרש', align: 'center' },
+                      { key: 'AssignedCount', label: 'שובץ', align: 'center' },
+                      { key: 'Email', label: 'דוא״ל' },
+                      { key: 'Tz', label: 'ת״ז' },
+                    ],
+                  });
+                  return <ExportButtons {...handlers} />;
+                })()}
+              </div>
             </div>
             <div className="panel-body" style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
               <div className="col-md-4" style={{ flex: '1 1 300px', minWidth: 260 }}>
@@ -1077,6 +1149,43 @@ export default function TeacherHours() {
               <div className="th-modal__heading">
                 <div className="th-modal__kicker">הגדרת שעות שבועיות</div>
                 <h2 className="th-modal__title">{teacherFullName}</h2>
+                {selectedTeacher && (() => {
+                  // Build a flat table of this teacher's hours with class/prof/
+                  // hakbatza/ihud for export.
+                  const rows = teacherHours
+                    .filter((r) => r.HourId)
+                    .map((r) => {
+                      const hid = String(r.HourId);
+                      const day = Number(hid.charAt(0));
+                      const hourNum = Number(hid.slice(1));
+                      const group = groupByHourId.get(hid);
+                      return {
+                        Day: getDayInWeekString(day),
+                        Hour: hourNum,
+                        ClassName: r.ClassNameAssign ?? r.className ?? '',
+                        Professional: r.Professional ?? '',
+                        HourType: r.HourType ?? '',
+                        Hakbatza: group?.hak ? String(group.hak) : '',
+                        Ihud: group?.ihud ? String(group.ihud) : '',
+                      };
+                    });
+                  const handlers = buildExportHandlers({
+                    title: `שעות שבועיות — ${teacherFullName}`,
+                    subtitle: `הודפס ב-${new Date().toLocaleDateString('he-IL')}`,
+                    filename: `teacher-hours-${selectedTeacher.TeacherId}`,
+                    rows,
+                    columns: [
+                      { key: 'Day', label: 'יום' },
+                      { key: 'Hour', label: 'שעה', align: 'center' },
+                      { key: 'ClassName', label: 'כיתה' },
+                      { key: 'Professional', label: 'מקצוע' },
+                      { key: 'HourType', label: 'סוג' },
+                      { key: 'Hakbatza', label: 'הקבצה', align: 'center' },
+                      { key: 'Ihud', label: 'איחוד', align: 'center' },
+                    ],
+                  });
+                  return <ExportButtons {...handlers} style={{ marginTop: 8 }} />;
+                })()}
               </div>
               <div
                 className="th-modal__stats"
@@ -1334,6 +1443,9 @@ export default function TeacherHours() {
                           }
                           if (cell) {
                             const variant = hourTypeVariant(cell.HourTypeId, cell.teacherHas);
+                            const group = groupByHourId.get(cell.hourId);
+                            const hakNum = group?.hak ?? 0;
+                            const ihudNum = group?.ihud ?? 0;
                             return (
                               <div
                                 key={cell.hourId}
@@ -1342,10 +1454,53 @@ export default function TeacherHours() {
                                 onMouseDown={(e) => onCellMouseDown(e, cell.hourId)}
                                 onMouseEnter={() => onCellMouseEnter(cell.hourId)}
                                 onContextMenu={(e) => onCellContextMenu(e, cell)}
+                                style={ihudNum > 0 ? { boxShadow: `inset 0 0 0 2px ${thGroupColor('I', ihudNum).bg}` } : undefined}
                               >
                                 <div className="th-cell__meta">
                                   <span className="th-cell__seq">{seq}</span>
                                   <span className="th-cell__time">{HOUR_TIME_RANGES[seq]}</span>
+                                  {(hakNum > 0 || ihudNum > 0) && (
+                                    <span style={{ marginInlineStart: 'auto', display: 'inline-flex', gap: 2 }}>
+                                      {hakNum > 0 && (() => {
+                                        const col = thGroupColor('H', hakNum);
+                                        return (
+                                          <span
+                                            title={`הקבצה ${hakNum}`}
+                                            style={{
+                                              background: col.bg,
+                                              color: col.fg,
+                                              padding: '1px 4px',
+                                              borderRadius: 3,
+                                              fontSize: 9,
+                                              fontWeight: 700,
+                                              lineHeight: 1.1,
+                                            }}
+                                          >
+                                            ה{hakNum}
+                                          </span>
+                                        );
+                                      })()}
+                                      {ihudNum > 0 && (() => {
+                                        const col = thGroupColor('I', ihudNum);
+                                        return (
+                                          <span
+                                            title={`איחוד ${ihudNum}`}
+                                            style={{
+                                              background: col.bg,
+                                              color: col.fg,
+                                              padding: '1px 4px',
+                                              borderRadius: 3,
+                                              fontSize: 9,
+                                              fontWeight: 700,
+                                              lineHeight: 1.1,
+                                            }}
+                                          >
+                                            א{ihudNum}
+                                          </span>
+                                        );
+                                      })()}
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="th-cell__label" id={`spHourType_${hourId}`}>
                                   {cell.label}

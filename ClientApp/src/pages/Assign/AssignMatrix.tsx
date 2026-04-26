@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 import PageLoader from '../../lib/PageLoader';
+import ExportButtons from '../../lib/ExportButtons';
+import { buildScheduleHandlers } from '../../lib/export';
+import { readUserData } from '../../auth/userData';
 
 // ---- Types ----
 
@@ -222,6 +225,32 @@ export default function AssignMatrix() {
           <i className="fa fa-th" />
           מטריצת שיבוץ
         </h2>
+        <div style={{ marginInlineStart: 'auto' }}>
+          {(() => {
+            const ud = readUserData();
+            const schoolName = ud?.Name ?? 'בית הספר';
+            const logoUrl = ud?.SchoolId ? window.location.origin + `/assets/images/SchoolLogo/${ud.SchoolId}_.png` : undefined;
+            const classList = sortedClasses.map((c) => ({ ClassId: c.ClassId, ClassName: c.ClassName }));
+            const handlers = buildScheduleHandlers({
+              schoolName,
+              title: 'מערכת שעות שבועית (מטריצה)',
+              subtitle: 'מבט כולל לכל הכיתות',
+              filename: 'schedule-matrix',
+              classes: classList,
+              assignments: assignment.map((a) => ({
+                ClassId: a.ClassId,
+                ClassName: a.ClassName ?? classes.find((c) => c.ClassId === a.ClassId)?.ClassName,
+                HourId: a.HourId,
+                TeacherName: a.TeacherName,
+                Professional: a.Professional,
+                Hakbatza: a.Hakbatza,
+                Ihud: a.Ihud,
+              })),
+              logoUrl,
+            });
+            return <ExportButtons {...handlers} compact />;
+          })()}
+        </div>
       </div>
 
       {highlightedStats && (
@@ -284,11 +313,15 @@ export default function AssignMatrix() {
                       .join(' / ');
                     const professional = rows[0]?.Professional ?? '';
                     const short = teacherShort(names.split(' / ')[0]);
+                    const hakNum = Number(rows[0]?.Hakbatza ?? 0);
+                    const ihudNum = Number(rows[0]?.Ihud ?? 0);
                     const titleParts = [
                       cls.ClassName,
                       `${DAY_NAMES[day - 1]} שעה ${hour}`,
                       names,
                       professional,
+                      hakNum > 0 ? `הקבצה ${hakNum}` : '',
+                      ihudNum > 0 ? `איחוד ${ihudNum}` : '',
                     ].filter(Boolean);
                     const classes = [
                       'mx-grid__cell',
@@ -299,14 +332,56 @@ export default function AssignMatrix() {
                     ]
                       .filter(Boolean)
                       .join(' ');
+                    // Same palette as other screens for cross-UI consistency
+                    const mxPalette = (kind: 'H' | 'I', n: number) => {
+                      if (!n) return 'transparent';
+                      const hP = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#ddd6fe', '#a7f3d0', '#fecaca'];
+                      const iP = ['#c4b5fd', '#67e8f9', '#fcd34d', '#f9a8d4', '#86efac', '#fca5a5', '#93c5fd', '#fdba74'];
+                      return (kind === 'H' ? hP : iP)[(n - 1) % 8];
+                    };
+                    const cellStyle: React.CSSProperties = ihudNum > 0
+                      ? { boxShadow: `inset 0 0 0 2px ${mxPalette('I', ihudNum)}` }
+                      : {};
                     return (
                       <td
                         key={`${cls.ClassId}-${day}-${hour}`}
                         className={classes}
+                        style={cellStyle}
                         title={titleParts.join(' · ')}
                         onClick={() => !isEmpty && handleCellClick(firstTeacher)}
                       >
-                        {short}
+                        <span style={{ position: 'relative', display: 'inline-block' }}>
+                          {isEmpty ? (
+                            <span style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: 10, fontWeight: 500 }}>
+                              אין שיבוץ
+                            </span>
+                          ) : (
+                            short
+                          )}
+                          {(hakNum > 0 || ihudNum > 0) && (
+                            <span
+                              style={{
+                                position: 'absolute',
+                                top: -6,
+                                insetInlineEnd: -14,
+                                display: 'inline-flex',
+                                gap: 1,
+                                pointerEvents: 'none',
+                              }}
+                            >
+                              {hakNum > 0 && (
+                                <span style={{ background: mxPalette('H', hakNum), color: '#1f2937', padding: '0 3px', borderRadius: 3, fontSize: 8, fontWeight: 700, lineHeight: 1 }}>
+                                  ה{hakNum}
+                                </span>
+                              )}
+                              {ihudNum > 0 && (
+                                <span style={{ background: mxPalette('I', ihudNum), color: '#1f2937', padding: '0 3px', borderRadius: 3, fontSize: 8, fontWeight: 700, lineHeight: 1 }}>
+                                  א{ihudNum}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </span>
                       </td>
                     );
                   }),
