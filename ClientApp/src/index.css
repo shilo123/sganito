@@ -2369,18 +2369,24 @@ input[type='radio'] {
   padding: 1rem !important;
 }
 .tc-page__classes .panel-info > .panel-body > .droppable {
-  display: grid !important;
-  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
-  gap: 0.75rem;
+  display: block !important;
   min-height: 200px;
 }
-.tc-page__classes .panel-info > .panel-body > .droppable > .col-md-3 {
-  width: 100% !important;
-  max-width: 100% !important;
-  padding: 0 !important;
-  margin: 0 !important;
+/* Reusable 4-column grid (auto-fits more if container is wider, but
+   guarantees at least 4 columns at the project's typical layout). */
+.tc-page__classes .tc-grid-4 {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.6rem;
 }
-.tc-page__classes .panel-info > .panel-body > .droppable > .col-md-3 > div > .row {
+.tc-page__classes .tc-grid-4 > .tc-grid-4__cell {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+}
+.tc-page__classes .tc-grid-4 > .tc-grid-4__cell > div > .row {
   margin: 0;
 }
 

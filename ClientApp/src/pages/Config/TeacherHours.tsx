@@ -163,7 +163,36 @@ export default function TeacherHours() {
   const [schoolHourIds, setSchoolHourIds] = useState<Set<string>>(new Set());
   const [shehyaOnlyHourIds, setShehyaOnlyHourIds] = useState<Set<string>>(new Set());
   const [tafkidOptions, setTafkidOptions] = useState<Array<{ TafkidId: number; Name: string }>>([]);
+  const [professionalOptions, setProfessionalOptions] = useState<Array<{ ProfessionalId: number; Name: string }>>([]);
   const [classOptions, setClassOptions] = useState<Array<{ ClassId: number; ClassName: string }>>([]);
+
+  // Edit-teacher modal state. Opened by the "פרטים" pencil button on every
+  // row in the teacher list. Saves through Teacher_DML (Type=1 = update).
+  const [editTeacher, setEditTeacher] = useState<{
+    TeacherId: number | string;
+    Tafkid: string;
+    ProfessionalId: string;
+    FirstName: string;
+    LastName: string;
+    Email: string;
+    Frontaly: string;
+    FreeDay: string;
+    Tz: string;
+    Shehya: string;
+    Partani: string;
+  } | null>(null);
+  const [editTeacherBusy, setEditTeacherBusy] = useState(false);
+
+  // Delete-teacher confirmation popup. Stores enough to render a friendly
+  // message and to fire Teacher_DML(Type=3) once the user approves.
+  const [deleteTeacher, setDeleteTeacher] = useState<{
+    teacherId: number | string;
+    fullText: string;
+  } | null>(null);
+  const [deleteTeacherBusy, setDeleteTeacherBusy] = useState(false);
+  // Classes the currently-selected teacher is linked to in TeacherClass
+  // (regular, hakbatza, or ihud). Picker uses this to constrain options.
+  const [teacherClasses, setTeacherClasses] = useState<Array<{ ClassId: number; ClassName: string; Hakbatza: number; Ihud: number; LayerId: number }>>([]);
   const [filterName, setFilterName] = useState('');
   const [filterTafkid, setFilterTafkid] = useState<string>('');
   const [filterClass, setFilterClass] = useState<string>('');
@@ -182,6 +211,16 @@ export default function TeacherHours() {
   const [maxHoursEdit, setMaxHoursEdit] = useState<string>('');
   const [maxHoursBusy, setMaxHoursBusy] = useState(false);
   const [busyCells, setBusyCells] = useState<Set<string>>(new Set());
+  // Confirmation modal shown before removing a TeacherHours row that already
+  // has a TeacherAssignment riding on it — removing the hour wipes the
+  // assignment, so the admin must explicitly approve.
+  const [removeAssignConfirm, setRemoveAssignConfirm] = useState<{
+    hourId: string;
+    day: number;
+    hour: number;
+    classNames: string[];
+  } | null>(null);
+
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
     x: 0,
@@ -267,12 +306,16 @@ export default function TeacherHours() {
   const loadTeacherHours = useCallback(async (teacherId: Teacher['TeacherId']) => {
     setHoursLoading(true);
     try {
-      const [hoursData, assignData] = await Promise.all([
+      const [hoursData, assignData, classesData] = await Promise.all([
         ajax<TeacherHourRow[]>('Teacher_GetTeacherHours', { TeacherId: teacherId }),
         ajax<AssignmentRow[]>('Teacher_GetAssignmentsForTeacher', { TeacherId: teacherId }),
+        ajax<Array<{ ClassId: number; ClassName: string; Hakbatza: number; Ihud: number; LayerId: number }>>(
+          'Teacher_GetClassesForTeacher', { TeacherId: teacherId },
+        ),
       ]);
       setTeacherHours(Array.isArray(hoursData) ? hoursData : []);
       setTeacherAssignments(Array.isArray(assignData) ? assignData : []);
+      setTeacherClasses(Array.isArray(classesData) ? classesData : []);
     } finally {
       setHoursLoading(false);
     }
@@ -285,6 +328,8 @@ export default function TeacherHours() {
       loadTeachers(),
       ajax<Array<{ TafkidId: number; Name: string }>>('Gen_GetTable', { TableName: 'Tafkid', Condition: '' })
         .then((rows) => { if (!cancelled) setTafkidOptions(Array.isArray(rows) ? rows : []); }),
+      ajax<Array<{ ProfessionalId: number; Name: string }>>('Gen_GetTable', { TableName: 'Professional', Condition: '' })
+        .then((rows) => { if (!cancelled) setProfessionalOptions(Array.isArray(rows) ? rows : []); }),
       ajax<Array<{ ClassId: number; ClassName: string; LayerId?: number }>>('Class_GetAllClass')
         .then((rows) => { if (!cancelled) setClassOptions(Array.isArray(rows) ? rows : []); }),
       ajax<Array<{ HourId: number | string; IsOnlyShehya?: number | string | boolean | null }>>(
@@ -379,33 +424,26 @@ export default function TeacherHours() {
     return m;
   }, [teacherHours]);
 
-  // Map HourId -> { Hakbatza, Ihud } from teacher assignments.
-  // Lets each cell know if it's part of a group, so we can render a
-  // small badge and the user can see group membership at a glance.
+  // Map HourId -> { Hakbatza } from teacher assignments. Lets each cell
+  // know if it's part of a hakbatza so we can render a small badge.
   const groupByHourId = useMemo(() => {
-    const m = new Map<string, { hak: number; ihud: number }>();
+    const m = new Map<string, { hak: number }>();
     for (const a of teacherAssignments) {
       const hid = String(a.HourId);
       const hak = Number(a.Hakbatza ?? 0);
-      const ihud = Number(a.Ihud ?? 0);
-      if (hak > 0 || ihud > 0) {
+      if (hak > 0) {
         const prev = m.get(hid);
-        m.set(hid, {
-          hak: prev ? (prev.hak || hak) : hak,
-          ihud: prev ? (prev.ihud || ihud) : ihud,
-        });
+        m.set(hid, { hak: prev ? (prev.hak || hak) : hak });
       }
     }
     return m;
   }, [teacherAssignments]);
 
   // Same palette logic as TeacherClass so the colors match across screens.
-  function thGroupColor(kind: 'H' | 'I', n: number): { bg: string; fg: string } {
+  function thGroupColor(n: number): { bg: string; fg: string } {
     if (!n) return { bg: 'transparent', fg: '#6b7280' };
     const hPalette = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#ddd6fe', '#a7f3d0', '#fecaca'];
-    const iPalette = ['#c4b5fd', '#67e8f9', '#fcd34d', '#f9a8d4', '#86efac', '#fca5a5', '#93c5fd', '#fdba74'];
-    const palette = kind === 'H' ? hPalette : iPalette;
-    const color = palette[(n - 1) % palette.length];
+    const color = hPalette[(n - 1) % hPalette.length];
     return { bg: color, fg: '#1f2937' };
   }
 
@@ -419,6 +457,26 @@ export default function TeacherHours() {
     const ids = new Set<string>();
     for (const r of teacherHours) {
       if (Number(r.HourTypeId) === 1) ids.add(String(r.HourId));
+    }
+    return ids.size;
+  }, [teacherHours]);
+
+  // Live counts of shehya/partani assigned via the schedule grid. Pair
+  // these against the teacher's quota (Shehya / Partani columns) so the
+  // overview tags show "used / quota" in real time.
+  // Per HourType: 2=פרטני, 3=שהייה.
+  const partaniCount = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of teacherHours) {
+      if (Number(r.HourTypeId) === 2) ids.add(String(r.HourId));
+    }
+    return ids.size;
+  }, [teacherHours]);
+
+  const shehyaCount = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of teacherHours) {
+      if (Number(r.HourTypeId) === 3) ids.add(String(r.HourId));
     }
     return ids.size;
   }, [teacherHours]);
@@ -573,6 +631,35 @@ export default function TeacherHours() {
     const isMarked = existingType === 1 || existingType === 2 || existingType === 3;
     // לחיצה על שעה מסומנת (שיבוץ כיתה/שהייה/פרטני) - הופכת אותה לריקה
     if (isMarked) {
+      // If this is a class assignment and there's a real TeacherAssignment
+      // backing it, removing the working hour will wipe the assignment too.
+      // Pause and ask the admin to confirm before doing damage to the schedule.
+      if (existingType === 1) {
+        const linkedAssignments = teacherAssignments.filter(
+          (a) => String(a.HourId) === String(hourId),
+        );
+        if (linkedAssignments.length > 0) {
+          const classNames = Array.from(
+            new Set(
+              linkedAssignments
+                .map((a) => {
+                  const cid = (a as { ClassId?: number | string | null }).ClassId;
+                  if (!cid) return '';
+                  const cls = classOptions.find((c) => String(c.ClassId) === String(cid));
+                  return cls?.ClassName ?? `כיתה ${cid}`;
+                })
+                .filter((s) => s.length > 0),
+            ),
+          );
+          setRemoveAssignConfirm({
+            hourId,
+            day: Number(hourId.charAt(0)),
+            hour: Number(hourId.slice(1)),
+            classNames,
+          });
+          return;
+        }
+      }
       dragMode.current = 'remove';
       dragActive.current = true;
       draggedCells.current = new Set([hourId]);
@@ -592,8 +679,29 @@ export default function TeacherHours() {
       setQuotaModal({ hourId, day, seq, manageClassId });
       return;
     }
-    // מורה לא מחנכת - פתיחת picker (לא מתחילים גרירה)
+    // Pick the option list before deciding the flow:
+    // - 0 options → fall back to all classes (legacy behaviour) so the user
+    //   isn't blocked when classes haven't been linked yet
+    // - 1 option → assign immediately, no popup
+    // - 2+ options → open the picker constrained to those classes
+    const linkedClasses = teacherClasses.length > 0
+      ? teacherClasses
+      : classOptions.map((c) => ({ ClassId: c.ClassId, ClassName: c.ClassName, Hakbatza: 0, Ihud: 0, LayerId: 0 }));
+
     if (manageClassId === 0) {
+      if (linkedClasses.length === 1) {
+        // Single class — drag-assign directly to it
+        const onlyClass = linkedClasses[0].ClassId;
+        dragMode.current = 'add';
+        dragClassId.current = onlyClass;
+        dragActive.current = true;
+        draggedCells.current = new Set([hourId]);
+        dragFailCount.current = 0;
+        doAssignOp(hourId, onlyClass).then((res) => {
+          if (res !== 0 && res !== 1) dragFailCount.current += 1;
+        });
+        return;
+      }
       const day = Number(hourId.charAt(0));
       const seq = Number(hourId.slice(1));
       setClassPicker({ hourId, day, seq });
@@ -828,15 +936,31 @@ export default function TeacherHours() {
 
   const onCellContextMenu = (e: React.MouseEvent, cell: HourCell) => {
     e.preventDefault();
-    // תפריט ימני רק לשעות שאינן HourTypeId==1 (שיבוץ רגיל), כמו במקור
-    if (cell.HourTypeId === 1) return;
     if (!selectedTeacher) return;
+    // Skip the menu if the school doesn't have this hour at all.
+    if (schoolHourIds.size > 0 && !schoolHourIds.has(cell.hourId)) return;
     setMenu({
       visible: true,
       x: e.clientX,
       y: e.clientY,
       hourId: cell.hourId,
       HourTypeId: cell.HourTypeId,
+    });
+  };
+
+  // Right-click on a cell that doesn't have any teacher-hour row yet:
+  // surfaces the same shehya/partani menu so the user can mark it
+  // directly without first toggling it as a regular (frontaly) cell.
+  const onEmptyCellContextMenu = (e: React.MouseEvent, hourId: string) => {
+    e.preventDefault();
+    if (!selectedTeacher) return;
+    if (schoolHourIds.size > 0 && !schoolHourIds.has(hourId)) return;
+    setMenu({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      hourId,
+      HourTypeId: 0,
     });
   };
 
@@ -851,111 +975,169 @@ export default function TeacherHours() {
     };
   }, [menu.visible]);
 
-  // פעולות תפריט ימני - שימו לב: הגדרת שהייה/פרטני מלאה דורשת חלון מודלי
-  // ופעולות Teacher_SetPartani / Teacher_SetGroupShehya. כאן מביאים את הבסיס
-  // ומפעילים את Teacher_SetPartani כפי שעושה SetPartani באסמ"י המקורית.
-  const callSetPartani = useCallback(
-    async (hourId: string, type: 1 | 2) => {
+  // Unified shehya/partani toggling. Calls Teacher_SetHourType which
+  // replaces any existing non-class row so the user can flip directly
+  // between shehya/partani — no need to clear first.
+  const callSetHourType = useCallback(
+    async (hourId: string, action: 'shehya' | 'partani' | 'clear', force: boolean = false) => {
       if (!selectedTeacher) return;
       try {
-        const res = await ajax<{ res: number }[]>('Teacher_SetPartani', {
+        const res = await ajax<{ res: number }[]>('Teacher_SetHourType', {
           HourId: hourId,
           TeacherId: selectedTeacher.TeacherId,
-          Type: type,
+          Action: action,
+          Force: force ? '1' : '0',
         });
         const code = Number(res?.[0]?.res ?? 0);
-        if (code === 1) {
-          toast.info('המורה כבר משובץ לשעה זו');
-        } else if (code === 2) {
-          toast.warning('נגמרה הקצאת שעות פרטני למורה');
+        if (code === 2) {
+          toast.warning('השעה משובצת לכיתה. בטל את השיבוץ קודם', { title: 'שיבוץ קיים' });
+        } else if (code === 1) {
+          toast.error('השמירה נכשלה');
         } else {
           await loadTeacherHours(selectedTeacher.TeacherId);
         }
       } catch (e) {
-        console.error('Teacher_SetPartani failed', e);
+        console.error('Teacher_SetHourType failed', e);
+        toast.error('השמירה נכשלה');
       }
     },
-    [selectedTeacher, loadTeacherHours],
+    [selectedTeacher, loadTeacherHours, toast],
   );
 
-  const [autoAssignBusy, setAutoAssignBusy] = useState(false);
-  const [autoAssignConfirm, setAutoAssignConfirm] = useState(false);
-  const [autoAssignResult, setAutoAssignResult] = useState<{
-    added: number;
-    teachers: number;
-    details: string[];
-  } | null>(null);
-  const [autoSetFreeDay, setAutoSetFreeDay] = useState(false);
-
-  async function executeAutoAssignSmart() {
-    setAutoAssignConfirm(false);
-    if (autoAssignBusy) return;
-    setAutoAssignBusy(true);
-    setAutoAssignResult(null);
+  // Open the per-teacher edit modal pre-populated with the row's values.
+  // We pull a fresh copy from Teacher_GetTeacherList so the form stays
+  // accurate even after other fields change in the same session.
+  const openEditTeacher = useCallback(async (teacherId: number | string) => {
     try {
-      const raw = await fetch('/WebService.asmx/Teacher_AutoAssignHoursSmart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-        body: 'AutoSetHomeroomFreeDay=' + (autoSetFreeDay ? '1' : '0'),
-        credentials: 'include',
+      const data = await ajax<Teacher[]>('Teacher_GetTeacherList', { TeacherId: teacherId });
+      const t = Array.isArray(data) ? data[0] : null;
+      if (!t) return;
+      setEditTeacher({
+        TeacherId: teacherId,
+        Tafkid: String(t.TafkidId ?? '0'),
+        ProfessionalId: String(t.ProfessionalId ?? '0'),
+        FirstName: String(t.FirstName ?? ''),
+        LastName: String(t.LastName ?? ''),
+        Email: String(t.Email ?? ''),
+        Frontaly: String(t.Frontaly ?? ''),
+        FreeDay: String(t.FreeDay ?? '0'),
+        Tz: String(t.Tz ?? ''),
+        Shehya: String(t.Shehya ?? ''),
+        Partani: String(t.Partani ?? ''),
       });
-      if (!raw.ok) throw new Error('HTTP ' + raw.status);
-      const data = await raw.json();
-      setAutoAssignResult({
-        added: Number(data?.Added || 0),
-        teachers: Number(data?.Teachers || 0),
-        details: Array.isArray(data?.Details) ? data.Details : [],
-      });
-      const added = Number(data?.Added || 0);
-      const quotaUpdated = Number(data?.QuotaUpdated || 0);
-      const freeDayAutoSet = Number(data?.FreeDayAutoSet || 0);
-      const wipedHours = Number(data?.WipedHours || 0);
-      const parts: string[] = [];
-      if (wipedHours > 0) parts.push(`נמחקו ${wipedHours} שעות קיימות`);
-      if (added > 0) parts.push(`נבנו ${added} שעות ל-${data.Teachers} מורים`);
-      if (quotaUpdated > 0) parts.push(`${quotaUpdated} מכסות עודכנו`);
-      if (freeDayAutoSet > 0) parts.push(`${freeDayAutoSet} ימי חופש הוגדרו`);
-      if (parts.length === 0) {
-        toast.info('אין מורים עם דרישות ClassTeacher להקצאה');
-      } else {
-        toast.success(parts.join(' | '));
-      }
-      if (selectedTeacher) {
-        loadTeacherHours(selectedTeacher.TeacherId);
-      }
-      loadTeachers();
     } catch (e) {
-      console.error('Teacher_AutoAssignHoursSmart failed', e);
-      toast.error('שיבוץ שעות אוטומטי נכשל');
-    } finally {
-      setAutoAssignBusy(false);
+      console.error('Teacher_GetTeacherList failed', e);
+      toast.error('טעינת פרטי המורה נכשלה');
     }
-  }
+  }, [toast]);
 
-  function runAutoAssignSmart() {
-    if (autoAssignBusy) return;
-    setAutoAssignConfirm(true);
-  }
+  const saveEditTeacher = useCallback(async () => {
+    if (!editTeacher || editTeacherBusy) return;
+    if (editTeacher.Tafkid === '0' || !editTeacher.FirstName || !editTeacher.LastName || !editTeacher.Frontaly) {
+      toast.warning('יש למלא תפקיד, שם, שם משפחה ושעות פרונטלי', { title: 'חסרים שדות חובה' });
+      return;
+    }
+    setEditTeacherBusy(true);
+    try {
+      await ajax('Teacher_DML', {
+        TeacherId: editTeacher.TeacherId,
+        Tafkid: editTeacher.Tafkid,
+        ProfessionalId: editTeacher.ProfessionalId,
+        FirstName: editTeacher.FirstName,
+        LastName: editTeacher.LastName,
+        Email: editTeacher.Email,
+        Frontaly: editTeacher.Frontaly,
+        FreeDay: editTeacher.FreeDay,
+        Tz: editTeacher.Tz,
+        Shehya: editTeacher.Shehya,
+        Partani: editTeacher.Partani,
+        Type: 1,
+      });
+      toast.success('פרטי המורה נשמרו');
+      setEditTeacher(null);
+      await loadTeachers();
+    } catch (e) {
+      console.error('Teacher_DML failed', e);
+      toast.error('שמירת פרטי המורה נכשלה');
+    } finally {
+      setEditTeacherBusy(false);
+    }
+  }, [editTeacher, editTeacherBusy, loadTeachers, toast]);
 
   const onMenuDefineShehya = () => {
-    // במקור OpenShyaPartani(Obj, 1) פותח חלון מודלי לבחירת קבוצה ומורים.
-    // השארנו כאן הודעה שמציינת שדרושה הגדרת שהייה מלאה; ניתן להרחיב בהמשך.
     const id = menu.hourId;
     setMenu((m) => ({ ...m, visible: false }));
-    toast.info('הגדרת שהייה — החלון המלא עדיין לא מומש', { title: 'בפיתוח' });
-    void id;
+    callSetHourType(id, 'shehya');
+  };
+
+  const onMenuClearShehya = () => {
+    const id = menu.hourId;
+    setMenu((m) => ({ ...m, visible: false }));
+    callSetHourType(id, 'clear');
   };
 
   const onMenuSetPartani = () => {
     const id = menu.hourId;
     setMenu((m) => ({ ...m, visible: false }));
-    callSetPartani(id, 1);
+    callSetHourType(id, 'partani');
   };
 
   const onMenuClearPartani = () => {
     const id = menu.hourId;
     setMenu((m) => ({ ...m, visible: false }));
-    callSetPartani(id, 2);
+    callSetHourType(id, 'clear');
+  };
+
+  const confirmDeleteTeacher = useCallback(async () => {
+    if (!deleteTeacher || deleteTeacherBusy) return;
+    setDeleteTeacherBusy(true);
+    try {
+      await ajax('Teacher_DML', {
+        TeacherId: deleteTeacher.teacherId,
+        Tafkid: '',
+        ProfessionalId: '',
+        FirstName: '',
+        LastName: '',
+        Email: '',
+        Frontaly: '',
+        FreeDay: '',
+        Tz: '',
+        Shehya: '',
+        Partani: '',
+        Type: 3,
+      });
+      toast.success('המורה נמחק/ה');
+      setDeleteTeacher(null);
+      // If the deleted teacher was selected in the modal, close it
+      if (selectedTeacher && String(selectedTeacher.TeacherId) === String(deleteTeacher.teacherId)) {
+        setSelectedTeacher(null);
+      }
+      await loadTeachers();
+    } catch (e) {
+      console.error('Teacher_DML delete failed', e);
+      toast.error('מחיקת המורה נכשלה');
+    } finally {
+      setDeleteTeacherBusy(false);
+    }
+  }, [deleteTeacher, deleteTeacherBusy, loadTeachers, selectedTeacher, toast]);
+
+  // Used when right-clicking a class-assigned (frontaly) cell to convert
+  // it to shehya/partani or just drop the class assignment. Force=true
+  // makes Teacher_SetHourType wipe the underlying class row first.
+  const onMenuForceShehya = () => {
+    const id = menu.hourId;
+    setMenu((m) => ({ ...m, visible: false }));
+    callSetHourType(id, 'shehya', true);
+  };
+  const onMenuForcePartani = () => {
+    const id = menu.hourId;
+    setMenu((m) => ({ ...m, visible: false }));
+    callSetHourType(id, 'partani', true);
+  };
+  const onMenuClearAssignment = () => {
+    const id = menu.hourId;
+    setMenu((m) => ({ ...m, visible: false }));
+    callSetHourType(id, 'clear', true);
   };
 
   const pickTeacher = (t: Teacher) => {
@@ -988,30 +1170,6 @@ export default function TeacherHours() {
       )}
       <div className="col-md-12">
         <div className="row dvWeek">
-          {autoAssignResult && autoAssignResult.added > 0 && (
-            <div
-              className="alert alert-success"
-              style={{ marginBottom: 16, padding: '12px 16px', cursor: 'pointer' }}
-              onClick={() => setAutoAssignResult(null)}
-              title="לחץ כדי לסגור"
-            >
-              <strong style={{ fontSize: 15 }}>
-                <i className="fa fa-check-circle" /> הוגדרו {autoAssignResult.added} שעות ל-
-                {autoAssignResult.teachers} מורים
-              </strong>
-              {autoAssignResult.details.length > 0 && (
-                <ul style={{ marginBottom: 0, marginTop: 8, fontSize: 13 }}>
-                  {autoAssignResult.details.slice(0, 15).map((d, i) => (
-                    <li key={i}>{d}</li>
-                  ))}
-                  {autoAssignResult.details.length > 15 && (
-                    <li>...ועוד {autoAssignResult.details.length - 15} מורים</li>
-                  )}
-                </ul>
-              )}
-            </div>
-          )}
-
           <div className="panel panel-info">
             <div className="panel-heading" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <h3 className="panel-title" style={{ margin: 0 }}>&nbsp;בחירת מורה</h3>
@@ -1029,7 +1187,7 @@ export default function TeacherHours() {
                     Professional: t.Professional ?? '',
                     Email: t.Email ?? '',
                     Frontaly: t.Frontaly ?? '',
-                    FreeDay: getDayInWeekString(t.FreeDay as number | string | null),
+                    FreeDay: getDayInWeekString(t.FreeDay as number | string | null) || 'אין יום חופשי',
                     Tz: t.Tz ?? '',
                     TotalRequired: t.TotalRequired ?? '',
                     AssignedCount: t.AssignedCount ?? '',
@@ -1098,37 +1256,6 @@ export default function TeacherHours() {
                   </ul>
                 )}
               </div>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={runAutoAssignSmart}
-                disabled={autoAssignBusy}
-                title="מגדיר אוטומטית שעות עבודה לכל המורים. מחנכים יקבלו שעה 1 של כל יום. יום חופשי יישמר, הקבצה/איחוד יסונכרנו."
-                style={{
-                  background: '#f59e0b',
-                  color: '#fff',
-                  fontWeight: 600,
-                  padding: '7px 14px',
-                  borderRadius: 6,
-                  border: 'none',
-                  fontSize: 13,
-                  cursor: autoAssignBusy ? 'wait' : 'pointer',
-                  opacity: autoAssignBusy ? 0.7 : 1,
-                  whiteSpace: 'nowrap',
-                  marginInlineStart: 'auto',
-                }}
-              >
-                {autoAssignBusy ? (
-                  <>
-                    <span className="spinner" /> מגדיר שעות...
-                  </>
-                ) : (
-                  <>
-                    <i className="fa fa-bolt" style={{ marginLeft: 6 }} />
-                    שיבוץ שעות אוטומטי
-                  </>
-                )}
-              </button>
             </div>
           </div>
         </div>
@@ -1149,6 +1276,56 @@ export default function TeacherHours() {
               <div className="th-modal__heading">
                 <div className="th-modal__kicker">הגדרת שעות שבועיות</div>
                 <h2 className="th-modal__title">{teacherFullName}</h2>
+                {(() => {
+                  const t = selectedTeacher;
+                  if (!t) return null;
+                  const dayName = getDayInWeekString(t.FreeDay);
+                  const items: Array<{ icon: string; label: string; value: string | number }> = [];
+                  if (t.Tafkid) items.push({ icon: 'fa-id-badge', label: 'תפקיד', value: String(t.Tafkid) });
+                  if (t.Professional) items.push({ icon: 'fa-book', label: 'מקצוע', value: String(t.Professional) });
+                  if (t.Tz) items.push({ icon: 'fa-id-card', label: 'ת״ז', value: String(t.Tz) });
+                  if (t.Email) items.push({ icon: 'fa-envelope', label: 'אימייל', value: String(t.Email) });
+                  items.push({ icon: 'fa-calendar-times-o', label: 'יום חופשי', value: dayName || 'אין' });
+                  if (t.Frontaly != null && String(t.Frontaly) !== '') items.push({ icon: 'fa-clock-o', label: 'פרונטלי', value: `${frontalCount}/${t.Frontaly}` });
+                  if (t.Shehya != null && String(t.Shehya) !== '') items.push({ icon: 'fa-users', label: 'שהייה', value: `${shehyaCount}/${t.Shehya}` });
+                  if (t.Partani != null && String(t.Partani) !== '') items.push({ icon: 'fa-user', label: 'פרטני', value: `${partaniCount}/${t.Partani}` });
+                  if (items.length === 0) return null;
+                  return (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 6,
+                        marginTop: 10,
+                        maxWidth: 540,
+                      }}
+                    >
+                      {items.map((it, idx) => (
+                        <span
+                          key={idx}
+                          title={`${it.label}: ${it.value}`}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            background: 'rgba(255,255,255,0.18)',
+                            border: '1px solid rgba(255,255,255,0.25)',
+                            borderRadius: 14,
+                            padding: '3px 9px',
+                            fontSize: 11,
+                            color: '#fff',
+                            fontWeight: 600,
+                            backdropFilter: 'blur(4px)',
+                          }}
+                        >
+                          <i className={`fa ${it.icon}`} style={{ fontSize: 10, opacity: 0.85 }} />
+                          <span style={{ opacity: 0.7 }}>{it.label}:</span>
+                          <strong>{it.value}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })()}
                 {selectedTeacher && (() => {
                   // Build a flat table of this teacher's hours with class/prof/
                   // hakbatza/ihud for export.
@@ -1166,7 +1343,6 @@ export default function TeacherHours() {
                         Professional: r.Professional ?? '',
                         HourType: r.HourType ?? '',
                         Hakbatza: group?.hak ? String(group.hak) : '',
-                        Ihud: group?.ihud ? String(group.ihud) : '',
                       };
                     });
                   const handlers = buildExportHandlers({
@@ -1181,7 +1357,6 @@ export default function TeacherHours() {
                       { key: 'Professional', label: 'מקצוע' },
                       { key: 'HourType', label: 'סוג' },
                       { key: 'Hakbatza', label: 'הקבצה', align: 'center' },
-                      { key: 'Ihud', label: 'איחוד', align: 'center' },
                     ],
                   });
                   return <ExportButtons {...handlers} style={{ marginTop: 8 }} />;
@@ -1335,7 +1510,7 @@ export default function TeacherHours() {
               <span>בחר שעות על־ידי לחיצה וגרירה; לחיצה ימנית פותחת תפריט הגדרות (שהייה/פרטני).</span>
             </div>
             <div className="th-modal__legend">
-              <span className="th-legend__item th-legend__item--regular"><i /> שיבוץ כיתה</span>
+              <span className="th-legend__item th-legend__item--regular"><i /> פרונטלי</span>
               <span className="th-legend__item th-legend__item--shehya"><i /> שהייה</span>
               <span className="th-legend__item th-legend__item--partani"><i /> פרטני</span>
               <span className="th-legend__item th-legend__item--available"><i /> פנוי בבי"ס</span>
@@ -1445,7 +1620,6 @@ export default function TeacherHours() {
                             const variant = hourTypeVariant(cell.HourTypeId, cell.teacherHas);
                             const group = groupByHourId.get(cell.hourId);
                             const hakNum = group?.hak ?? 0;
-                            const ihudNum = group?.ihud ?? 0;
                             return (
                               <div
                                 key={cell.hourId}
@@ -1454,53 +1628,31 @@ export default function TeacherHours() {
                                 onMouseDown={(e) => onCellMouseDown(e, cell.hourId)}
                                 onMouseEnter={() => onCellMouseEnter(cell.hourId)}
                                 onContextMenu={(e) => onCellContextMenu(e, cell)}
-                                style={ihudNum > 0 ? { boxShadow: `inset 0 0 0 2px ${thGroupColor('I', ihudNum).bg}` } : undefined}
                               >
                                 <div className="th-cell__meta">
                                   <span className="th-cell__seq">{seq}</span>
                                   <span className="th-cell__time">{HOUR_TIME_RANGES[seq]}</span>
-                                  {(hakNum > 0 || ihudNum > 0) && (
-                                    <span style={{ marginInlineStart: 'auto', display: 'inline-flex', gap: 2 }}>
-                                      {hakNum > 0 && (() => {
-                                        const col = thGroupColor('H', hakNum);
-                                        return (
-                                          <span
-                                            title={`הקבצה ${hakNum}`}
-                                            style={{
-                                              background: col.bg,
-                                              color: col.fg,
-                                              padding: '1px 4px',
-                                              borderRadius: 3,
-                                              fontSize: 9,
-                                              fontWeight: 700,
-                                              lineHeight: 1.1,
-                                            }}
-                                          >
-                                            ה{hakNum}
-                                          </span>
-                                        );
-                                      })()}
-                                      {ihudNum > 0 && (() => {
-                                        const col = thGroupColor('I', ihudNum);
-                                        return (
-                                          <span
-                                            title={`איחוד ${ihudNum}`}
-                                            style={{
-                                              background: col.bg,
-                                              color: col.fg,
-                                              padding: '1px 4px',
-                                              borderRadius: 3,
-                                              fontSize: 9,
-                                              fontWeight: 700,
-                                              lineHeight: 1.1,
-                                            }}
-                                          >
-                                            א{ihudNum}
-                                          </span>
-                                        );
-                                      })()}
-                                    </span>
-                                  )}
+                                  {hakNum > 0 && (() => {
+                                    const col = thGroupColor(hakNum);
+                                    return (
+                                      <span style={{ marginInlineStart: 'auto' }}>
+                                        <span
+                                          title={`הקבצה ${hakNum}`}
+                                          style={{
+                                            background: col.bg,
+                                            color: col.fg,
+                                            padding: '1px 4px',
+                                            borderRadius: 3,
+                                            fontSize: 9,
+                                            fontWeight: 700,
+                                            lineHeight: 1.1,
+                                          }}
+                                        >
+                                          ה{hakNum}
+                                        </span>
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                                 <div className="th-cell__label" id={`spHourType_${hourId}`}>
                                   {cell.label}
@@ -1520,6 +1672,7 @@ export default function TeacherHours() {
                               className={`th-cell th-cell--empty dv_empty${isBusy ? ' th-cell--busy' : ''}`}
                               onMouseDown={(e) => onCellMouseDown(e, hourId)}
                               onMouseEnter={() => onCellMouseEnter(hourId)}
+                              onContextMenu={(e) => onEmptyCellContextMenu(e, hourId)}
                             >
                               <div className="th-cell__meta">
                                 <span className="th-cell__seq">{seq}</span>
@@ -1606,13 +1759,13 @@ export default function TeacherHours() {
         <div id="dvTeacherTable" style={{ paddingTop: 8 }}>
           <div className="col-md-2 dvRequireTitle">שם מורה</div>
           <div className="col-md-2 dvRequireTitle">תפקיד</div>
-          <div className="col-md-2 dvRequireTitle">מקצוע</div>
+          <div className="col-md-1 dvRequireTitle">מקצוע</div>
           <div className="col-md-1 dvRequireTitle">יום חופשי</div>
           <div className="col-md-1 dvRequireTitle">שהייה</div>
           <div className="col-md-1 dvRequireTitle">פרטני</div>
           <div className="col-md-1 dvRequireTitle" title="סה״כ שעות מוקצבות בשבוע (סכום שעות כל הכיתות שהמורה מלמד/ת)">מוקצבות</div>
           <div className="col-md-1 dvRequireTitle" title="כמה שעות שובצו בפועל במערכת הסופית">שיבוץ</div>
-          <div className="col-md-2 dvRequireTitle">&nbsp;</div>
+          <div className="col-md-2 dvRequireTitle" style={{ textAlign: 'center' }}>אפשרויות</div>
           <div id="dvReqContainer" className="dvPanelReq clear">
             {tableTeachers.map((t) => {
               const required = Number(t.TotalRequired ?? 0);
@@ -1633,8 +1786,13 @@ export default function TeacherHours() {
                     </a>
                   </div>
                   <div className="col-md-2 dvRequireDetails">{isNullDB(t.Tafkid)}</div>
-                  <div className="col-md-2 dvRequireDetails">{isNullDB(t.Professional)}</div>
-                  <div className="col-md-1 dvRequireDetails">{getDayInWeekString(t.FreeDay)}</div>
+                  <div className="col-md-1 dvRequireDetails">{isNullDB(t.Professional)}</div>
+                  <div className="col-md-1 dvRequireDetails">
+                    {(() => {
+                      const day = getDayInWeekString(t.FreeDay);
+                      return day || <span style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: 12 }}>אין יום חופשי</span>;
+                    })()}
+                  </div>
                   <div className="col-md-1 dvRequireDetails">{isNullDB(t.Shehya)}</div>
                   <div className="col-md-1 dvRequireDetails">{isNullDB(t.Partani)}</div>
                   <div className="col-md-1 dvRequireDetails" style={{ fontWeight: 600 }}>{required}</div>
@@ -1646,7 +1804,80 @@ export default function TeacherHours() {
                       </span>
                     )}
                   </div>
-                  <div className="col-md-2 dvRequireDetails">&nbsp;</div>
+                  <div className="col-md-2 dvRequireDetails" style={{ textAlign: 'center', display: 'inline-flex', justifyContent: 'center', gap: 4, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      title="הגדרת שעות שבועיות"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        pickTeacher(t);
+                      }}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 3,
+                        padding: '3px 8px',
+                        background: '#dcfce7',
+                        color: '#166534',
+                        border: '1px solid #86efac',
+                        borderRadius: 14,
+                        fontWeight: 600,
+                        fontSize: 11,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <i className="fa fa-clock-o" /> שעות
+                    </button>
+                    <button
+                      type="button"
+                      title="עריכת פרטי מורה"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEditTeacher(t.TeacherId);
+                      }}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 3,
+                        padding: '3px 8px',
+                        background: '#ede9fe',
+                        color: '#5b21b6',
+                        border: '1px solid #c4b5fd',
+                        borderRadius: 14,
+                        fontWeight: 600,
+                        fontSize: 11,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <i className="fa fa-pencil" /> ערוך
+                    </button>
+                    <button
+                      type="button"
+                      title="מחיקת מורה"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteTeacher({
+                          teacherId: t.TeacherId,
+                          fullText: String(t.FullText ?? `${t.FirstName ?? ''} ${t.LastName ?? ''}`.trim()),
+                        });
+                      }}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 3,
+                        padding: '3px 8px',
+                        background: '#fee2e2',
+                        color: '#991b1b',
+                        border: '1px solid #fca5a5',
+                        borderRadius: 14,
+                        fontWeight: 600,
+                        fontSize: 11,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <i className="fa fa-trash" /> מחק
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -1654,154 +1885,196 @@ export default function TeacherHours() {
         </div>
       </div>
 
-      {menu.visible && (
-        <ul
-          className="dropdown-menu dropdown-menu-right"
-          role="menu"
-          style={{
-            display: 'block',
-            position: 'fixed',
-            top: menu.y,
-            left: menu.x,
-            zIndex: 2000,
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <li>
-            <a
-              id="li1"
-              tabIndex={-1}
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                onMenuDefineShehya();
-              }}
-            >
-              הגדרת שהייה
-            </a>
-          </li>
-          <li>
-            <a
-              id="li2"
-              tabIndex={-1}
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                onMenuSetPartani();
-              }}
-            >
-              הגדרת פרטני
-            </a>
-          </li>
-          <li>
-            <a
-              id="li3"
-              tabIndex={-1}
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                onMenuClearPartani();
-              }}
-            >
-              ביטול פרטני
-            </a>
-          </li>
-          <li className="divider" />
-          <li>
-            <a
-              tabIndex={-1}
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                setMenu((m) => ({ ...m, visible: false }));
-              }}
-            >
-              סגור
-            </a>
-          </li>
-        </ul>
-      )}
+      {menu.visible && (() => {
+        // 0 = empty, 1 = class assignment (frontaly), 2 = partani, 3 = shehya
+        const ht = Number(menu.HourTypeId ?? 0);
+        const isEmpty = ht === 0;
+        const isClass = ht === 1;
+        const isShehya = ht === 3;
+        const isPartani = ht === 2;
+        return (
+          <ul
+            className="dropdown-menu dropdown-menu-right"
+            role="menu"
+            style={{
+              display: 'block',
+              position: 'fixed',
+              top: menu.y,
+              left: menu.x,
+              zIndex: 2000,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Frontaly slot (assigned to a class): offer conversion +
+                explicit unassign. Each option uses Force=true so the
+                underlying class row is dropped before the new state is
+                written. */}
+            {isClass && (
+              <>
+                <li>
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onMenuForceShehya();
+                    }}
+                  >
+                    <i className="fa fa-exchange" style={{ color: '#0e7490', marginInlineEnd: 6 }} />
+                    החלף לשהייה
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onMenuForcePartani();
+                    }}
+                  >
+                    <i className="fa fa-exchange" style={{ color: '#d97706', marginInlineEnd: 6 }} />
+                    החלף לפרטני
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onMenuClearAssignment();
+                    }}
+                  >
+                    <i className="fa fa-trash" style={{ color: '#dc2626', marginInlineEnd: 6 }} />
+                    בטל שיבוץ
+                  </a>
+                </li>
+              </>
+            )}
+            {!isShehya && !isClass && (
+              <li>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onMenuDefineShehya();
+                  }}
+                >
+                  <i className={`fa ${isPartani ? 'fa-exchange' : 'fa-users'}`} style={{ color: '#0e7490', marginInlineEnd: 6 }} />
+                  {isPartani ? 'החלף לשהייה' : 'הגדרת שהייה'}
+                </a>
+              </li>
+            )}
+            {isShehya && (
+              <li>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onMenuClearShehya();
+                  }}
+                >
+                  <i className="fa fa-times-circle" style={{ color: '#dc2626', marginInlineEnd: 6 }} />
+                  ביטול שהייה
+                </a>
+              </li>
+            )}
+            {!isPartani && !isClass && (
+              <li>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onMenuSetPartani();
+                  }}
+                >
+                  <i className={`fa ${isShehya ? 'fa-exchange' : 'fa-user'}`} style={{ color: '#d97706', marginInlineEnd: 6 }} />
+                  {isShehya ? 'החלף לפרטני' : 'הגדרת פרטני'}
+                </a>
+              </li>
+            )}
+            {isPartani && (
+              <li>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onMenuClearPartani();
+                  }}
+                >
+                  <i className="fa fa-times-circle" style={{ color: '#dc2626', marginInlineEnd: 6 }} />
+                  ביטול פרטני
+                </a>
+              </li>
+            )}
+            <li className="divider" />
+            <li>
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setMenu((m) => ({ ...m, visible: false }));
+                }}
+              >
+                סגור
+              </a>
+            </li>
+          </ul>
+        );
+      })()}
 
-      {autoAssignConfirm && (
-        <div
-          className="confirm-modal"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setAutoAssignConfirm(false);
-          }}
-        >
-          <div className="confirm-modal__card">
-            <div className="confirm-modal__icon" style={{ color: '#d97706' }}>
-              <i className="fa fa-magic" />
-            </div>
-            <h3 className="confirm-modal__title">שיבוץ שעות אוטומטי</h3>
-            <p className="confirm-modal__text" style={{ textAlign: 'right' }}>
-              פעולה זו <strong style={{ color: '#dc2626' }}>תמחק את כל שעות העבודה הקיימות</strong>{' '}
-              של מורים עם דרישות כיתה, ותבנה אותן מחדש:
-              <br />
-              <br />
-              <strong>• מחנכים</strong> יקבלו אוטומטית את שעה 1 של כל יום (התחלת יום בכיתתם)
-              <br />
-              <strong>• יום חופשי</strong> של כל מורה יישמר (ולא ייקבעו בו שעות)
-              <br />
-              <strong>• הקבצה/איחוד</strong> יסונכרנו כדי שהמורים יוכלו ללמד יחד
-              <br />
-              <strong>• המקסימום</strong> של כל מורה יעודכן אוטומטית לפי השעות הדרושות
-              <br />
-              <strong>• פיזור אחיד</strong> על פני הימים, ומתחיל משעה מוקדמת
-              <br />
-              <br />
-              האם להמשיך?
-            </p>
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: '10px 12px',
-                background: '#fef3c7',
-                border: '1px solid #fcd34d',
-                borderRadius: 8,
-                marginTop: 14,
-                cursor: 'pointer',
-                fontSize: 13,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={autoSetFreeDay}
-                onChange={(e) => setAutoSetFreeDay(e.target.checked)}
-                style={{ width: 18, height: 18, cursor: 'pointer' }}
-              />
-              <span style={{ flex: 1, textAlign: 'right', lineHeight: 1.5 }}>
-                <strong>הגדר אוטומטית יום חופשי למחנכים</strong>
+      {removeAssignConfirm && selectedTeacher && (() => {
+        const c = removeAssignConfirm;
+        const dayLabel = getDayInWeekString(c.day);
+        return (
+          <div
+            className="confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setRemoveAssignConfirm(null);
+            }}
+          >
+            <div className="confirm-modal__card">
+              <div className="confirm-modal__icon" style={{ color: '#dc2626' }}>
+                <i className="fa fa-exclamation-triangle" />
+              </div>
+              <h3 className="confirm-modal__title">השעה משובצת במערכת</h3>
+              <p className="confirm-modal__text" style={{ textAlign: 'right' }}>
+                שעה זו (<strong>{dayLabel} · שעה {c.hour}</strong>) משובצת כעת ב
+                {c.classNames.length === 1 ? 'כיתה' : 'כיתות'}{' '}
+                <strong>{c.classNames.join(', ')}</strong>.
                 <br />
-                <span style={{ fontSize: 12, color: '#6b7280' }}>
-                  (למחנכים ללא יום חופשי - ייבחר היום עם הכי פחות שעות קיימות)
-                </span>
-              </span>
-            </label>
-            <div className="confirm-modal__actions" style={{ marginTop: 14 }}>
-              <button
-                type="button"
-                className="btn btn-default"
-                onClick={() => setAutoAssignConfirm(false)}
-              >
-                ביטול
-              </button>
-              <button
-                type="button"
-                className="btn btn-warning"
-                onClick={executeAutoAssignSmart}
-                autoFocus
-              >
-                <i className="fa fa-bolt" /> הפעל שיבוץ
-              </button>
+                <br />
+                הסרת השעה ממורה <strong>{teacherFullName}</strong> תמחק גם את השיבוץ
+                במערכת ותפגע במערכת בית הספר.
+                <br />
+                <br />
+                האם להמשיך?
+              </p>
+              <div className="confirm-modal__actions" style={{ marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="btn btn-default"
+                  onClick={() => setRemoveAssignConfirm(null)}
+                  autoFocus
+                >
+                  ביטול
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => {
+                    const hourId = c.hourId;
+                    setRemoveAssignConfirm(null);
+                    doRemoveOp(hourId);
+                  }}
+                >
+                  <i className="fa fa-trash" /> הסר בכל זאת
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {quotaModal && selectedTeacher && (() => {
         const cls = classOptions.find((c) => c.ClassId === quotaModal.manageClassId);
@@ -1938,23 +2211,53 @@ export default function TeacherHours() {
               </button>
             </div>
             <div className="class-picker__body">
-              {classOptions.length === 0 ? (
-                <div className="class-picker__empty">לא נמצאו כיתות להצגה</div>
-              ) : (
-                <div className="class-picker__grid">
-                  {classOptions.map((c) => (
-                    <button
-                      key={c.ClassId}
-                      type="button"
-                      className="class-picker__chip"
-                      disabled={pickerBusy}
-                      onClick={() => classPicker && assignHourToClass(classPicker.hourId, c.ClassId)}
-                    >
-                      <i className="fa fa-users" /> {c.ClassName}
-                    </button>
-                  ))}
-                </div>
-              )}
+              {(() => {
+                // Only show classes the teacher is linked to in TeacherClass.
+                // If nothing is linked yet, fall back to all classes so the
+                // user can still proceed (they'll be informed by the
+                // assignHourToClass response if it's blocked server-side).
+                const opts = teacherClasses.length > 0
+                  ? teacherClasses.map((c) => ({
+                      ClassId: c.ClassId,
+                      ClassName: c.ClassName,
+                      isHakbatza: Number(c.Hakbatza) > 0,
+                      isIhud: Number(c.Ihud) > 0,
+                    }))
+                  : classOptions.map((c) => ({
+                      ClassId: c.ClassId,
+                      ClassName: c.ClassName,
+                      isHakbatza: false,
+                      isIhud: false,
+                    }));
+                if (opts.length === 0) return <div className="class-picker__empty">לא נמצאו כיתות להצגה</div>;
+                return (
+                  <>
+                    {teacherClasses.length === 0 && classOptions.length > 0 && (
+                      <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '6px 10px', borderRadius: 6, fontSize: 12, marginBottom: 8 }}>
+                        <i className="fa fa-info-circle" /> המורה לא מקושר לכיתה ב"הגדרות כיתות ומורים". מוצגות כל הכיתות כברירת מחדל.
+                      </div>
+                    )}
+                    <div className="class-picker__grid">
+                      {opts.map((c) => (
+                        <button
+                          key={c.ClassId + '_' + (c.isHakbatza ? 'H' : c.isIhud ? 'I' : 'R')}
+                          type="button"
+                          className="class-picker__chip"
+                          disabled={pickerBusy}
+                          onClick={() => classPicker && assignHourToClass(classPicker.hourId, c.ClassId)}
+                          title={c.isHakbatza ? 'שיבוץ דרך הקבצה' : c.isIhud ? 'שיבוץ דרך איחוד' : 'שיבוץ רגיל'}
+                          style={c.isHakbatza ? { borderColor: '#d97706', background: '#fef3c7' }
+                            : c.isIhud ? { borderColor: '#7c3aed', background: '#ede9fe' } : undefined}
+                        >
+                          <i className={`fa ${c.isHakbatza ? 'fa-object-group' : c.isIhud ? 'fa-link' : 'fa-users'}`} /> {c.ClassName}
+                          {c.isHakbatza && <span style={{ fontSize: 10, marginInlineStart: 4, opacity: 0.7 }}>הקבצה</span>}
+                          {c.isIhud && <span style={{ fontSize: 10, marginInlineStart: 4, opacity: 0.7 }}>איחוד</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
             <div className="class-picker__footer">
               {hourMap[classPicker.hourId] && (
@@ -1976,6 +2279,229 @@ export default function TeacherHours() {
                 ביטול
               </button>
               {pickerBusy && <span className="class-picker__busy"><span className="spinner" /> מעדכן…</span>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editTeacher && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !editTeacherBusy) setEditTeacher(null);
+          }}
+        >
+          <div className="confirm-modal__card" style={{ maxWidth: 980, width: '92vw', padding: '24px 32px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+              <div className="confirm-modal__icon" style={{ background: '#ede9fe', color: '#5b21b6', width: 44, height: 44, fontSize: 18, margin: 0 }}>
+                <i className="fa fa-user-circle" />
+              </div>
+              <div>
+                <h3 className="confirm-modal__title" style={{ margin: 0, textAlign: 'right' }}>עריכת פרטי מורה</h3>
+                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                  {editTeacher.FirstName} {editTeacher.LastName}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, textAlign: 'right' }}>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block' }}>ת״ז</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={editTeacher.Tz}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, Tz: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block' }}>שם פרטי</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={editTeacher.FirstName}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, FirstName: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block' }}>שם משפחה</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={editTeacher.LastName}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, LastName: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block' }}>תפקיד</label>
+                <select
+                  className="form-control"
+                  value={editTeacher.Tafkid}
+                  onChange={(e) => {
+                    const newTafkid = e.target.value;
+                    setEditTeacher((s) => {
+                      if (!s) return s;
+                      // If the chosen role is "מחנכ/ת כיתה", lock the
+                      // profession to "מחנך" automatically — that's the
+                      // implicit subject homeroom teachers always teach.
+                      const isHomeroom = tafkidOptions.find((t) => String(t.TafkidId) === newTafkid)?.Name?.includes('מחנכ');
+                      let nextProf = s.ProfessionalId;
+                      if (isHomeroom) {
+                        const homeroomProf = professionalOptions.find((p) => p.Name === 'מחנך');
+                        if (homeroomProf) nextProf = String(homeroomProf.ProfessionalId);
+                      }
+                      return { ...s, Tafkid: newTafkid, ProfessionalId: nextProf };
+                    });
+                  }}
+                  disabled={editTeacherBusy}
+                >
+                  <option value="0">-- בחר תפקיד --</option>
+                  {tafkidOptions.map((t) => (
+                    <option key={t.TafkidId} value={t.TafkidId}>{t.Name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block' }}>מקצוע</label>
+                <select
+                  className="form-control"
+                  value={editTeacher.ProfessionalId}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, ProfessionalId: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                >
+                  <option value="0">-- בחר מקצוע --</option>
+                  {professionalOptions.map((p) => (
+                    <option key={p.ProfessionalId} value={p.ProfessionalId}>{p.Name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block' }}>אימייל</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={editTeacher.Email}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, Email: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block' }}>יום חופשי</label>
+                <select
+                  className="form-control"
+                  value={editTeacher.FreeDay}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, FreeDay: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                >
+                  <option value="0">— ללא —</option>
+                  <option value="1">יום ראשון</option>
+                  <option value="2">יום שני</option>
+                  <option value="3">יום שלישי</option>
+                  <option value="4">יום רביעי</option>
+                  <option value="5">יום חמישי</option>
+                  <option value="6">יום שישי</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block', color: '#7c3aed' }}>שעות פרונטלי</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="form-control"
+                  value={editTeacher.Frontaly}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, Frontaly: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                  style={{ borderColor: '#c4b5fd' }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block', color: '#0e7490' }}>שעות שהייה</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="form-control"
+                  value={editTeacher.Shehya}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, Shehya: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                  style={{ borderColor: '#67e8f9' }}
+                />
+              </div>
+              <div style={{ gridColumn: '1 / 2' }}>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block', color: '#d97706' }}>שעות פרטני</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="form-control"
+                  value={editTeacher.Partani}
+                  onChange={(e) => setEditTeacher((s) => s ? { ...s, Partani: e.target.value } : s)}
+                  disabled={editTeacherBusy}
+                  style={{ borderColor: '#fcd34d' }}
+                />
+              </div>
+            </div>
+            <div className="confirm-modal__actions" style={{ marginTop: 18 }}>
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setEditTeacher(null)}
+                disabled={editTeacherBusy}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={saveEditTeacher}
+                disabled={editTeacherBusy}
+              >
+                {editTeacherBusy ? <><span className="spinner" /> שומר...</> : <><i className="fa fa-save" /> שמור</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteTeacher && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !deleteTeacherBusy) setDeleteTeacher(null);
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon" style={{ background: '#fee2e2', color: '#dc2626' }}>
+              <i className="fa fa-exclamation-triangle" />
+            </div>
+            <h3 className="confirm-modal__title">מחיקת מורה</h3>
+            <p className="confirm-modal__text">
+              האם אתה בטוח שברצונך למחוק את <strong>{deleteTeacher.fullText}</strong>?
+              <br />
+              כל השעות והשיבוצים של המורה יוסרו ולא ניתן לשחזר את הפעולה.
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setDeleteTeacher(null)}
+                disabled={deleteTeacherBusy}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={confirmDeleteTeacher}
+                disabled={deleteTeacherBusy}
+                autoFocus
+              >
+                {deleteTeacherBusy ? <><span className="spinner" /> מוחק...</> : <><i className="fa fa-trash" /> מחק לצמיתות</>}
+              </button>
             </div>
           </div>
         </div>
@@ -2003,8 +2529,9 @@ const HOUR_TIME_RANGES: Record<number, string> = {
 };
 
 function hourTypeVariant(id: number, teacherHas: boolean): string {
+  // Per HourType table in DB: 1=רגילה (frontaly), 2=פרטני, 3=שהייה.
   if (id === 1) return 'regular';
-  if (id === 2) return 'shehya';
-  if (id === 3) return 'partani';
+  if (id === 2) return 'partani';
+  if (id === 3) return 'shehya';
   return teacherHas ? 'marked' : 'available';
 }

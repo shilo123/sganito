@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
+  MeasuringStrategy,
   PointerSensor,
   useDraggable,
   useDroppable,
@@ -488,13 +489,14 @@ function ProDropZone({ children }: { children: React.ReactNode }) {
   );
 }
 
-function AssignBadge({
+function AssignBadgeImpl({
   slot,
   highlightTeacherId,
   highlightClassId,
   onBadgeClick,
   onTeacherRightClick,
   teacherInfo,
+  dragBlockReason,
 }: {
   slot: AssignSlot;
   highlightTeacherId: string;
@@ -506,6 +508,10 @@ function AssignBadge({
     classId: string | number,
   ) => void;
   teacherInfo?: FreeTeacherTooltipInfo;
+  // Non-empty when a free-teacher card is being dragged AND this slot is
+  // off-limits for that teacher (free day or outside their working hours).
+  // The cell renders dimmed and intercepts the drop attempt visually.
+  dragBlockReason?: string;
 }) {
   const { primary, extras } = slot;
   const theme = primary.AssignmentId ? (primary.IsAuto === 1 ? 'info' : 'primary') : 'danger';
@@ -549,8 +555,16 @@ function AssignBadge({
     Ihud: primary.Ihud ?? '',
     LayerId: primary.LayerId ?? '',
   };
+  // dnd-kit identifies a droppable by this id. It MUST be stable across
+  // re-renders — using Math.random() here re-registered every empty cell
+  // on each parent re-render, which broke drops onto unassigned slots.
+  // For assigned cells we have a real AssignmentId; for empty ones the
+  // (Class, Hour, Layer) tuple is unique inside the grid.
+  const droppableId = assignId
+    ? `cell-${assignId}`
+    : `cell-empty-${primary.ClassId}-${primary.HourId}-${primary.LayerId ?? '0'}`;
   const droppable = useDroppable({
-    id: `cell-${assignId ?? `${primary.ClassId}-${primary.HourId}-empty-${Math.random()}`}`,
+    id: droppableId,
     data: dropPayload,
   });
 
@@ -627,30 +641,33 @@ function AssignBadge({
     );
   }
 
-  const teacherDisplay = primary.Ihud ? <u>{teacherSpans}</u> : <>{teacherSpans}</>;
+  const teacherDisplay = <>{teacherSpans}</>;
 
   const hakNum = Number(primary.Hakbatza ?? 0);
-  const ihudNum = Number(primary.Ihud ?? 0);
   // Same palette as TeacherClass/TeacherHours so colors stay consistent across the app
-  const assignPalette = (kind: 'H' | 'I', n: number): string => {
+  const assignPalette = (n: number): string => {
     if (!n) return 'transparent';
     const hPalette = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#ddd6fe', '#a7f3d0', '#fecaca'];
-    const iPalette = ['#c4b5fd', '#67e8f9', '#fcd34d', '#f9a8d4', '#86efac', '#fca5a5', '#93c5fd', '#fdba74'];
-    const palette = kind === 'H' ? hPalette : iPalette;
-    return palette[(n - 1) % palette.length];
+    return hPalette[(n - 1) % hPalette.length];
   };
 
+  const isBlocked = !!dragBlockReason;
+  // Solid colors only — earlier we used `repeating-linear-gradient` here,
+  // which the browser repaints on every dnd-kit move event across all 1500+
+  // grid cells and made the drag feel laggy.
   const style: React.CSSProperties = {
     zIndex: 10,
     margin: 2,
-    cursor: hasAssignment ? 'move' : 'default',
-    background: droppable.isOver ? '#cfe8ff' : undefined,
-    opacity: draggable.isDragging ? 0.4 : 1,
+    cursor: hasAssignment ? 'move' : isBlocked ? 'not-allowed' : 'default',
+    background: isBlocked
+      ? '#fecaca'
+      : droppable.isOver
+        ? '#cfe8ff'
+        : undefined,
+    opacity: draggable.isDragging ? 0.4 : isBlocked ? 0.6 : 1,
     position: 'relative',
-    ...(ihudNum > 0
-      ? { boxShadow: `inset 0 0 0 2px ${assignPalette('I', ihudNum)}` }
-      : null),
-    ...(isHighlighted
+    ...(isBlocked ? { boxShadow: 'inset 0 0 0 2px #dc2626' } : null),
+    ...(isHighlighted && !isBlocked
       ? { backgroundColor: '#ffeb3b', boxShadow: '0 0 8px #ff9800' }
       : null),
   };
@@ -663,53 +680,34 @@ function AssignBadge({
         {...(hasAssignment ? draggable.attributes : {})}
         className={`btn btn-${theme} btnWorker`}
         style={style}
+        title={dragBlockReason || undefined}
         onClick={() => onBadgeClick(slot)}
         onMouseEnter={handleCellEnter}
         onMouseLeave={handleCellLeave}
       >
-        {(hakNum > 0 || ihudNum > 0) && (
+        {hakNum > 0 && (
           <span
             style={{
               position: 'absolute',
               top: 1,
               insetInlineEnd: 2,
-              display: 'inline-flex',
-              gap: 2,
               pointerEvents: 'none',
             }}
           >
-            {hakNum > 0 && (
-              <span
-                title={`הקבצה ${hakNum}`}
-                style={{
-                  background: assignPalette('H', hakNum),
-                  color: '#1f2937',
-                  padding: '1px 4px',
-                  borderRadius: 3,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  lineHeight: 1,
-                }}
-              >
-                ה{hakNum}
-              </span>
-            )}
-            {ihudNum > 0 && (
-              <span
-                title={`איחוד ${ihudNum}`}
-                style={{
-                  background: assignPalette('I', ihudNum),
-                  color: '#1f2937',
-                  padding: '1px 4px',
-                  borderRadius: 3,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  lineHeight: 1,
-                }}
-              >
-                א{ihudNum}
-              </span>
-            )}
+            <span
+              title={`הקבצה ${hakNum}`}
+              style={{
+                background: assignPalette(hakNum),
+                color: '#1f2937',
+                padding: '1px 4px',
+                borderRadius: 3,
+                fontSize: 9,
+                fontWeight: 700,
+                lineHeight: 1,
+              }}
+            >
+              ה{hakNum}
+            </span>
           </span>
         )}
         <span style={{ fontWeight: 'bold' }}>
@@ -755,17 +753,37 @@ function AssignBadge({
                 <i className="fa fa-object-group ft-tip__ic" /> הקבצה: <strong>{hakNum}</strong>
               </div>
             )}
-            {ihudNum > 0 && (
-              <div className="ft-tip__row">
-                <i className="fa fa-link ft-tip__ic" /> איחוד: <strong>{ihudNum}</strong>
-              </div>
-            )}
           </div>
         </div>
       )}
     </>
   );
 }
+
+// React.memo with a shallow custom compare. Without this, dnd-kit's pointer
+// move events trigger the parent (Assign) to re-render once per frame, which
+// re-mounts every one of the 1500+ schedule cells and made the drag feel
+// stuck. The compare ignores `teacherInfo` identity (it's rebuilt inline
+// each render but the actual values rarely change for the same TeacherId).
+const AssignBadge = memo(AssignBadgeImpl, (prev, next) => {
+  if (prev.slot !== next.slot) return false;
+  if (prev.highlightTeacherId !== next.highlightTeacherId) return false;
+  if (prev.highlightClassId !== next.highlightClassId) return false;
+  if (prev.onBadgeClick !== next.onBadgeClick) return false;
+  if (prev.onTeacherRightClick !== next.onTeacherRightClick) return false;
+  if ((prev.dragBlockReason ?? '') !== (next.dragBlockReason ?? '')) return false;
+  // teacherInfo: compare the only fields the cell renders
+  const a = prev.teacherInfo;
+  const b = next.teacherInfo;
+  if (!a !== !b) return false;
+  if (a && b) {
+    if (a.Frontaly !== b.Frontaly) return false;
+    if (a.Tafkid !== b.Tafkid) return false;
+    if (a.Professional !== b.Professional) return false;
+    if (a.FreeDay !== b.FreeDay) return false;
+  }
+  return true;
+});
 
 // ============================================================================
 // Modal for teacher hours display
@@ -1093,6 +1111,33 @@ export default function Assign() {
       .catch((err) => console.error('Gen_GetTable Professional', err));
   }, [configurationId]);
 
+  // Per-teacher set of HourIds the teacher is allowed to work — used to grey
+  // out illegal cells while a free-teacher card is being dragged. We hit
+  // Gen_GetTable directly (one round-trip) instead of N calls of
+  // Teacher_GetAllTeacherHours per teacher.
+  const [teacherHourMap, setTeacherHourMap] = useState<Map<string, Set<string>>>(new Map());
+  const loadTeacherHourMap = useCallback(() => {
+    return ajax<Array<{ TeacherId: string | number; HourId: string | number }>>('Gen_GetTable', {
+      TableName: 'TeacherHours',
+      Condition: `ConfigurationId=${configurationId}`,
+    })
+      .then((data) => {
+        const m = new Map<string, Set<string>>();
+        for (const row of data ?? []) {
+          const tid = String(row.TeacherId);
+          const hid = String(row.HourId);
+          let set = m.get(tid);
+          if (!set) {
+            set = new Set();
+            m.set(tid, set);
+          }
+          set.add(hid);
+        }
+        setTeacherHourMap(m);
+      })
+      .catch((err) => console.error('Gen_GetTable TeacherHours', err));
+  }, [configurationId]);
+
   useEffect(() => {
     if (!configurationId) return;
     setInitialLoading(true);
@@ -1100,8 +1145,9 @@ export default function Assign() {
       loadProfessionals(),
       loadFreeTeachers(''),
       loadAssignments(),
+      loadTeacherHourMap(),
     ]).finally(() => setInitialLoading(false));
-  }, [configurationId, loadProfessionals, loadFreeTeachers, loadAssignments]);
+  }, [configurationId, loadProfessionals, loadFreeTeachers, loadAssignments, loadTeacherHourMap]);
 
   // --- derived: filter the full dataset by selected layer (client-side) ---
   const assignments = useMemo(() => {
@@ -1163,6 +1209,30 @@ export default function Assign() {
       }
     })();
   }, [configurationId]);
+
+  // Returns the reason the teacher can't take a slot, or '' when allowed.
+  // Used both for visual feedback during a drag and as a guard before the
+  // server call, so the admin sees a clear message instead of a generic
+  // "מורה לא מוגדר/ת לעבוד בשעה זו" toast.
+  const teacherSlotBlockReason = useCallback(
+    (teacherId: string | number, hourId: string | number): string => {
+      const tid = String(teacherId);
+      const hid = String(hourId);
+      const det = teacherDetails.get(tid);
+      const freeDay = det?.FreeDay != null ? Number(det.FreeDay) : 0;
+      if (freeDay > 0 && getDayId(hid) === freeDay) {
+        return `יום חופשי של המורה (${dayName(freeDay)})`;
+      }
+      const allowed = teacherHourMap.get(tid);
+      // If we somehow never loaded TeacherHours for this teacher, fail open
+      // — the server still validates and will reject with err=3.
+      if (allowed && allowed.size > 0 && !allowed.has(hid)) {
+        return 'השעה אינה מוגדרת בשעות העבודה של המורה';
+      }
+      return '';
+    },
+    [teacherDetails, teacherHourMap],
+  );
 
   // --- dnd-kit ---
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -1249,6 +1319,23 @@ export default function Assign() {
 
       if (!Type) return;
 
+      // Pre-flight check for free-teacher drops: refuse on the client when
+      // the target slot is the teacher's free day or outside their declared
+      // working hours. The server still validates the same thing, but
+      // catching it here gives the admin a precise reason instead of the
+      // generic err=3 toast — and avoids a wasted round-trip.
+      if (
+        (Type === 1 || Type === 5) &&
+        src.kind === 'freeTeacher' &&
+        tgt.kind === 'cell'
+      ) {
+        const reason = teacherSlotBlockReason(src.TeacherId, tgt.HourId);
+        if (reason) {
+          setErrorMsg(`לא ניתן לשבץ את ${src.TeacherName}: ${reason}`);
+          return;
+        }
+      }
+
       try {
         const res = await ajax<AssignResultRow[]>('Assign_SetAssignManual', {
           Type: String(Type),
@@ -1285,7 +1372,7 @@ export default function Assign() {
         setErrorMsg('שגיאה בשמירה');
       }
     },
-    [loadAssignments, loadFreeTeachers, selectedClassId],
+    [loadAssignments, loadFreeTeachers, selectedClassId, teacherSlotBlockReason],
   );
 
   const handleDragEnd = (e: DragEndEvent) => {
@@ -1312,14 +1399,13 @@ export default function Assign() {
   }, []);
 
   // --- right-click ---
-  const handleTeacherRightClick = (
-    e: React.MouseEvent,
-    teacherId: string | number,
-    classId: string | number,
-  ) => {
-    e.preventDefault();
-    setCtxMenu({ x: e.clientX, y: e.clientY, teacherId, classId });
-  };
+  const handleTeacherRightClick = useCallback(
+    (e: React.MouseEvent, teacherId: string | number, classId: string | number) => {
+      e.preventDefault();
+      setCtxMenu({ x: e.clientX, y: e.clientY, teacherId, classId });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!ctxMenu) return;
@@ -1346,6 +1432,10 @@ export default function Assign() {
   return (
     <DndContext
       sensors={sensors}
+      // Measure all 1500+ droppables once at drag start instead of on every
+      // pointer move. Without this, dnd-kit's default `WhileDragging`
+      // strategy re-measures the whole grid each frame and the drag stutters.
+      measuring={{ droppable: { strategy: MeasuringStrategy.BeforeDragging } }}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onDragCancel={() => setActiveDrag(null)}
@@ -1418,7 +1508,6 @@ export default function Assign() {
                       TeacherName: a.TeacherName,
                       Professional: a.Professional,
                       Hakbatza: a.Hakbatza,
-                      Ihud: a.Ihud,
                     })),
                     logoUrl,
                   });
@@ -1501,6 +1590,14 @@ export default function Assign() {
                                           FreeDay: tdet.FreeDay,
                                         }
                                       : undefined;
+                                    // While a free-teacher is being dragged, mark slots
+                                    // the teacher can't legally take (free day or
+                                    // outside their working hours). Empty slots and
+                                    // hakbatza-merge targets both qualify.
+                                    const dragBlockReason =
+                                      activeDrag?.kind === 'freeTeacher'
+                                        ? teacherSlotBlockReason(activeDrag.TeacherId, slot.primary.HourId)
+                                        : '';
                                     return (
                                       <AssignBadge
                                         slot={slot}
@@ -1509,6 +1606,7 @@ export default function Assign() {
                                         onBadgeClick={handleBadgeClick}
                                         onTeacherRightClick={handleTeacherRightClick}
                                         teacherInfo={tInfo}
+                                        dragBlockReason={dragBlockReason}
                                       />
                                     );
                                   })() : (
@@ -1821,7 +1919,7 @@ export default function Assign() {
                                 fontWeight: 'bold',
                               }}
                             >
-                              {slot.primary.Ihud ? <u>{combo}</u> : combo}
+                              {combo}
                               <div
                                 style={{
                                   textAlign: 'left',

@@ -141,6 +141,13 @@ public class Shibutz
     // ClassId -> ClassName
     private readonly Dictionary<int, string> _classNames = new Dictionary<int, string>();
 
+    // ClassId -> LayerId. Populated in BuildModel from the Class table.
+    // Hakbatza groups are now keyed by LayerId (a "shchava" / grade level)
+    // rather than ClassId, so a hakbatza like "math, level 1" can pull
+    // students out of every class in the same grade and have multiple
+    // teachers working in parallel — one per class.
+    private readonly Dictionary<int, int> _classLayer = new Dictionary<int, int>();
+
     // TeacherId -> TeacherName
     private readonly Dictionary<int, string> _teacherNames = new Dictionary<int, string>();
 
@@ -345,18 +352,21 @@ public class Shibutz
     }
 
     // =========================================================
-    // HAKBATZA / IHUD: Add co-teachers at same slots as their group partner
+    // HAKBATZA: Add co-teachers at same slots as their group partner.
+    // Each member teaches their own class at the same hour, since a single
+    // hakbatza spans every class in the same layer that opted in.
     // =========================================================
     private void ExpandHakbatzaIhudAssignments()
     {
-        // For each slot that was assigned with a Hakbatza/Ihud group, add the other members
+        // For each slot that was assigned with a Hakbatza group, add the
+        // other members.
         for (int i = 0; i < _allSlots.Count; i++)
         {
             HourSlot s = _allSlots[i];
             if (s.AssignedTeacherId <= 0) continue;
-            if (s.AssignedHakbatza <= 0 && s.AssignedIhud <= 0) continue;
+            if (s.AssignedHakbatza <= 0) continue; // Ihud removed
 
-            string gkey = GetGroupKey(s.ClassId, s.AssignedHakbatza, s.AssignedIhud);
+            string gkey = GetGroupKey(s.ClassId, s.AssignedHakbatza, 0);
             if (gkey == null) continue;
 
             List<ClassTeacher> group;
@@ -369,17 +379,8 @@ public class Shibutz
                 if (ct == null) continue;
                 if (ct.TeacherId == s.AssignedTeacherId && ct.ClassId == s.ClassId) continue;
 
-                // For Hakbatza - partners teach the SAME class at same time
-                // For Ihud - partners teach their OWN class at same time
-                int targetClassId;
-                if (s.AssignedIhud > 0)
-                {
-                    targetClassId = ct.ClassId;  // Each partner stays in their own class
-                }
-                else
-                {
-                    targetClassId = s.ClassId;  // Hakbatza - same class as main
-                }
+                // Each partner teaches their OWN class at the same hour.
+                int targetClassId = ct.ClassId;
 
                 // Skip if already assigned in this slot or extra assignment exists
                 string extraKey = targetClassId + "_" + s.HourId + "_" + ct.TeacherId;
@@ -410,7 +411,7 @@ public class Shibutz
                 ea.TeacherId = ct.TeacherId;
                 ea.ProfessionalId = ct.ProfessionalId;
                 ea.Hakbatza = s.AssignedHakbatza;
-                ea.Ihud = s.AssignedIhud;
+                ea.Ihud = 0; // Ihud removed from the model
 
                 _extraAssignments[extraKey] = ea;
 
@@ -664,7 +665,7 @@ public class Shibutz
                 int classId = ToInt(row["ClassId"]);
                 int profId = existingAssignments.Columns.Contains("ProfessionalId") ? ToInt(row["ProfessionalId"]) : 0;
                 int hak = existingAssignments.Columns.Contains("Hakbatza") ? ToInt(row["Hakbatza"]) : 0;
-                int ihud = existingAssignments.Columns.Contains("Ihud") ? ToInt(row["Ihud"]) : 0;
+                int ihud = 0; // Ihud removed from the model
 
                 if (teacherId <= 0 || hourId <= 0 || classId <= 0) continue;
 
@@ -785,9 +786,31 @@ public class Shibutz
         _homeClassByTeacher.Clear();
         _homeroomByClass.Clear();
         _classNames.Clear();
+        _classLayer.Clear();
         _teacherNames.Clear();
         _teacherWorkingHours.Clear();
         Errors.Clear();
+
+        // Pull LayerId for every class once. Used for keying Hakbatza groups
+        // by grade level instead of class. Falls back gracefully if the
+        // Class table isn't accessible — Hakbatza will just collapse to a
+        // single class until we get a layer mapping (same as old behavior).
+        try
+        {
+            DataTable dtClass = Dal.GetDataTable(
+                "SELECT ClassId, ISNULL(LayerId,0) AS LayerId FROM Class WHERE ConfigurationId=" +
+                _configurationId);
+            for (int ci = 0; ci < dtClass.Rows.Count; ci++)
+            {
+                int cid = ToInt(dtClass.Rows[ci]["ClassId"]);
+                int lid = ToInt(dtClass.Rows[ci]["LayerId"]);
+                if (cid > 0) _classLayer[cid] = lid;
+            }
+        }
+        catch
+        {
+            /* keep going — falls back to per-class behavior */
+        }
 
         if (ds == null || ds.Tables.Count == 0 || ds.Tables[0] == null)
             return;
@@ -960,9 +983,10 @@ public class Shibutz
             {
                 ClassTeacher ct = s.Candidates[j];
                 if (ct == null || ct.TeacherId <= 0) continue;
-                if (ct.Hakbatza <= 0 && ct.Ihud <= 0) continue;
+                if (ct.Hakbatza <= 0) continue; // Ihud removed — only Hakbatza forms groups
 
                 string gkey = GetGroupKey(ct);
+                if (gkey == null) continue;
                 string dedupeKey = gkey + "|" + ct.ClassId + "|" + ct.TeacherId;
                 if (seenTeacherPerGroup.Contains(dedupeKey)) continue;
                 seenTeacherPerGroup.Add(dedupeKey);
@@ -978,21 +1002,28 @@ public class Shibutz
         }
     }
 
+    private int LayerOf(int classId)
+    {
+        int lid;
+        if (_classLayer.TryGetValue(classId, out lid)) return lid;
+        return 0;
+    }
+
+    // Ihud (cross-layer grouping) was removed by user request. The data
+    // model now treats every cross-class teaching link as a Hakbatza —
+    // teachers grouped within the same layer (grade level). The Ihud
+    // column is kept as 0 in DB rows for backward compatibility.
     private string GetGroupKey(ClassTeacher ct)
     {
-        // Ihud: spans across classes -> key only on ihud number
-        if (ct.Ihud > 0)
-        {
-            return "I_" + ct.Ihud;
-        }
-        // Hakbatza: same class -> key includes class
-        return "H_" + ct.ClassId + "_" + ct.Hakbatza;
+        if (ct.Hakbatza <= 0) return null;
+        return "H_" + LayerOf(ct.ClassId) + "_" + ct.Hakbatza;
     }
 
     private string GetGroupKey(int classId, int hak, int ihud)
     {
-        if (ihud > 0) return "I_" + ihud;
-        if (hak > 0) return "H_" + classId + "_" + hak;
+        // ihud parameter kept for callers but ignored — see note above.
+        if (ihud > 0) { /* legacy data — ignore */ }
+        if (hak > 0) return "H_" + LayerOf(classId) + "_" + hak;
         return null;
     }
 
@@ -4015,8 +4046,11 @@ public class Shibutz
         HashSet<string> savedKeys = new HashSet<string>();
 
         SqlConnection con = Dal.OpenConnection();
+        SqlTransaction tx = null;
         try
         {
+            tx = con.BeginTransaction();
+
             for (int i = 0; i < _allSlots.Count; i++)
             {
                 HourSlot s = _allSlots[i];
@@ -4028,6 +4062,7 @@ public class Shibutz
 
                 Dal.ExeSpBigNonQuery(
                     con,
+                    tx,
                     "Assign_SetAssignAuto",
                     _configurationId,
                     s.AssignedTeacherId,
@@ -4052,6 +4087,7 @@ public class Shibutz
 
                 Dal.ExeSpBigNonQuery(
                     con,
+                    tx,
                     "Assign_SetAssignAuto",
                     _configurationId,
                     ea.TeacherId,
@@ -4065,9 +4101,21 @@ public class Shibutz
 
                 saved++;
             }
+
+            tx.Commit();
+            tx = null;
+        }
+        catch
+        {
+            if (tx != null)
+            {
+                try { tx.Rollback(); } catch { }
+            }
+            throw;
         }
         finally
         {
+            if (tx != null) tx.Dispose();
             Dal.CloseConnection(con);
         }
 

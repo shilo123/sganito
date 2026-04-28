@@ -1,3 +1,18 @@
+import { getActiveToast } from './toast';
+
+// Surfaces the popup-blocked failure through the global toast when
+// possible, falling back to alert() only if toast isn't mounted yet
+// (e.g. invoked from a static context outside the app shell).
+function notifyPopupBlocked() {
+  const t = getActiveToast();
+  if (t) {
+    t.error('הדפדפן חסם פתיחת חלון חדש — בטל את החסימה ונסה שוב', { title: 'פתיחת חלון נחסמה' });
+  } else {
+    // eslint-disable-next-line no-alert -- last-resort fallback
+    alert('הדפדפן חסם פתיחת חלון חדש — בטל את החסימה ונסה שוב');
+  }
+}
+
 // Lightweight, zero-dependency export utilities for Excel / Word / PDF.
 // Strategy:
 //   - Excel: produce a rich HTML table with MIME application/vnd.ms-excel.
@@ -40,7 +55,6 @@ export interface ScheduleAssignment {
   TeacherName?: string | null;
   Professional?: string | null;
   Hakbatza?: number | string | null;
-  Ihud?: number | string | null;
 }
 
 export interface ScheduleClass {
@@ -290,7 +304,7 @@ export function exportToPDF<T>(opts: ExportOptions<T>) {
   const html = buildTableHtml(opts);
   const w = window.open('', '_blank');
   if (!w) {
-    alert('הדפדפן חסם פתיחת חלון חדש — בטל את החסימה ונסה שוב');
+    notifyPopupBlocked();
     return;
   }
   w.document.open();
@@ -321,7 +335,6 @@ export function buildExportHandlers<T>(base: ExportOptions<T>) {
 
 const HEB_DAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'];
 const HAK_COLORS = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#ddd6fe', '#a7f3d0', '#fecaca'];
-const IHUD_COLORS = ['#c4b5fd', '#67e8f9', '#fcd34d', '#f9a8d4', '#86efac', '#fca5a5', '#93c5fd', '#fdba74'];
 
 function buildScheduleHtml(opts: ScheduleExportOptions): string {
   const hoursPerDay = opts.hoursPerDay ?? 9;
@@ -358,7 +371,6 @@ function buildScheduleHtml(opts: ScheduleExportOptions): string {
             totalAssigned++;
             const a = cellAssigns[0];
             const hak = Number(a.Hakbatza ?? 0);
-            const ihud = Number(a.Ihud ?? 0);
             const teacher = escapeHtml(a.TeacherName ?? '');
             const prof = a.Professional ? `<div class="prof">${escapeHtml(a.Professional)}</div>` : '';
             let badges = '';
@@ -366,14 +378,7 @@ function buildScheduleHtml(opts: ScheduleExportOptions): string {
               const c = HAK_COLORS[(hak - 1) % HAK_COLORS.length];
               badges += `<span class="badge-pill" style="background:${c}">ה${hak}</span>`;
             }
-            if (ihud > 0) {
-              const c = IHUD_COLORS[(ihud - 1) % IHUD_COLORS.length];
-              badges += `<span class="badge-pill" style="background:${c}">א${ihud}</span>`;
-            }
-            const ihudBorder = ihud > 0
-              ? `box-shadow: inset 0 0 0 2px ${IHUD_COLORS[(ihud - 1) % IHUD_COLORS.length]};`
-              : '';
-            return `<td class="cell" style="${ihudBorder}">
+            return `<td class="cell">
               <div class="teacher">${teacher}</div>
               ${prof}
               ${badges ? `<div class="badges">${badges}</div>` : ''}
@@ -584,7 +589,7 @@ export function exportScheduleToPDF(opts: ScheduleExportOptions) {
   const html = buildScheduleHtml(opts);
   const w = window.open('', '_blank');
   if (!w) {
-    alert('הדפדפן חסם פתיחת חלון חדש — בטל את החסימה ונסה שוב');
+    notifyPopupBlocked();
     return;
   }
   w.document.open();

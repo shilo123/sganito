@@ -30,6 +30,13 @@ interface ToastAPI {
 
 const ToastContext = createContext<ToastAPI | null>(null);
 
+// Module-level pointer to the active toast API. Lets non-React modules
+// (e.g. lib/export.ts) call toast methods without going through context.
+let activeToastApi: ToastAPI | null = null;
+export function getActiveToast(): ToastAPI | null {
+  return activeToastApi;
+}
+
 const DEFAULT_DURATION: Record<ToastType, number> = {
   success: 3200,
   info: 3800,
@@ -101,6 +108,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       clearTimeout(timers.current[Number(id)]);
     }
   }, []);
+
+  // Expose the toast API to non-React modules so functions like
+  // exportToPDF (lib/export.ts) can replace window.alert with a styled
+  // toast without needing to thread a callback through every caller.
+  useEffect(() => {
+    activeToastApi = api;
+    return () => {
+      if (activeToastApi === api) activeToastApi = null;
+    };
+  }, [api]);
 
   return (
     <ToastContext.Provider value={api}>

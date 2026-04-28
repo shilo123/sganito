@@ -828,6 +828,95 @@ public class WebService : System.Web.Services.WebService
 
 
 
+    // Mark or clear a teacher hour as shehya/partani without forcing a
+    // group selection. Replaces any existing non-class assignment so the
+    // user can flip between shehya/partani directly. A real class
+    // assignment (HourTypeId=1 with a ClassId) is left intact unless
+    // Force=1 is passed — in that case the class row is also dropped so
+    // the caller can convert a frontaly slot to shehya/partani in one go.
+    //   Action: 'shehya' (HourTypeId=3) | 'partani' (HourTypeId=2) | 'clear'
+    //   Force:  '1' = also drop class assignment (default 0)
+    // Response codes: 0 = success, 1 = generic error, 2 = blocked by
+    // existing class assignment (only when Force=0).
+    [WebMethod]
+    public void Teacher_SetHourType()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int hourId = Helper.ConvertToInt(GetParams("HourId"));
+            int teacherId = Helper.ConvertToInt(GetParams("TeacherId"));
+            string action = (GetParams("Action") ?? "").ToLowerInvariant();
+            bool force = (GetParams("Force") ?? "0") == "1";
+            if (hourId <= 0 || teacherId <= 0 || (action != "shehya" && action != "partani" && action != "clear"))
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("[{\"res\":1,\"err\":\"missing params\"}]");
+                return;
+            }
+
+            // Look at the existing row(s) for this hour
+            string existSql = @"
+SELECT AssignmentId, HourTypeId, ClassId
+FROM TeacherAssignment
+WHERE ConfigurationId=" + cfgId + @"
+  AND TeacherId=" + teacherId + @"
+  AND HourId=" + hourId;
+            DataTable dt = Dal.GetDataTable(existSql);
+
+            // If the hour is already pinned to a class lesson (HourTypeId=1
+            // with a non-null ClassId) we don't silently override it unless
+            // Force=1 is set. Otherwise return res=2 so the UI can warn.
+            if (!force)
+            {
+                foreach (DataRow r in dt.Rows)
+                {
+                    int ht = Helper.ConvertToInt(r["HourTypeId"].ToString());
+                    bool hasClass = r["ClassId"] != DBNull.Value;
+                    if (ht == 1 && hasClass)
+                    {
+                        HttpContext.Current.Response.Clear();
+                        HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                        HttpContext.Current.Response.Write("[{\"res\":2}]");
+                        return;
+                    }
+                }
+            }
+
+            // Drop existing rows. With Force=1 we wipe everything for this
+            // (teacher, hour) including class assignments so the slot can
+            // be safely replaced.
+            string deleteSql = @"
+DELETE FROM TeacherAssignment
+WHERE ConfigurationId=" + cfgId + @"
+  AND TeacherId=" + teacherId + @"
+  AND HourId=" + hourId + (force ? "" : @"
+  AND ClassId IS NULL");
+            Dal.ExecuteNonQuery(deleteSql);
+
+            if (action != "clear")
+            {
+                int newType = action == "partani" ? 2 : 3;
+                string insertSql = @"
+INSERT INTO TeacherAssignment (ConfigurationId, TeacherId, HourId, HourTypeId, ClassId, IsAuto)
+VALUES (" + cfgId + @", " + teacherId + @", " + hourId + @", " + newType + @", NULL, 0)";
+                Dal.ExecuteNonQuery(insertSql);
+            }
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[{\"res\":0}]");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[{\"res\":1,\"err\":\"" + ex.Message.Replace("\"", "'") + "\"}]");
+        }
+    }
+
     [WebMethod]
     public void Teacher_GetTeachersForShehya()
     {
@@ -928,16 +1017,17 @@ public class WebService : System.Web.Services.WebService
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
     }
     // =========================================================
-    // Directly set the Hakbatza/Ihud number on a ClassTeacher row.
-    // Empty or "0" clears the field. Used by the in-class "edit group"
-    // modal in TeacherClass. Returns { res: 0 } on success.
+    // Directly set the Hakbatza number on a ClassTeacher row.
+    // Empty or "0" clears the field. Used by the "create / edit group"
+    // wizard in TeacherClass. Returns { res: 0 } on success.
+    // (Ihud parameter accepted but ignored — Ihud was removed from the
+    // model. We force Ihud=NULL so older data is cleaned up over time.)
     // =========================================================
     [WebMethod]
     public void Class_SetGroupNumber()
     {
         string ClassTeacherId = GetParams("ClassTeacherId");
         string Hakbatza = GetParams("Hakbatza");
-        string Ihud = GetParams("Ihud");
 
         if (string.IsNullOrEmpty(ClassTeacherId) || ClassTeacherId == "0")
         {
@@ -949,14 +1039,12 @@ public class WebService : System.Web.Services.WebService
 
         string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
         int hakVal = Helper.ConvertToInt(string.IsNullOrEmpty(Hakbatza) ? "0" : Hakbatza);
-        int ihudVal = Helper.ConvertToInt(string.IsNullOrEmpty(Ihud) ? "0" : Ihud);
         int ctId = Helper.ConvertToInt(ClassTeacherId);
         int cfgId = Helper.ConvertToInt(cId);
 
         // Store 0 as NULL to match the data convention used elsewhere
         string hakSql = hakVal > 0 ? hakVal.ToString() : "NULL";
-        string ihudSql = ihudVal > 0 ? ihudVal.ToString() : "NULL";
-        string sql = "UPDATE ClassTeacher SET Hakbatza=" + hakSql + ", Ihud=" + ihudSql +
+        string sql = "UPDATE ClassTeacher SET Hakbatza=" + hakSql + ", Ihud=NULL" +
                      " WHERE ClassTeacherId=" + ctId + " AND ConfigurationId=" + cfgId;
         Dal.ExecuteNonQuery(sql);
 
@@ -966,11 +1054,812 @@ public class WebService : System.Web.Services.WebService
     }
 
     // =========================================================
-    // Returns the list of Hakbatza/Ihud groups across all classes of the
+    // Hakbatza as an independent entity: a numbered group inside a
+    // grade level, made of selected classes (where the students come
+    // from) and selected teachers (who teach the level groups).
+    //
+    // We store it inside ClassTeacher because the schema can't be
+    // extended — TeacherId=NULL marks an "empty seat" in the hakbatza,
+    // and a row with both ClassId and TeacherId is a teacher placed
+    // into one of the classes.
+    // =========================================================
+
+    // SQL-escape a free-text value for safe inline interpolation. We don't
+    // use parameterised queries elsewhere in this file so this stays
+    // consistent with the surrounding style; doubling single quotes is
+    // sufficient for short user-supplied names.
+    private static string EscSql(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Replace("'", "''");
+    }
+
+    // Create a new empty hakbatza for a layer with the given classes.
+    // Body params: LayerId, ClassIds (CSV "2037,2038,2039"), Name (optional).
+    // Returns { Number: <new hakbatza number> }.
+    [WebMethod]
+    public void Hakbatza_Create()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            string classIdsCsv = GetParams("ClassIds") ?? "";
+            string name = (GetParams("Name") ?? "").Trim();
+
+            List<int> classIds = new List<int>();
+            foreach (string p in classIdsCsv.Split(','))
+            {
+                int x = Helper.ConvertToInt(p.Trim());
+                if (x > 0) classIds.Add(x);
+            }
+            if (classIds.Count < 2)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"need at least 2 classes\"}");
+                return;
+            }
+
+            // Allocate the next hakbatza number for this layer.
+            string sqlMax = @"
+SELECT ISNULL(MAX(ct.Hakbatza),0) AS MaxNum
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ISNULL(ct.Hakbatza,0) > 0";
+            DataTable dt = Dal.GetDataTable(sqlMax);
+            int nextNum = (dt.Rows.Count > 0 ? Helper.ConvertToInt(dt.Rows[0]["MaxNum"].ToString()) : 0) + 1;
+
+            // Create one ClassTeacher row per class, with TeacherId=NULL
+            // marking an "empty seat" the user will fill by dragging
+            // teachers into the hakbatza.
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < classIds.Count; i++)
+            {
+                sb.Append("INSERT INTO ClassTeacher (ConfigurationId, ClassId, TeacherId, Hour, Hakbatza, Ihud) VALUES (")
+                  .Append(cfgId).Append(", ")
+                  .Append(classIds[i]).Append(", NULL, 1, ")
+                  .Append(nextNum).Append(", NULL);");
+            }
+            // Persist the optional friendly name in GroupInfo.
+            if (!string.IsNullOrEmpty(name))
+            {
+                sb.Append("INSERT INTO GroupInfo (ConfigurationId, LayerId, Number, Kind, Name) VALUES (")
+                  .Append(cfgId).Append(", ")
+                  .Append(layerId).Append(", ")
+                  .Append(nextNum).Append(", 'H', N'")
+                  .Append(EscSql(name)).Append("');");
+            }
+            Dal.ExecuteNonQuery(sb.ToString());
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Number\":" + nextNum + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Set/update the friendly name of a Hakbatza or Ihud.
+    // Body params: LayerId, Number, Kind ('H' or 'I'), Name.
+    [WebMethod]
+    public void Group_SetName()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            int number = Helper.ConvertToInt(GetParams("Number"));
+            string kind = (GetParams("Kind") ?? "H").Trim().ToUpper();
+            if (kind != "H" && kind != "I") kind = "H";
+            string name = (GetParams("Name") ?? "").Trim();
+
+            string sql = @"
+IF EXISTS (SELECT 1 FROM GroupInfo WHERE ConfigurationId=" + cfgId + @" AND LayerId=" + layerId + @" AND Number=" + number + @" AND Kind='" + kind + @"')
+  UPDATE GroupInfo SET Name=N'" + EscSql(name) + @"'
+  WHERE ConfigurationId=" + cfgId + @" AND LayerId=" + layerId + @" AND Number=" + number + @" AND Kind='" + kind + @"'
+ELSE
+  INSERT INTO GroupInfo (ConfigurationId, LayerId, Number, Kind, Name) VALUES (" + cfgId + @", " + layerId + @", " + number + @", '" + kind + @"', N'" + EscSql(name) + @"')";
+            Dal.ExecuteNonQuery(sql);
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Returns every hakbatza in the configuration: number, layer,
+    // class list, and teacher list. Two rows of the same hakbatza
+    // number in the same layer share a group.
+    [WebMethod]
+    public void Hakbatza_GetAll()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            string sql = @"
+SELECT
+  ct.ClassTeacherId,
+  ct.Hakbatza,
+  ct.ClassId,
+  c.Name AS ClassName,
+  ISNULL(c.LayerId,0) AS LayerId,
+  ISNULL(ct.TeacherId, 0) AS TeacherId,
+  ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ISNULL(gi.Name, '') AS Name
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+LEFT JOIN Teacher t ON t.TeacherId = ct.TeacherId
+LEFT JOIN GroupInfo gi
+  ON gi.ConfigurationId = ct.ConfigurationId
+ AND gi.LayerId = c.LayerId
+ AND gi.Number = ct.Hakbatza
+ AND gi.Kind = 'H'
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND ISNULL(ct.Hakbatza,0) > 0
+ORDER BY c.LayerId, ct.Hakbatza, c.Name, TeacherName";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}]");
+        }
+    }
+
+    // Add a teacher to a hakbatza. A hakbatza spans multiple classes
+    // and groups level-streams across them, so each teacher in the
+    // hakbatza is associated with EVERY class in the group — not just
+    // one. We therefore insert (or fill an empty placeholder) one row
+    // per participating class.
+    // Body params: LayerId, Number, TeacherId.
+    [WebMethod]
+    public void Hakbatza_AddTeacher()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            int number = Helper.ConvertToInt(GetParams("Number"));
+            int teacherId = Helper.ConvertToInt(GetParams("TeacherId"));
+            if (number <= 0 || teacherId <= 0)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"missing params\"}");
+                return;
+            }
+
+            // Find every class participating in this hakbatza. The shared
+            // hour value (used for new rows) comes from any existing row
+            // so a freshly added teacher inherits the lesson length.
+            string sqlClasses = @"
+SELECT DISTINCT ct.ClassId, ISNULL(MAX(ct.Hour),1) AS Hour
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Hakbatza=" + number + @"
+GROUP BY ct.ClassId";
+            DataTable dtClasses = Dal.GetDataTable(sqlClasses);
+            if (dtClasses.Rows.Count == 0)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"hakbatza not found\"}");
+                return;
+            }
+
+            // Look at the existing rows so we can decide per-class:
+            //   - Already has a row for this teacher → skip
+            //   - Has an empty placeholder (TeacherId IS NULL) → fill it
+            //   - Otherwise → insert a new row
+            string sqlExisting = @"
+SELECT ct.ClassId, ct.ClassTeacherId, ct.TeacherId, ISNULL(ct.Hour,1) AS Hour
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Hakbatza=" + number;
+            DataTable dtExisting = Dal.GetDataTable(sqlExisting);
+
+            // Build per-class plans
+            Dictionary<int, List<DataRow>> rowsByClass = new Dictionary<int, List<DataRow>>();
+            foreach (DataRow er in dtExisting.Rows)
+            {
+                int cid = Helper.ConvertToInt(er["ClassId"].ToString());
+                if (!rowsByClass.ContainsKey(cid)) rowsByClass[cid] = new List<DataRow>();
+                rowsByClass[cid].Add(er);
+            }
+
+            StringBuilder sb = new StringBuilder();
+            foreach (DataRow cr in dtClasses.Rows)
+            {
+                int classId = Helper.ConvertToInt(cr["ClassId"].ToString());
+                int hour = Helper.ConvertToInt(cr["Hour"].ToString());
+                List<DataRow> rows = rowsByClass.ContainsKey(classId) ? rowsByClass[classId] : new List<DataRow>();
+
+                // Already in this class? skip.
+                bool alreadyHere = false;
+                foreach (DataRow r in rows)
+                {
+                    if (r["TeacherId"] != DBNull.Value &&
+                        Helper.ConvertToInt(r["TeacherId"].ToString()) == teacherId)
+                    {
+                        alreadyHere = true; break;
+                    }
+                }
+                if (alreadyHere) continue;
+
+                // Try to fill an empty placeholder
+                int filledRowId = 0;
+                foreach (DataRow r in rows)
+                {
+                    if (r["TeacherId"] == DBNull.Value)
+                    {
+                        filledRowId = Helper.ConvertToInt(r["ClassTeacherId"].ToString());
+                        break;
+                    }
+                }
+
+                if (filledRowId > 0)
+                {
+                    sb.Append("UPDATE ClassTeacher SET TeacherId=").Append(teacherId)
+                      .Append(" WHERE ClassTeacherId=").Append(filledRowId).Append(";");
+                }
+                else
+                {
+                    sb.Append("INSERT INTO ClassTeacher (ConfigurationId, ClassId, TeacherId, Hour, Hakbatza, Ihud) VALUES (")
+                      .Append(cfgId).Append(", ")
+                      .Append(classId).Append(", ")
+                      .Append(teacherId).Append(", ")
+                      .Append(hour).Append(", ")
+                      .Append(number).Append(", NULL);");
+                }
+            }
+            if (sb.Length > 0) Dal.ExecuteNonQuery(sb.ToString());
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Remove a teacher from a hakbatza. Since a teacher in a hakbatza is
+    // present in EVERY participating class, removal must wipe every row.
+    // We keep at least one placeholder row per class (TeacherId=NULL) so
+    // the class membership is preserved for future drags.
+    [WebMethod]
+    public void Hakbatza_RemoveTeacher()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            int number = Helper.ConvertToInt(GetParams("Number"));
+            int teacherId = Helper.ConvertToInt(GetParams("TeacherId"));
+
+            // List rows per class for this hakbatza so we can decide whether
+            // to NULL-out the teacher (keeping the class membership) or
+            // delete the row entirely (when other teachers still anchor the
+            // class).
+            string sqlClass = @"
+SELECT ct.ClassTeacherId, ct.ClassId, ct.TeacherId
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Hakbatza=" + number;
+            DataTable dt = Dal.GetDataTable(sqlClass);
+
+            Dictionary<int, List<DataRow>> rowsByClass = new Dictionary<int, List<DataRow>>();
+            foreach (DataRow r in dt.Rows)
+            {
+                int cid = Helper.ConvertToInt(r["ClassId"].ToString());
+                if (!rowsByClass.ContainsKey(cid)) rowsByClass[cid] = new List<DataRow>();
+                rowsByClass[cid].Add(r);
+            }
+
+            StringBuilder sb = new StringBuilder();
+            foreach (KeyValuePair<int, List<DataRow>> kv in rowsByClass)
+            {
+                List<DataRow> rows = kv.Value;
+                int teacherRowId = 0;
+                int otherTeacherRows = 0;
+                int placeholderRows = 0;
+                foreach (DataRow r in rows)
+                {
+                    if (r["TeacherId"] == DBNull.Value)
+                    {
+                        placeholderRows++;
+                    }
+                    else
+                    {
+                        int tid = Helper.ConvertToInt(r["TeacherId"].ToString());
+                        if (tid == teacherId)
+                            teacherRowId = Helper.ConvertToInt(r["ClassTeacherId"].ToString());
+                        else
+                            otherTeacherRows++;
+                    }
+                }
+                if (teacherRowId == 0) continue;
+
+                if (otherTeacherRows > 0 || placeholderRows > 0)
+                {
+                    // The class still has other anchors — drop the teacher's row.
+                    sb.Append("DELETE FROM ClassTeacher WHERE ClassTeacherId=").Append(teacherRowId).Append(";");
+                }
+                else
+                {
+                    // Last row for this class — keep it as a placeholder.
+                    sb.Append("UPDATE ClassTeacher SET TeacherId=NULL WHERE ClassTeacherId=").Append(teacherRowId).Append(";");
+                }
+            }
+            if (sb.Length > 0) Dal.ExecuteNonQuery(sb.ToString());
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Delete a hakbatza completely (and the empty seats / teacher rows
+    // that belonged to it).
+    [WebMethod]
+    public void Hakbatza_Delete()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            int number = Helper.ConvertToInt(GetParams("Number"));
+
+            // Drop placeholder rows (TeacherId IS NULL) entirely, and clear
+            // Hakbatza on rows that had a real teacher (so we don't delete
+            // independent ClassTeacher rows that just happen to share the
+            // hakbatza number).
+            string sql = @"
+DELETE ct FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Hakbatza=" + number + @"
+  AND ct.TeacherId IS NULL;
+
+UPDATE ct SET ct.Hakbatza=NULL
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Hakbatza=" + number + @";
+
+DELETE FROM GroupInfo
+WHERE ConfigurationId=" + cfgId + @"
+  AND LayerId=" + layerId + @"
+  AND Number=" + number + @"
+  AND Kind='H';";
+            Dal.ExecuteNonQuery(sql);
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // =========================================================
+    // Ihud (Class Union): two classes share the same teacher in the
+    // same hour. Stored as ClassTeacher rows with the same Ihud number,
+    // each row pointing to a different ClassId. The "responsible teacher"
+    // is set on every row, so the same TeacherId appears in each.
+    //
+    // Differences from Hakbatza:
+    //   - Always exactly ONE teacher (the responsible). Hakbatza can
+    //     have many teachers (level groups).
+    //   - Each row in the Ihud already knows its TeacherId.
+    //   - When the user changes the teacher we update every row in the
+    //     group so they stay in sync.
+    // =========================================================
+
+    // Create a new Ihud for selected classes with a single responsible
+    // teacher. Body: LayerId, ClassIds (CSV), TeacherId, Name (optional).
+    [WebMethod]
+    public void Ihud_Create()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            string classIdsCsv = GetParams("ClassIds") ?? "";
+            int teacherId = Helper.ConvertToInt(GetParams("TeacherId"));
+            string name = (GetParams("Name") ?? "").Trim();
+
+            List<int> classIds = new List<int>();
+            foreach (string p in classIdsCsv.Split(','))
+            {
+                int x = Helper.ConvertToInt(p.Trim());
+                if (x > 0) classIds.Add(x);
+            }
+            if (classIds.Count < 2)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"need at least 2 classes\"}");
+                return;
+            }
+            if (teacherId <= 0)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"missing responsible teacher\"}");
+                return;
+            }
+
+            // Allocate next Ihud number (per layer)
+            string sqlMax = @"
+SELECT ISNULL(MAX(ct.Ihud),0) AS MaxNum
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ISNULL(ct.Ihud,0) > 0";
+            DataTable dt = Dal.GetDataTable(sqlMax);
+            int nextNum = (dt.Rows.Count > 0 ? Helper.ConvertToInt(dt.Rows[0]["MaxNum"].ToString()) : 0) + 1;
+
+            // Insert one row per class — same teacher, same Ihud.
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < classIds.Count; i++)
+            {
+                sb.Append("INSERT INTO ClassTeacher (ConfigurationId, ClassId, TeacherId, Hour, Hakbatza, Ihud) VALUES (")
+                  .Append(cfgId).Append(", ")
+                  .Append(classIds[i]).Append(", ")
+                  .Append(teacherId).Append(", 1, NULL, ")
+                  .Append(nextNum).Append(");");
+            }
+            if (!string.IsNullOrEmpty(name))
+            {
+                sb.Append("INSERT INTO GroupInfo (ConfigurationId, LayerId, Number, Kind, Name) VALUES (")
+                  .Append(cfgId).Append(", ")
+                  .Append(layerId).Append(", ")
+                  .Append(nextNum).Append(", 'I', N'")
+                  .Append(EscSql(name)).Append("');");
+            }
+            Dal.ExecuteNonQuery(sb.ToString());
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Number\":" + nextNum + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // List all Ihud groups for the current configuration.
+    [WebMethod]
+    public void Ihud_GetAll()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            string sql = @"
+SELECT
+  ct.ClassTeacherId,
+  ct.Ihud,
+  ct.ClassId,
+  c.Name AS ClassName,
+  ISNULL(c.LayerId,0) AS LayerId,
+  ISNULL(ct.TeacherId,0) AS TeacherId,
+  ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ISNULL(ct.Hour,1) AS Hour,
+  ISNULL(gi.Name, '') AS Name
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+LEFT JOIN Teacher t ON t.TeacherId = ct.TeacherId
+LEFT JOIN GroupInfo gi
+  ON gi.ConfigurationId = ct.ConfigurationId
+ AND gi.LayerId = c.LayerId
+ AND gi.Number = ct.Ihud
+ AND gi.Kind = 'I'
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND ISNULL(ct.Ihud,0) > 0
+ORDER BY c.LayerId, ct.Ihud, c.Name";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}]");
+        }
+    }
+
+    // Change the responsible teacher of an Ihud (updates every row).
+    [WebMethod]
+    public void Ihud_SetTeacher()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            int number = Helper.ConvertToInt(GetParams("Number"));
+            int teacherId = Helper.ConvertToInt(GetParams("TeacherId"));
+            if (number <= 0 || teacherId <= 0)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"missing params\"}");
+                return;
+            }
+
+            string sql = @"
+UPDATE ct SET ct.TeacherId=" + teacherId + @"
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Ihud=" + number;
+            Dal.ExecuteNonQuery(sql);
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Update the hour count of every row in the Ihud (so the union
+    // of classes shares the same hours-per-week value).
+    [WebMethod]
+    public void Ihud_SetHour()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            int number = Helper.ConvertToInt(GetParams("Number"));
+            int hour = Helper.ConvertToInt(GetParams("Hour"));
+            if (number <= 0 || hour < 0)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"missing params\"}");
+                return;
+            }
+
+            string sql = @"
+UPDATE ct SET ct.Hour=" + hour + @"
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Ihud=" + number;
+            Dal.ExecuteNonQuery(sql);
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Update the hour count of every row in a Hakbatza, keeping the
+    // shared lesson length consistent across the participating classes.
+    [WebMethod]
+    public void Hakbatza_SetHour()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            int number = Helper.ConvertToInt(GetParams("Number"));
+            int hour = Helper.ConvertToInt(GetParams("Hour"));
+            if (number <= 0 || hour < 0)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"missing params\"}");
+                return;
+            }
+
+            string sql = @"
+UPDATE ct SET ct.Hour=" + hour + @"
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Hakbatza=" + number;
+            Dal.ExecuteNonQuery(sql);
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Delete an Ihud completely (all its rows).
+    [WebMethod]
+    public void Ihud_Delete()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int layerId = Helper.ConvertToInt(GetParams("LayerId"));
+            int number = Helper.ConvertToInt(GetParams("Number"));
+
+            string sql = @"
+DELETE ct FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND c.LayerId=" + layerId + @"
+  AND ct.Ihud=" + number + @";
+
+DELETE FROM GroupInfo
+WHERE ConfigurationId=" + cfgId + @"
+  AND LayerId=" + layerId + @"
+  AND Number=" + number + @"
+  AND Kind='I';";
+            Dal.ExecuteNonQuery(sql);
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // Returns the classes a given teacher is assigned to (regular
+    // assignment, hakbatza, or ihud). Used by TeacherHours to limit the
+    // class-picker options to classes the teacher is actually linked to.
+    [WebMethod]
+    public void Teacher_GetClassesForTeacher()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int teacherId = Helper.ConvertToInt(GetParams("TeacherId"));
+            if (teacherId <= 0)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("[]");
+                return;
+            }
+            string sql = @"
+SELECT DISTINCT
+  c.ClassId,
+  c.Name AS ClassName,
+  c.LayerId,
+  ISNULL(ct.Hakbatza,0) AS Hakbatza,
+  ISNULL(ct.Ihud,0) AS Ihud
+FROM ClassTeacher ct
+INNER JOIN Class c ON c.ClassId = ct.ClassId
+WHERE ct.ConfigurationId=" + cfgId + @"
+  AND ct.TeacherId=" + teacherId + @"
+ORDER BY c.LayerId, c.Name";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}]");
+        }
+    }
+
+    // Returns the maximum-hours-per-week per class for the active
+    // configuration: the count of SchoolHours rows that are not
+    // shehya-only. Used by the UI to render "X / Max" indicators.
+    [WebMethod]
+    public void Class_GetMaxHours()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            string sql = @"
+SELECT COUNT(*) AS MaxHours
+FROM SchoolHours
+WHERE ConfigurationId=" + cfgId + @"
+  AND ISNULL(IsOnlyShehya,0)=0";
+            DataTable dt = Dal.GetDataTable(sql);
+            int max = dt.Rows.Count > 0 ? Helper.ConvertToInt(dt.Rows[0]["MaxHours"].ToString()) : 0;
+
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"MaxHours\":" + max + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    // =========================================================
+    // Returns the list of Hakbatza groups across all classes of the
     // current configuration. Used by UI to show a groups summary and to
     // suggest existing numbers when editing. Returns an array of rows:
-    //   { Kind: "H"|"I", Number, ClassId, ClassName, TeacherId,
+    //   { Kind: "H", Number, ClassId, ClassName, TeacherId,
     //     TeacherName, ClassTeacherId, Hour }
+    // (Ihud was removed from the model.)
     // =========================================================
     [WebMethod]
     public void Class_GetGroups()
@@ -979,8 +1868,8 @@ public class WebService : System.Web.Services.WebService
         int cfgId = Helper.ConvertToInt(cId);
         string sql = @"
 SELECT
-  CASE WHEN ISNULL(ct.Ihud,0) > 0 THEN 'I' ELSE 'H' END AS Kind,
-  CASE WHEN ISNULL(ct.Ihud,0) > 0 THEN ct.Ihud ELSE ct.Hakbatza END AS Number,
+  'H' AS Kind,
+  ct.Hakbatza AS Number,
   ct.ClassId,
   c.ClassName,
   ct.TeacherId,
@@ -991,8 +1880,8 @@ FROM ClassTeacher ct
 JOIN Class c ON c.ClassId = ct.ClassId
 LEFT JOIN Teacher t ON t.TeacherId = ct.TeacherId
 WHERE ct.ConfigurationId = " + cfgId + @"
-  AND (ISNULL(ct.Hakbatza,0) > 0 OR ISNULL(ct.Ihud,0) > 0)
-ORDER BY Kind, Number, c.ClassName, TeacherName";
+  AND ISNULL(ct.Hakbatza,0) > 0
+ORDER BY Number, c.ClassName, TeacherName";
         DataTable dt = Dal.GetDataTable(sql);
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
     }
@@ -1027,35 +1916,30 @@ ORDER BY Kind, Number, c.ClassName, TeacherName";
 SELECT
   ct.ClassTeacherId, ct.ClassId, ct.TeacherId,
   ISNULL(ct.Hakbatza,0) AS Hakbatza,
-  ISNULL(ct.Ihud,0) AS Ihud,
   c.ClassName,
+  ISNULL(c.LayerId,0) AS LayerId,
   ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
   ISNULL(t.FreeDay,0) AS FreeDay
 FROM ClassTeacher ct
 JOIN Class c ON c.ClassId = ct.ClassId
 LEFT JOIN Teacher t ON t.TeacherId = ct.TeacherId
 WHERE ct.ConfigurationId = " + cfgId + @"
-  AND (ISNULL(ct.Hakbatza,0) > 0 OR ISNULL(ct.Ihud,0) > 0)";
+  AND ISNULL(ct.Hakbatza,0) > 0";
         DataTable dt = Dal.GetDataTable(sql);
 
-        // Group rows by Hakbatza or Ihud key
+        // Group rows by Hakbatza key. Hakbatza is keyed by LayerId
+        // (a "shchava" / grade level) so a single hakbatza spans the
+        // selected classes in that grade — matching how Israeli schools
+        // run level-grouped lessons in math/English.
         Dictionary<string, List<DataRow>> groups = new Dictionary<string, List<DataRow>>();
-        Dictionary<string, string> kindByKey = new Dictionary<string, string>();
         Dictionary<string, int> numberByKey = new Dictionary<string, int>();
         foreach (DataRow r in dt.Rows)
         {
             int hak = Helper.ConvertToInt(r["Hakbatza"].ToString());
-            int ihud = Helper.ConvertToInt(r["Ihud"].ToString());
-            if (ihud > 0)
-            {
-                string k = "I_" + ihud;
-                if (!groups.ContainsKey(k)) { groups[k] = new List<DataRow>(); kindByKey[k] = "I"; numberByKey[k] = ihud; }
-                groups[k].Add(r);
-            }
             if (hak > 0)
             {
-                string k = "H_" + r["ClassId"].ToString() + "_" + hak;
-                if (!groups.ContainsKey(k)) { groups[k] = new List<DataRow>(); kindByKey[k] = "H"; numberByKey[k] = hak; }
+                string k = "H_" + r["LayerId"].ToString() + "_" + hak;
+                if (!groups.ContainsKey(k)) { groups[k] = new List<DataRow>(); numberByKey[k] = hak; }
                 groups[k].Add(r);
             }
         }
@@ -1065,7 +1949,6 @@ WHERE ct.ConfigurationId = " + cfgId + @"
         bool first = true;
         foreach (KeyValuePair<string, List<DataRow>> kv in groups)
         {
-            string kind = kindByKey[kv.Key];
             int number = numberByKey[kv.Key];
             List<DataRow> members = kv.Value;
 
@@ -1094,23 +1977,23 @@ WHERE ct.ConfigurationId = " + cfgId + @"
                 message = "רק " + commonDays + " ימים משותפים לכל החברים — סיכון גבוה";
             }
 
-            // Check 2: Ihud spread
-            if (kind == "I")
+            // Hakbatza coherence — every member must share the same LayerId.
+            // We already key by layer so a mixed-layer group can't form
+            // here, but if a manual edit slipped through (e.g. via Gen_DML)
+            // the layers set will give it away.
+            HashSet<string> layers = new HashSet<string>();
+            foreach (DataRow m in members) layers.Add(m["LayerId"].ToString());
+            if (layers.Count > 1)
             {
-                HashSet<string> classes = new HashSet<string>();
-                foreach (DataRow m in members) classes.Add(m["ClassId"].ToString());
-                if (classes.Count <= 1)
-                {
-                    severity = severity == "error" ? "error" : "warning";
-                    string extra = "איחוד על כיתה אחת בלבד — כנראה התכוונת להקבצה";
-                    message = string.IsNullOrEmpty(message) ? extra : (message + " · " + extra);
-                }
+                severity = "error";
+                string extra = "הקבצה כוללת מורים מ-" + layers.Count + " שכבות שונות — הקבצה צריכה להיות בתוך שכבה אחת";
+                message = string.IsNullOrEmpty(message) ? extra : (message + " · " + extra);
             }
 
             if (!first) sb.Append(",");
             first = false;
             sb.Append("{");
-            sb.Append("\"Kind\":\"").Append(kind).Append("\",");
+            sb.Append("\"Kind\":\"H\",");
             sb.Append("\"Number\":").Append(number).Append(",");
             sb.Append("\"MemberCount\":").Append(members.Count).Append(",");
             sb.Append("\"CommonDays\":").Append(commonDays).Append(",");
@@ -1582,462 +2465,7 @@ SELECT COUNT(*) AS EmptySlots FROM (
         }
     }
 
-    // =========================================================
-    // Smart auto-assignment of teacher work hours.
-    // For every teacher:
-    //   - Required = SUM(ClassTeacher.Hour) for that teacher
-    //   - Skip the teacher's FreeDay
-    //   - Skip SchoolHours with IsOnlyShehya=1
-    //   - Homeroom teachers (Tafkid=1 with ManageClassId) get FIRST HOUR
-    //     of every working day before anything else (they start the day
-    //     with their class).
-    //   - Then fill remaining hours from the earliest free SchoolHours.
-    // This is a full re-plan: existing TeacherHours are preserved; only
-    // missing ones are added. We never DELETE existing hours.
-    // Returns { Added: int, Teachers: int, Details: [...] }
-    // =========================================================
-    [WebMethod(EnableSession = true)]
-    public void Teacher_AutoAssignHoursSmart()
-    {
-        try
-        {
-            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
-            int cId = Helper.ConvertToInt(configId);
 
-            // Optional flag: auto-pick a FreeDay for homeroom teachers who don't
-            // have one yet. Passed as AutoSetHomeroomFreeDay=1 in the form body.
-            string autoFdRaw = GetParams("AutoSetHomeroomFreeDay");
-            bool autoSetHomeroomFreeDay = autoFdRaw == "1" || autoFdRaw == "true";
-
-            // Include EVERY teacher in this configuration — not only those
-            // with ClassTeacher requirements. Teachers without CT still need
-            // working hours so they're present at school and available for
-            // shehya, substitution, etc. The user's instruction was: "no
-            // teacher should be left without any hours."
-            string sqlTeachers = @"
-SELECT t.TeacherId, ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
-  ISNULL(t.FreeDay, 0) AS FreeDay,
-  ISNULL(t.TafkidId, 0) AS TafkidId,
-  ISNULL(t.ManageClassId, 0) AS ManageClassId,
-  ISNULL(t.Frontaly, 0) AS Frontaly,
-  ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS TotalRequired
-FROM Teacher t
-WHERE t.ConfigurationId = " + cId;
-            DataTable dtTeachers = Dal.GetDataTable(sqlTeachers);
-
-            // Auto-pick FreeDay for homeroom teachers who don't have one yet.
-            // Heuristic: pick the day (1..6) with the fewest existing
-            // TeacherHours for this teacher. If tied, prefer Friday (day 6) as
-            // schools usually give homeroom teachers that day off.
-            int freeDayAutoSet = 0;
-            if (autoSetHomeroomFreeDay)
-            {
-                for (int i = 0; i < dtTeachers.Rows.Count; i++)
-                {
-                    int tid = Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString());
-                    int tafkid = Helper.ConvertToInt(dtTeachers.Rows[i]["TafkidId"].ToString());
-                    int mc = Helper.ConvertToInt(dtTeachers.Rows[i]["ManageClassId"].ToString());
-                    int curFd = Helper.ConvertToInt(dtTeachers.Rows[i]["FreeDay"].ToString());
-                    if (curFd >= 1 && curFd <= 6) continue;           // already has one
-                    if (!(tafkid == 1 && mc > 0)) continue;           // homeroom only
-
-                    // Count existing hours per day
-                    int[] perDay = new int[7];
-                    DataTable dtH = Dal.GetDataTable("SELECT HourId FROM TeacherHours WHERE TeacherId=" + tid + " AND ConfigurationId=" + cId);
-                    for (int j = 0; j < dtH.Rows.Count; j++)
-                    {
-                        int hid = Helper.ConvertToInt(dtH.Rows[j]["HourId"].ToString());
-                        int d = hid / 10;
-                        if (d >= 1 && d <= 6) perDay[d]++;
-                    }
-                    int pickDay = 6;
-                    int pickCount = perDay[6];
-                    for (int d = 5; d >= 1; d--)
-                    {
-                        if (perDay[d] < pickCount) { pickDay = d; pickCount = perDay[d]; }
-                    }
-                    try
-                    {
-                        Dal.ExecuteNonQuery("UPDATE Teacher SET FreeDay=" + pickDay +
-                                            " WHERE TeacherId=" + tid + " AND ConfigurationId=" + cId);
-                        dtTeachers.Rows[i]["FreeDay"] = pickDay;
-                        freeDayAutoSet++;
-                    }
-                    catch { /* non-critical */ }
-                }
-            }
-
-            // Rebuild-from-scratch: wipe all TeacherHours for teachers that have
-            // ClassTeacher requirements, then re-seed them with the spread-per-day
-            // distribution. This gives a predictable, evenly-spread grid and
-            // guarantees nothing sits on a FreeDay. Only affects teachers that
-            // appear in dtTeachers (i.e. teachers with ClassTeacher > 0).
-            int wipedHours = 0;
-            int cleanedFreeDayHours = 0; // kept for backwards-compat in the JSON
-            try
-            {
-                // Build a CSV of the teacher IDs we'll rebuild
-                System.Text.StringBuilder csv = new System.Text.StringBuilder();
-                for (int i = 0; i < dtTeachers.Rows.Count; i++)
-                {
-                    if (csv.Length > 0) csv.Append(",");
-                    csv.Append(Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString()));
-                }
-                if (csv.Length > 0)
-                {
-                    DataTable dtN = Dal.GetDataTable(
-                        "SELECT COUNT(*) AS N FROM TeacherHours WHERE ConfigurationId=" + cId +
-                        " AND TeacherId IN (" + csv + ")");
-                    if (dtN.Rows.Count > 0)
-                        wipedHours = Helper.ConvertToInt(dtN.Rows[0]["N"].ToString());
-                    Dal.ExecuteNonQuery(
-                        "DELETE FROM TeacherHours WHERE ConfigurationId=" + cId +
-                        " AND TeacherId IN (" + csv + ")");
-                }
-            }
-            catch { /* non-critical */ }
-
-            // Load SchoolHours once
-            string sqlHours = "SELECT HourId FROM SchoolHours WHERE ConfigurationId=" + cId + " AND (IsOnlyShehya=0 OR IsOnlyShehya IS NULL) ORDER BY HourId";
-            DataTable dtHours = Dal.GetDataTable(sqlHours);
-            List<int> allSchoolHours = new List<int>();
-            HashSet<int> schoolHourSet = new HashSet<int>();
-            // Group school hours by day for spread-per-day logic
-            Dictionary<int, List<int>> hoursByDay = new Dictionary<int, List<int>>();
-            for (int i = 0; i < dtHours.Rows.Count; i++)
-            {
-                int hid = Helper.ConvertToInt(dtHours.Rows[i]["HourId"].ToString());
-                allSchoolHours.Add(hid);
-                schoolHourSet.Add(hid);
-                int day = hid / 10;
-                if (!hoursByDay.ContainsKey(day)) hoursByDay[day] = new List<int>();
-                hoursByDay[day].Add(hid);
-            }
-
-            // Load hakbatza/ihud groups - build mapping of teacher -> set of other teachers they must co-teach with
-            // For each (classId, hakbatza>0): all teachers in group must share hours
-            // For each (ihud>0) across classes: all teachers must share hours
-            Dictionary<int, HashSet<int>> coTeachers = new Dictionary<int, HashSet<int>>();
-            string sqlCT = "SELECT ClassId, TeacherId, ISNULL(Hakbatza,0) AS Hakbatza, ISNULL(Ihud,0) AS Ihud FROM ClassTeacher WHERE ConfigurationId=" + cId + " AND (Hakbatza>0 OR Ihud>0)";
-            DataTable dtCT = Dal.GetDataTable(sqlCT);
-            Dictionary<string, List<int>> groupMembers = new Dictionary<string, List<int>>();
-            for (int i = 0; i < dtCT.Rows.Count; i++)
-            {
-                int classId = Helper.ConvertToInt(dtCT.Rows[i]["ClassId"].ToString());
-                int teacherId = Helper.ConvertToInt(dtCT.Rows[i]["TeacherId"].ToString());
-                int hak = Helper.ConvertToInt(dtCT.Rows[i]["Hakbatza"].ToString());
-                int ihu = Helper.ConvertToInt(dtCT.Rows[i]["Ihud"].ToString());
-                string gk = ihu > 0 ? ("I_" + ihu) : ("H_" + classId + "_" + hak);
-                if (!groupMembers.ContainsKey(gk)) groupMembers[gk] = new List<int>();
-                if (!groupMembers[gk].Contains(teacherId)) groupMembers[gk].Add(teacherId);
-            }
-            foreach (var kv in groupMembers)
-            {
-                foreach (int t in kv.Value)
-                {
-                    if (!coTeachers.ContainsKey(t)) coTeachers[t] = new HashSet<int>();
-                    foreach (int u in kv.Value)
-                        if (u != t) coTeachers[t].Add(u);
-                }
-            }
-
-            int totalAdded = 0;
-            int teachersTouched = 0;
-            int quotaUpdated = 0;
-            var details = new List<string>();
-            var detailsFull = new List<string>();
-
-            // Process homeroom teachers FIRST (they "anchor" the grid at hour 1)
-            var teacherOrder = new List<int>();
-            var tempRows = new Dictionary<int, DataRow>();
-            for (int i = 0; i < dtTeachers.Rows.Count; i++)
-            {
-                int tid = Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString());
-                tempRows[tid] = dtTeachers.Rows[i];
-                int tafkid = Helper.ConvertToInt(dtTeachers.Rows[i]["TafkidId"].ToString());
-                int mc = Helper.ConvertToInt(dtTeachers.Rows[i]["ManageClassId"].ToString());
-                if (tafkid == 1 && mc > 0) teacherOrder.Insert(0, tid); // homerooms first
-                else teacherOrder.Add(tid);
-            }
-
-            foreach (int teacherId in teacherOrder)
-            {
-                DataRow row = tempRows[teacherId];
-                string teacherName = row["TeacherName"].ToString().Trim();
-                int freeDay = Helper.ConvertToInt(row["FreeDay"].ToString());
-                int tafkid = Helper.ConvertToInt(row["TafkidId"].ToString());
-                int manageClass = Helper.ConvertToInt(row["ManageClassId"].ToString());
-                int totalRequired = Helper.ConvertToInt(row["TotalRequired"].ToString());
-                int currentFrontaly = Helper.ConvertToInt(row["Frontaly"].ToString());
-                bool isHomeroom = tafkid == 1 && manageClass > 0;
-
-                // Load current TeacherHours for this teacher
-                DataTable dtCur = Dal.GetDataTable("SELECT HourId FROM TeacherHours WHERE TeacherId=" + teacherId + " AND ConfigurationId=" + cId);
-                HashSet<int> currentHours = new HashSet<int>();
-                for (int j = 0; j < dtCur.Rows.Count; j++)
-                    currentHours.Add(Helper.ConvertToInt(dtCur.Rows[j]["HourId"].ToString()));
-
-                // ---- Build desired slots, prioritised ----
-                List<int> desiredSlots = new List<int>();
-
-                // 1. Homeroom: hour 1 of every working day (so the homeroom always
-                //    starts the day with their class)
-                if (isHomeroom)
-                {
-                    for (int day = 1; day <= 6; day++)
-                    {
-                        if (day == freeDay) continue;
-                        int hourId = day * 10 + 1;
-                        if (schoolHourSet.Contains(hourId) && !desiredSlots.Contains(hourId))
-                            desiredSlots.Add(hourId);
-                    }
-                }
-
-                // 2. Align with hakbatza/ihud partners - copy THEIR existing hours
-                //    so partners end up sharing slots (required for co-teaching)
-                if (coTeachers.ContainsKey(teacherId))
-                {
-                    foreach (int partner in coTeachers[teacherId])
-                    {
-                        DataTable dtP = Dal.GetDataTable("SELECT HourId FROM TeacherHours WHERE TeacherId=" + partner + " AND ConfigurationId=" + cId);
-                        for (int j = 0; j < dtP.Rows.Count; j++)
-                        {
-                            int hid = Helper.ConvertToInt(dtP.Rows[j]["HourId"].ToString());
-                            if (!schoolHourSet.Contains(hid)) continue;
-                            if ((hid / 10) == freeDay) continue;
-                            if (!desiredSlots.Contains(hid)) desiredSlots.Add(hid);
-                        }
-                    }
-                }
-
-                // 3. Distribute the remaining slots ACROSS days (column-major)
-                //    e.g. d1h2, d2h2, d3h2, d4h2, d5h2, d6h2, then d1h3, d2h3, ...
-                //    This reduces per-class conflicts vs. filling one day at a time.
-                int maxHoursAny = 0;
-                foreach (var kv in hoursByDay) if (kv.Value.Count > maxHoursAny) maxHoursAny = kv.Value.Count;
-                for (int idx = 0; idx < maxHoursAny; idx++)
-                {
-                    for (int day = 1; day <= 6; day++)
-                    {
-                        if (day == freeDay) continue;
-                        if (!hoursByDay.ContainsKey(day)) continue;
-                        List<int> hoursOfDay = hoursByDay[day];
-                        if (idx >= hoursOfDay.Count) continue;
-                        int hid = hoursOfDay[idx];
-                        if (!desiredSlots.Contains(hid)) desiredSlots.Add(hid);
-                    }
-                }
-
-                // Count real-available hours (already in set, valid, not free-day)
-                int realAvailable = 0;
-                foreach (int h in currentHours)
-                    if (schoolHourSet.Contains(h) && (h / 10) != freeDay) realAvailable++;
-
-                // Update Frontaly (max hours) FIRST so it runs even if this teacher
-                // already has enough hours but their quota field is stale.
-                // Direct UPDATE only: the Teacher_DML SP has a side-effect that
-                // deletes TeacherHours on the FreeDay - we don't want that here.
-                if (currentFrontaly < totalRequired)
-                {
-                    try
-                    {
-                        Dal.ExecuteNonQuery("UPDATE Teacher SET Frontaly=" + totalRequired +
-                                            " WHERE TeacherId=" + teacherId +
-                                            " AND ConfigurationId=" + cId);
-                        quotaUpdated++;
-                    }
-                    catch { /* non-critical */ }
-                }
-
-                // Give the teacher ALL non-FreeDay school-hour slots. The
-                // scheduler needs slack to resolve conflicts — if we give them
-                // exactly `totalRequired` hours, any conflict becomes a miss.
-                // Extra hours are harmless (they just mark the teacher as
-                // "available" in those slots; the scheduler only fills what it
-                // needs).
-                int added = 0;
-                List<int> addedHourIds = new List<int>();
-                foreach (int hourId in desiredSlots)
-                {
-                    if (currentHours.Contains(hourId)) continue;
-                    try
-                    {
-                        Dal.ExeSp("Teacher_SetTeacherHours", teacherId.ToString(), hourId.ToString(), "1", configId);
-                        currentHours.Add(hourId);
-                        addedHourIds.Add(hourId);
-                        added++;
-                    }
-                    catch { /* race/duplicate - skip */ }
-                }
-
-                if (added > 0)
-                {
-                    totalAdded += added;
-                    teachersTouched++;
-                    string tag = isHomeroom ? " (מחנך)" : "";
-                    details.Add(teacherName + tag + ": +" + added + " שעות (דרוש " + totalRequired + ")");
-
-                    // Structured entry for the client-side report modal.
-                    System.Text.StringBuilder hoursJson = new System.Text.StringBuilder();
-                    hoursJson.Append("[");
-                    for (int k = 0; k < addedHourIds.Count; k++)
-                    {
-                        if (k > 0) hoursJson.Append(",");
-                        hoursJson.Append(addedHourIds[k]);
-                    }
-                    hoursJson.Append("]");
-                    detailsFull.Add(
-                        "{\"TeacherId\":" + teacherId +
-                        ",\"TeacherName\":\"" + teacherName.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"" +
-                        ",\"IsHomeroom\":" + (isHomeroom ? "true" : "false") +
-                        ",\"Added\":" + added +
-                        ",\"Required\":" + totalRequired +
-                        ",\"HourIds\":" + hoursJson.ToString() + "}");
-                }
-            }
-
-            HttpContext.Current.Response.Clear();
-            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
-            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
-            var sb = new System.Text.StringBuilder();
-            sb.Append("{\"Added\":").Append(totalAdded);
-            sb.Append(",\"Teachers\":").Append(teachersTouched);
-            sb.Append(",\"QuotaUpdated\":").Append(quotaUpdated);
-            sb.Append(",\"FreeDayAutoSet\":").Append(freeDayAutoSet);
-            sb.Append(",\"CleanedFreeDayHours\":").Append(cleanedFreeDayHours);
-            sb.Append(",\"WipedHours\":").Append(wipedHours);
-            sb.Append(",\"Details\":[");
-            for (int d = 0; d < details.Count; d++)
-            {
-                if (d > 0) sb.Append(",");
-                sb.Append("\"").Append(details[d].Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
-            }
-            sb.Append("]");
-            // Structured per-teacher breakdown used by the UI to render a
-            // "hours added per teacher" report modal.
-            sb.Append(",\"DetailsFull\":[");
-            for (int d = 0; d < detailsFull.Count; d++)
-            {
-                if (d > 0) sb.Append(",");
-                sb.Append(detailsFull[d]);
-            }
-            sb.Append("]}");
-            HttpContext.Current.Response.Write(sb.ToString());
-        }
-        catch (Exception ex)
-        {
-            HttpContext.Current.Response.Clear();
-            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
-            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
-        }
-    }
-
-    // =========================================================
-    // Auto-add work hours for teachers who have a required-vs-available gap.
-    // For every teacher where SUM(ClassTeacher.Hour) > their real available
-    // hours (TeacherHours intersected with SchoolHours, excluding shehya-only
-    // and their FreeDay), add the missing hours from free SchoolHours slots.
-    // Returns { Added: int, Teachers: int, Details: [...] }
-    // =========================================================
-    [WebMethod(EnableSession = true)]
-    public void Teacher_AutoAddHours()
-    {
-        try
-        {
-            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
-            int cId = Helper.ConvertToInt(configId);
-
-            // Find teachers that need more hours
-            string sqlTeachers = @"
-SELECT t.TeacherId, ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
-  ISNULL(t.FreeDay, 0) AS FreeDay,
-  ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS TotalRequired,
-  ISNULL((
-    SELECT COUNT(*) FROM TeacherHours th
-      INNER JOIN SchoolHours sh ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
-    WHERE th.TeacherId = t.TeacherId AND th.ConfigurationId = " + cId + @"
-      AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
-  ), 0) AS AvailableReal
-FROM Teacher t
-WHERE t.ConfigurationId = " + cId + @"
-  AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) > 0";
-
-            DataTable dtTeachers = Dal.GetDataTable(sqlTeachers);
-
-            int totalAdded = 0;
-            int teachersTouched = 0;
-            var details = new List<string>();
-
-            for (int i = 0; i < dtTeachers.Rows.Count; i++)
-            {
-                int teacherId = Helper.ConvertToInt(dtTeachers.Rows[i]["TeacherId"].ToString());
-                string teacherName = dtTeachers.Rows[i]["TeacherName"].ToString().Trim();
-                int freeDay = Helper.ConvertToInt(dtTeachers.Rows[i]["FreeDay"].ToString());
-                int totalRequired = Helper.ConvertToInt(dtTeachers.Rows[i]["TotalRequired"].ToString());
-                int availableReal = Helper.ConvertToInt(dtTeachers.Rows[i]["AvailableReal"].ToString());
-
-                int gap = totalRequired - availableReal;
-                if (gap <= 0) continue;
-
-                // Find free school hours for this teacher (not yet in TeacherHours, not shehya-only, not on FreeDay)
-                string sqlFree = @"
-SELECT TOP " + gap + @" sh.HourId
-FROM SchoolHours sh
-WHERE sh.ConfigurationId = " + cId + @"
-  AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
-  AND (sh.HourId / 10) <> " + freeDay + @"
-  AND NOT EXISTS (
-    SELECT 1 FROM TeacherHours th
-    WHERE th.TeacherId = " + teacherId + @"
-      AND th.ConfigurationId = " + cId + @"
-      AND th.HourId = sh.HourId
-  )
-ORDER BY sh.HourId";
-
-                DataTable dtFree = Dal.GetDataTable(sqlFree);
-                int added = 0;
-                for (int j = 0; j < dtFree.Rows.Count; j++)
-                {
-                    int hourId = Helper.ConvertToInt(dtFree.Rows[j]["HourId"].ToString());
-                    try
-                    {
-                        // Type=1 inserts or marks the slot for the teacher
-                        Dal.ExeSp("Teacher_SetTeacherHours", teacherId.ToString(), hourId.ToString(), "1", configId);
-                        added++;
-                    }
-                    catch { /* already exists - skip */ }
-                }
-
-                if (added > 0)
-                {
-                    totalAdded += added;
-                    teachersTouched++;
-                    details.Add(teacherName + ": +" + added + " שעות (דרוש " + totalRequired + ", היה " + availableReal + ")");
-                }
-            }
-
-            HttpContext.Current.Response.Clear();
-            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
-            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
-            var sb = new System.Text.StringBuilder();
-            sb.Append("{\"Added\":").Append(totalAdded);
-            sb.Append(",\"Teachers\":").Append(teachersTouched);
-            sb.Append(",\"Details\":[");
-            for (int d = 0; d < details.Count; d++)
-            {
-                if (d > 0) sb.Append(",");
-                sb.Append("\"").Append(details[d].Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"");
-            }
-            sb.Append("]}");
-            HttpContext.Current.Response.Write(sb.ToString());
-        }
-        catch (Exception ex)
-        {
-            HttpContext.Current.Response.Clear();
-            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
-            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
-        }
-    }
 
     // =========================================================
     // Live progress polling (no Session) - used while Assign_ShibutzAuto
@@ -2267,6 +2695,86 @@ ORDER BY (TotalRequired - AvailableHourSlots) DESC";
     }
 
     // =========================================================
+    // Lists teachers who still have free working hours after the
+    // schedule is built — i.e. TeacherHours rows that didn't end up
+    // in TeacherAssignment. Shown in the post-run report so the admin
+    // can see which teachers have unused capacity. Each row carries a
+    // CSV of the unassigned HourIds; the client splits it into
+    // day/hour pairs (HourId is dayDigit + sequence).
+    // =========================================================
+    [WebMethod(EnableSession = true)]
+    public void Assign_GetTeacherUnusedHours()
+    {
+        try
+        {
+            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cId = Helper.ConvertToInt(configId);
+            string sql = @"
+SELECT
+  t.TeacherId,
+  ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  -- Working hours that actually correspond to a real, non-shehya school slot
+  defined.DefinedHours,
+  -- Slots already taken by a real assignment (HourTypeId = 1)
+  ISNULL(used.UsedHours, 0) AS UsedHours,
+  defined.DefinedHours - ISNULL(used.UsedHours, 0) AS UnusedHours,
+  -- CSV of free HourIds, sorted; client splits into day/hour for display
+  STUFF((
+    SELECT ',' + CAST(th.HourId AS VARCHAR(10))
+    FROM TeacherHours th
+    INNER JOIN SchoolHours sh
+      ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
+    WHERE th.TeacherId = t.TeacherId
+      AND th.ConfigurationId = " + cId + @"
+      AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+      AND NOT EXISTS (
+        SELECT 1 FROM TeacherAssignment ta
+        WHERE ta.TeacherId = th.TeacherId
+          AND ta.HourId = th.HourId
+          AND ta.ConfigurationId = th.ConfigurationId
+          AND ta.HourTypeId = 1
+      )
+    ORDER BY th.HourId
+    FOR XML PATH(''), TYPE
+  ).value('.', 'NVARCHAR(MAX)'), 1, 1, '') AS UnusedHourIds
+FROM Teacher t
+INNER JOIN (
+  SELECT th.TeacherId, COUNT(*) AS DefinedHours
+  FROM TeacherHours th
+  INNER JOIN SchoolHours sh
+    ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
+  WHERE th.ConfigurationId = " + cId + @"
+    AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+  GROUP BY th.TeacherId
+) defined ON defined.TeacherId = t.TeacherId
+LEFT JOIN (
+  SELECT TeacherId, COUNT(DISTINCT HourId) AS UsedHours
+  FROM TeacherAssignment
+  WHERE ConfigurationId = " + cId + @" AND HourTypeId = 1
+  GROUP BY TeacherId
+) used ON used.TeacherId = t.TeacherId
+WHERE t.ConfigurationId = " + cId + @"
+  AND defined.DefinedHours - ISNULL(used.UsedHours, 0) > 0
+ORDER BY UnusedHours DESC, TeacherName";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Charset = "utf-8";
+            HttpContext.Current.Response.ContentEncoding = System.Text.Encoding.UTF8;
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            DataTable dt = new DataTable();
+            dt.Columns.Add("ErrorMessage", typeof(string));
+            DataRow r = dt.NewRow();
+            r["ErrorMessage"] = ex.Message;
+            dt.Rows.Add(r);
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+    }
+
+    // =========================================================
     // Force-assign Smart: tries FIRST to displace another teacher
     // from a conflicting slot if the missing teacher CAN teach that slot
     // but an unrelated teacher is currently there. Falls back to the
@@ -2297,16 +2805,17 @@ ORDER BY (TotalRequired - AvailableHourSlots) DESC";
             int cId = Helper.ConvertToInt(configId);
 
             // Reuse the diagnostic query (unmet ClassTeacher requirements).
+            // Pull LayerId so Hakbatza groups can be keyed by grade level.
             string sqlDiag = @"
 SELECT ct.ClassId, ct.TeacherId,
   ISNULL(c.Name,'') AS ClassName,
+  ISNULL(c.LayerId,0) AS LayerId,
   ISNULL(t.FirstName,'')+' '+ISNULL(t.LastName,'') AS TeacherName,
   ct.Hour AS Required,
   ISNULL(ta.Assigned,0) AS Assigned,
   ct.Hour - ISNULL(ta.Assigned,0) AS Missing,
   ISNULL(t.FreeDay,0) AS FreeDay,
-  ISNULL(ct.Hakbatza,0) AS Hakbatza,
-  ISNULL(ct.Ihud,0) AS Ihud
+  ISNULL(ct.Hakbatza,0) AS Hakbatza
 FROM ClassTeacher ct
 LEFT JOIN (
   SELECT ClassId, TeacherId, COUNT(*) AS Assigned
@@ -2338,7 +2847,7 @@ WHERE ct.ConfigurationId=" + cId + @"
                 int missing = Helper.ConvertToInt(dt.Rows[i]["Missing"].ToString());
                 int freeDay = Helper.ConvertToInt(dt.Rows[i]["FreeDay"].ToString());
                 int hak = Helper.ConvertToInt(dt.Rows[i]["Hakbatza"].ToString());
-                int ihud = Helper.ConvertToInt(dt.Rows[i]["Ihud"].ToString());
+                int layerId = Helper.ConvertToInt(dt.Rows[i]["LayerId"].ToString());
                 totalMissing += missing;
 
                 // Proposal 1: clear FreeDay for teachers with missing hours (unique per teacher)
@@ -2368,8 +2877,11 @@ WHERE ct.ConfigurationId=" + cId + @"
                     ",\"To\":" + assigned +
                     ",\"Delta\":" + missing + "}");
 
-                // Proposal 3: hakbatza/ihud groups to sync
-                string gk = ihud > 0 ? ("I_" + ihud) : (hak > 0 ? ("H_" + classId + "_" + hak) : null);
+                // Proposal 3: hakbatza groups to sync.
+                // Hakbatza is keyed by LayerId (grade level), not ClassId,
+                // so all teachers in the same hakbatza across the grade
+                // share the same group.
+                string gk = hak > 0 ? ("H_" + layerId + "_" + hak) : null;
                 if (gk != null)
                 {
                     if (!hakGroups.ContainsKey(gk)) hakGroups[gk] = new List<int[]>();
@@ -2494,21 +3006,24 @@ WHERE ct.ConfigurationId=" + cId + @"
             {
                 string sqlGroups = @"
 SELECT ct.ClassId, ct.TeacherId, ISNULL(t.FreeDay,0) AS FD,
-  ISNULL(ct.Hakbatza,0) AS Hak, ISNULL(ct.Ihud,0) AS Ihu
+  ISNULL(ct.Hakbatza,0) AS Hak,
+  ISNULL(c.LayerId,0) AS LayerId
 FROM ClassTeacher ct
 INNER JOIN Teacher t ON t.TeacherId=ct.TeacherId
+LEFT JOIN Class c ON c.ClassId=ct.ClassId
 WHERE ct.ConfigurationId=" + cId + @"
-  AND (ISNULL(ct.Hakbatza,0) > 0 OR ISNULL(ct.Ihud,0) > 0)";
+  AND ISNULL(ct.Hakbatza,0) > 0";
                 DataTable dtG = Dal.GetDataTable(sqlGroups);
                 Dictionary<string, List<int[]>> groups = new Dictionary<string, List<int[]>>();
                 for (int i = 0; i < dtG.Rows.Count; i++)
                 {
-                    int classId = Helper.ConvertToInt(dtG.Rows[i]["ClassId"].ToString());
                     int teacherId = Helper.ConvertToInt(dtG.Rows[i]["TeacherId"].ToString());
                     int fd = Helper.ConvertToInt(dtG.Rows[i]["FD"].ToString());
                     int hak = Helper.ConvertToInt(dtG.Rows[i]["Hak"].ToString());
-                    int ihud = Helper.ConvertToInt(dtG.Rows[i]["Ihu"].ToString());
-                    string gk = ihud > 0 ? ("I_" + ihud) : ("H_" + classId + "_" + hak);
+                    int layerId = Helper.ConvertToInt(dtG.Rows[i]["LayerId"].ToString());
+                    // Hakbatza keyed by LayerId so a sync covers the
+                    // whole grade level, not just one class.
+                    string gk = "H_" + layerId + "_" + hak;
                     if (!groups.ContainsKey(gk)) groups[gk] = new List<int[]>();
                     groups[gk].Add(new int[] { teacherId, fd });
                 }
@@ -2804,8 +3319,11 @@ ORDER BY c.ClassId, sh.HourId";
             int filled = 0;
             int stillEmpty = 0;
             SqlConnection con = Dal.OpenConnection();
+            SqlTransaction tx = null;
             try
             {
+                tx = con.BeginTransaction();
+
                 for (int i = 0; i < dtEmpty.Rows.Count; i++)
                 {
                     int classId = Helper.ConvertToInt(dtEmpty.Rows[i]["ClassId"].ToString());
@@ -2828,7 +3346,7 @@ WHERE t.ConfigurationId = " + cId + @"
       AND tb.TeacherId = t.TeacherId
   )
 ORDER BY HomeroomRank ASC, LoadCount ASC, t.TeacherId ASC";
-                    DataTable dtPick = Dal.GetDataTable(sqlPick);
+                    DataTable dtPick = Dal.GetDataTable(con, tx, sqlPick);
                     if (dtPick.Rows.Count == 0)
                     {
                         stillEmpty++;
@@ -2838,13 +3356,28 @@ ORDER BY HomeroomRank ASC, LoadCount ASC, t.TeacherId ASC";
                     int teacherId = Helper.ConvertToInt(dtPick.Rows[0]["TeacherId"].ToString());
                     int prof = Helper.ConvertToInt(dtPick.Rows[0]["ProfessionalId"].ToString());
 
-                    Dal.ExeSpBig(con, "Assign_SetAssignAuto", cId, teacherId, hourId, 1, classId, prof, 0, 0);
+                    Dal.ExeSpBigNonQuery(con, tx, "Assign_SetAssignAuto", cId, teacherId, hourId, 1, classId, prof, 0, 0);
                     filled++;
                     // unused homeroomId - prefix-compiler hint
                     if (homeroomId == 0) { /* class without homeroom - covered by HomeroomRank ordering */ }
                 }
+
+                tx.Commit();
+                tx = null;
             }
-            finally { Dal.CloseConnection(con); }
+            catch
+            {
+                if (tx != null)
+                {
+                    try { tx.Rollback(); } catch { }
+                }
+                throw;
+            }
+            finally
+            {
+                if (tx != null) tx.Dispose();
+                Dal.CloseConnection(con);
+            }
 
             HttpContext.Current.Response.Clear();
             HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";

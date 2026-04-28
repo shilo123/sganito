@@ -93,6 +93,23 @@ export default function TeacherClass() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState<{ classId: number; className: string } | null>(null);
   const [confirmDeleteTeacher, setConfirmDeleteTeacher] = useState(false);
+  const [confirmDeleteGroup, setConfirmDeleteGroup] = useState<{
+    kind: 'H' | 'I';
+    layerId: number;
+    number: number;
+    label: string;
+  } | null>(null);
+  const [confirmHourOverflow, setConfirmHourOverflow] = useState<{
+    projected: number;
+    maxHours: number;
+    onConfirm: () => void;
+  } | null>(null);
+  const [confirmTeacherOverflow, setConfirmTeacherOverflow] = useState<{
+    teacherName: string;
+    projected: number;
+    quota: number;
+    onConfirm: () => void;
+  } | null>(null);
 
   // teacher modal
   const [showTeacherModal, setShowTeacherModal] = useState(false);
@@ -170,85 +187,319 @@ export default function TeacherClass() {
   const [groupKind, setGroupKind] = useState<'none' | 'hakbatza' | 'ihud'>('none');
   const [groupNumber, setGroupNumber] = useState<string>('');
   const [groupBusy, setGroupBusy] = useState(false);
-  const [showGroupsPanel, setShowGroupsPanel] = useState(false);
 
-  // Create-group wizard state. When `wizardKind` is non-null the modal opens.
-  // The user picks a class (hakbatza only), selects members, and either joins
-  // an existing group or gets auto-assigned a fresh number.
-  const [wizardKind, setWizardKind] = useState<'hakbatza' | 'ihud' | null>(null);
-  const [wizardClassId, setWizardClassId] = useState<number | ''>('');
-  const [wizardSelectedCtIds, setWizardSelectedCtIds] = useState<Set<number>>(new Set());
-  const [wizardJoinNumber, setWizardJoinNumber] = useState<number | 'new'>('new');
+  // Create-group wizard state. Single-step: pick classes, click create.
+  // The hakbatza is created empty and teachers are added afterwards by
+  // dragging them onto the hakbatza card.
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardSelectedClasses, setWizardSelectedClasses] = useState<Set<number>>(new Set());
+  const [wizardName, setWizardName] = useState<string>('');
   const [wizardBusy, setWizardBusy] = useState(false);
 
-  function openWizard(kind: 'hakbatza' | 'ihud') {
-    setWizardKind(kind);
-    setWizardClassId('');
-    setWizardSelectedCtIds(new Set());
-    setWizardJoinNumber('new');
+  // Ihud wizard: similar to Hakbatza wizard but also requires picking
+  // a single responsible teacher. The Ihud is materialised with the
+  // teacher already attached.
+  const [ihudWizardOpen, setIhudWizardOpen] = useState(false);
+  const [ihudWizardClasses, setIhudWizardClasses] = useState<Set<number>>(new Set());
+  const [ihudWizardTeacher, setIhudWizardTeacher] = useState<number | null>(null);
+  const [ihudWizardName, setIhudWizardName] = useState<string>('');
+  const [ihudWizardBusy, setIhudWizardBusy] = useState(false);
+
+  function openWizard() {
+    setWizardOpen(true);
+    setWizardSelectedClasses(new Set());
+    setWizardName('');
   }
   function closeWizard() {
     if (wizardBusy) return;
-    setWizardKind(null);
+    setWizardOpen(false);
   }
-  function toggleWizardMember(ctId: number) {
-    setWizardSelectedCtIds((prev) => {
+  function toggleWizardClass(classId: number) {
+    setWizardSelectedClasses((prev) => {
       const next = new Set(prev);
-      if (next.has(ctId)) next.delete(ctId);
-      else next.add(ctId);
+      if (next.has(classId)) next.delete(classId);
+      else next.add(classId);
       return next;
     });
   }
 
-  async function saveWizard() {
-    if (!wizardKind || wizardBusy) return;
-    const members = Array.from(wizardSelectedCtIds);
-    if (members.length < 2) {
-      toast.warning('צריך לבחור לפחות 2 מורים לקבוצה');
+  function openIhudWizard() {
+    setIhudWizardOpen(true);
+    setIhudWizardClasses(new Set());
+    setIhudWizardTeacher(null);
+    setIhudWizardName('');
+  }
+  function closeIhudWizard() {
+    if (ihudWizardBusy) return;
+    setIhudWizardOpen(false);
+  }
+  function toggleIhudWizardClass(classId: number) {
+    setIhudWizardClasses((prev) => {
+      const next = new Set(prev);
+      if (next.has(classId)) next.delete(classId);
+      else next.add(classId);
+      return next;
+    });
+  }
+
+  async function setGroupName(kind: 'H' | 'I', layerIdArg: number, number: number, name: string) {
+    try {
+      await ajax('Group_SetName', {
+        LayerId: String(layerIdArg),
+        Number: String(number),
+        Kind: kind,
+        Name: name,
+      });
+      if (kind === 'H') loadHakbatzaList();
+      else loadIhudList();
+    } catch (err) {
+      console.error('Group_SetName failed', err);
+      toast.error('שמירת שם נכשלה');
+    }
+  }
+
+  async function saveIhudWizard() {
+    if (!ihudWizardOpen || ihudWizardBusy) return;
+    const selected = Array.from(ihudWizardClasses);
+    if (selected.length < 2) {
+      toast.warning('צריך לבחור לפחות 2 כיתות לאיחוד');
       return;
     }
-    // Determine target number: either join existing, or pick next free
-    let target: number;
-    if (wizardJoinNumber === 'new') {
-      const existing = new Set<number>();
-      for (const r of classes) {
-        if (wizardKind === 'hakbatza') {
-          // Hakbatza is per-class; only consider the selected class
-          if (r.ClassId === wizardClassId) {
-            const n = Number(r.Hakbatza ?? 0);
-            if (n > 0) existing.add(n);
-          }
-        } else {
-          const n = Number(r.Ihud ?? 0);
-          if (n > 0) existing.add(n);
-        }
+    if (!ihudWizardTeacher) {
+      toast.warning('צריך לבחור מורה אחראי');
+      return;
+    }
+
+    setIhudWizardBusy(true);
+    try {
+      const res = await ajax<{ Number?: number; Error?: string }>('Ihud_Create', {
+        LayerId: String(layerId),
+        ClassIds: selected.join(','),
+        TeacherId: String(ihudWizardTeacher),
+        Name: ihudWizardName.trim(),
+      });
+      if (res?.Error) {
+        toast.error('יצירת האיחוד נכשלה: ' + res.Error);
+        return;
       }
-      target = (Math.max(0, ...Array.from(existing))) + 1;
-    } else {
-      target = wizardJoinNumber;
+      const n = Number(res?.Number ?? 0);
+      toast.success(`איחוד ${n} נוצר עם ${selected.length} כיתות.`);
+      setIhudWizardOpen(false);
+      loadIhudList();
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Ihud_Create failed', err);
+      toast.error('יצירת האיחוד נכשלה');
+    } finally {
+      setIhudWizardBusy(false);
+    }
+  }
+
+  async function saveWizard() {
+    if (!wizardOpen || wizardBusy) return;
+    const selected = Array.from(wizardSelectedClasses);
+    if (selected.length < 2) {
+      toast.warning('צריך לבחור לפחות 2 כיתות בהקבצה');
+      return;
     }
 
     setWizardBusy(true);
     try {
-      for (const ctId of members) {
-        await ajax<DmlResult[]>('Class_SetGroupNumber', {
-          ClassTeacherId: ctId,
-          Hakbatza: wizardKind === 'hakbatza' ? target : 0,
-          Ihud: wizardKind === 'ihud' ? target : 0,
-        });
+      const res = await ajax<{ Number?: number; Error?: string }>('Hakbatza_Create', {
+        LayerId: String(layerId),
+        ClassIds: selected.join(','),
+        Name: wizardName.trim(),
+      });
+      if (res?.Error) {
+        toast.error('יצירת ההקבצה נכשלה: ' + res.Error);
+        return;
       }
-      toast.success(
-        wizardKind === 'hakbatza'
-          ? `הקבצה ${target} נוצרה עם ${members.length} מורים`
-          : `איחוד ${target} נוצר עם ${members.length} מורים`,
-      );
-      setWizardKind(null);
+      const n = Number(res?.Number ?? 0);
+      toast.success(`הקבצה ${n} נוצרה עם ${selected.length} כיתות. גרור מורים לתוכה.`);
+      setWizardOpen(false);
+      loadHakbatzaList();
       loadClasses(layerId);
     } catch (err) {
-      console.error('Wizard save failed', err);
-      toast.error('שמירת הקבוצה נכשלה');
+      console.error('Hakbatza_Create failed', err);
+      toast.error('יצירת ההקבצה נכשלה');
     } finally {
       setWizardBusy(false);
+    }
+  }
+
+  // ---- Hakbatza list with drag-target cards ----
+  interface HakbatzaRow {
+    ClassTeacherId: number;
+    Hakbatza: number;
+    ClassId: number;
+    ClassName: string;
+    LayerId: number;
+    TeacherId: number;
+    TeacherName: string;
+    Name?: string;
+  }
+  interface IhudRow {
+    ClassTeacherId: number;
+    Ihud: number;
+    ClassId: number;
+    ClassName: string;
+    LayerId: number;
+    TeacherId: number;
+    TeacherName: string;
+    Hour: number;
+    Name?: string;
+  }
+  const [hakbatzaRows, setHakbatzaRows] = useState<HakbatzaRow[]>([]);
+  const [ihudRows, setIhudRows] = useState<IhudRow[]>([]);
+  const [maxHours, setMaxHours] = useState<number>(0);
+  const loadHakbatzaList = useCallback(async () => {
+    try {
+      const data = await ajax<HakbatzaRow[]>('Hakbatza_GetAll');
+      setHakbatzaRows(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Hakbatza_GetAll failed', err);
+    }
+  }, []);
+  const loadIhudList = useCallback(async () => {
+    try {
+      const data = await ajax<IhudRow[]>('Ihud_GetAll');
+      setIhudRows(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Ihud_GetAll failed', err);
+    }
+  }, []);
+  const loadMaxHours = useCallback(async () => {
+    try {
+      const data = await ajax<{ MaxHours: number }>('Class_GetMaxHours');
+      setMaxHours(Number(data?.MaxHours ?? 0));
+    } catch (err) {
+      console.error('Class_GetMaxHours failed', err);
+    }
+  }, []);
+  useEffect(() => {
+    loadHakbatzaList();
+    loadIhudList();
+    loadMaxHours();
+  }, [loadHakbatzaList, loadIhudList, loadMaxHours]);
+
+  // Tracks which (layer, number) pair is the active drop target so we can
+  // highlight it during a drag.
+  const [dragHoverHak, setDragHoverHak] = useState<string | null>(null);
+  const [dragHoverIhud, setDragHoverIhud] = useState<string | null>(null);
+
+  async function addTeacherToHakbatza(layerIdArg: number, number: number, teacherId: number) {
+    try {
+      const res = await ajax<{ res?: number; Error?: string }>('Hakbatza_AddTeacher', {
+        LayerId: String(layerIdArg),
+        Number: String(number),
+        TeacherId: String(teacherId),
+      });
+      if (res?.Error) {
+        toast.error('הוספה נכשלה: ' + res.Error);
+        return;
+      }
+      toast.success('המורה נוסף להקבצה');
+      loadHakbatzaList();
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Hakbatza_AddTeacher failed', err);
+      toast.error('הוספת המורה נכשלה');
+    }
+  }
+
+  async function removeTeacherFromHakbatza(layerIdArg: number, number: number, teacherId: number) {
+    try {
+      await ajax('Hakbatza_RemoveTeacher', {
+        LayerId: String(layerIdArg),
+        Number: String(number),
+        TeacherId: String(teacherId),
+      });
+      toast.success('המורה הוסר מההקבצה');
+      loadHakbatzaList();
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Hakbatza_RemoveTeacher failed', err);
+      toast.error('הסרת המורה נכשלה');
+    }
+  }
+
+  async function deleteHakbatza(layerIdArg: number, number: number) {
+    try {
+      await ajax('Hakbatza_Delete', {
+        LayerId: String(layerIdArg),
+        Number: String(number),
+      });
+      toast.success(`הקבצה ${number} נמחקה`);
+      loadHakbatzaList();
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Hakbatza_Delete failed', err);
+      toast.error('מחיקת ההקבצה נכשלה');
+    }
+  }
+
+  async function setHakbatzaHour(layerIdArg: number, number: number, hour: number) {
+    try {
+      await ajax('Hakbatza_SetHour', {
+        LayerId: String(layerIdArg),
+        Number: String(number),
+        Hour: String(hour),
+      });
+      loadHakbatzaList();
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Hakbatza_SetHour failed', err);
+      toast.error('עדכון שעות הקבצה נכשל');
+    }
+  }
+
+  async function setIhudTeacher(layerIdArg: number, number: number, teacherId: number) {
+    try {
+      const res = await ajax<{ res?: number; Error?: string }>('Ihud_SetTeacher', {
+        LayerId: String(layerIdArg),
+        Number: String(number),
+        TeacherId: String(teacherId),
+      });
+      if (res?.Error) {
+        toast.error('עדכון מורה נכשל: ' + res.Error);
+        return;
+      }
+      toast.success('המורה האחראי עודכן');
+      loadIhudList();
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Ihud_SetTeacher failed', err);
+      toast.error('עדכון מורה אחראי נכשל');
+    }
+  }
+
+  async function setIhudHour(layerIdArg: number, number: number, hour: number) {
+    try {
+      await ajax('Ihud_SetHour', {
+        LayerId: String(layerIdArg),
+        Number: String(number),
+        Hour: String(hour),
+      });
+      loadIhudList();
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Ihud_SetHour failed', err);
+      toast.error('עדכון שעות איחוד נכשל');
+    }
+  }
+
+  async function deleteIhud(layerIdArg: number, number: number) {
+    try {
+      await ajax('Ihud_Delete', {
+        LayerId: String(layerIdArg),
+        Number: String(number),
+      });
+      toast.success(`איחוד ${number} נמחק`);
+      loadIhudList();
+      loadClasses(layerId);
+    } catch (err) {
+      console.error('Ihud_Delete failed', err);
+      toast.error('מחיקת האיחוד נכשלה');
     }
   }
   // Validation issues per group (pulled from Class_ValidateGroups). Key =
@@ -277,8 +528,8 @@ export default function TeacherClass() {
   }, []);
 
   useEffect(() => {
-    if (showGroupsPanel) loadGroupValidations();
-  }, [showGroupsPanel, loadGroupValidations, classes]);
+    loadGroupValidations();
+  }, [loadGroupValidations, classes, hakbatzaRows, ihudRows]);
 
   // ---------- initial loads ----------
   const loadCombos = useCallback(async () => {
@@ -751,7 +1002,9 @@ export default function TeacherClass() {
     });
   }
 
-  // Edit hours inline (Type=4)
+  // Edit hours inline (Type=4). Also runs a frontend pre-check so the
+  // user gets immediate warning if the new value would exceed the
+  // class's weekly cap (maxHours = active SchoolHours, non-shehya).
   async function setHourToTeacherInClass(
     classId: number,
     teacherId: number,
@@ -764,25 +1017,96 @@ export default function TeacherClass() {
       toast.warning('יש להזין מספרים בלבד', { title: 'קלט לא תקין' });
       return;
     }
-    try {
-      const res = await ajax<DmlResult[]>('Class_SetTeacherToClass', {
-        ClassId: classId,
-        TeacherId: teacherId,
-        Hour: hour,
-        TargetHakbatza: '',
-        SourceHakbatza: hakbatza ?? '',
-        TargetIhud: '',
-        SourceIhud: ihud ?? '',
-        TargetClassTeacherId: '',
-        SourceClassTeacherId: classTeacherId ?? '',
-        Type: 4,
-      });
-      if (res && res[0] && res[0].res === 1) {
-        toast.warning('חריגה: המספר עולה על השעות המוגדרות למורה');
+
+    const doSave = async () => {
+      try {
+        const res = await ajax<DmlResult[]>('Class_SetTeacherToClass', {
+          ClassId: classId,
+          TeacherId: teacherId,
+          Hour: hour,
+          TargetHakbatza: '',
+          SourceHakbatza: hakbatza ?? '',
+          TargetIhud: '',
+          SourceIhud: ihud ?? '',
+          TargetClassTeacherId: '',
+          SourceClassTeacherId: classTeacherId ?? '',
+          Type: 4,
+        });
+        if (res && res[0] && res[0].res === 1) {
+          toast.warning('חריגה: המספר עולה על השעות המוגדרות למורה');
+        }
+        loadClasses(layerId);
+      } catch (err) {
+        console.error('Class_SetTeacherToClass (hour) failed', err);
       }
-      loadClasses(layerId);
-    } catch (err) {
-      console.error('Class_SetTeacherToClass (hour) failed', err);
+    };
+
+    const newHour = Number(hour) || 0;
+
+    // 1) Check class-level overflow (sum of hours for this class > maxHours)
+    if (maxHours > 0) {
+      let projected = 0;
+      let foundOldRow = false;
+      for (const r of classes) {
+        if (r.ClassId !== classId) continue;
+        if (r.ClassTeacherId != null && classTeacherId != null && Number(r.ClassTeacherId) === Number(classTeacherId)) {
+          projected += newHour;
+          foundOldRow = true;
+        } else {
+          projected += Number(r.Hour ?? 0);
+        }
+      }
+      if (!foundOldRow) projected += newHour;
+      if (projected > maxHours) {
+        setConfirmHourOverflow({
+          projected,
+          maxHours,
+          onConfirm: () => checkTeacherOverflowThenSave(),
+        });
+        return;
+      }
+    }
+
+    checkTeacherOverflowThenSave();
+
+    // 2) Check teacher-level overflow against the teacher's "frontaly" quota
+    //    defined in TeacherHours / niohul-morim. We need to load the
+    //    teacher's full list of hours across ALL layers, since `classes`
+    //    only contains the currently-displayed layer.
+    function checkTeacherOverflowThenSave() {
+      const teacher = teachers.find((t) => Number(t.TeacherId) === Number(teacherId));
+      const quota = Number(teacher?.Frontaly ?? 0);
+      if (!teacher || quota <= 0) {
+        doSave();
+        return;
+      }
+      // Project by replacing the affected row's value with the new one.
+      // We use the layer-scoped list because the teacher's layer-wide
+      // assignments are what the user just edited; a richer cross-layer
+      // projection would require an extra fetch.
+      let projected = 0;
+      let foundOldRow = false;
+      for (const r of classes) {
+        if (Number(r.TeacherId ?? 0) !== Number(teacherId)) continue;
+        if (r.ClassTeacherId != null && classTeacherId != null && Number(r.ClassTeacherId) === Number(classTeacherId)) {
+          projected += newHour;
+          foundOldRow = true;
+        } else {
+          projected += Number(r.Hour ?? 0);
+        }
+      }
+      if (!foundOldRow) projected += newHour;
+      if (projected > quota) {
+        const teacherName = `${teacher.FirstName ?? ''} ${teacher.LastName ?? ''}`.trim();
+        setConfirmTeacherOverflow({
+          teacherName,
+          projected,
+          quota,
+          onConfirm: doSave,
+        });
+        return;
+      }
+      doSave();
     }
   }
 
@@ -822,9 +1146,128 @@ export default function TeacherClass() {
     }>;
   }
 
-  function buildClassPanels(): ClassPanel[] {
+  // Recompute the "real" weekly hour count per class. The server-side
+  // ClassCountHour just sums every ClassTeacher row, which double-counts
+  // hakbatzaot (same lesson taught by N parallel teachers in level groups
+  // counts N times) and over-counts ihudim (same lesson but split per class
+  // row). Hakbatza/Ihud are scheduled in a single time slot so they should
+  // contribute their hour value exactly once per class.
+  function computeRealHours(classId: number): number {
+    let total = 0;
+    const seenHak = new Set<string>();
+    const seenIhud = new Set<string>();
+    for (const r of classes) {
+      if (r.ClassId !== classId) continue;
+      if (r.ClassTeacherId == null || Number(r.ClassTeacherId) <= 0) continue;
+      const hak = Number(r.Hakbatza ?? 0);
+      const ihud = Number(r.Ihud ?? 0);
+      const hr = Number(r.Hour ?? 0);
+      if (hak > 0) {
+        const key = classId + '_H_' + hak;
+        if (!seenHak.has(key)) {
+          seenHak.add(key);
+          total += hr;
+        }
+      } else if (ihud > 0) {
+        const key = classId + '_I_' + ihud;
+        if (!seenIhud.has(key)) {
+          seenIhud.add(key);
+          total += hr;
+        }
+      } else {
+        total += hr;
+      }
+    }
+    return total;
+  }
+
+  // Group bands shown above the regular teacher list inside each class
+  // card. They visually summarise the Hakbatza/Ihud the class belongs to:
+  // name, all teachers in the group, and the weekly hour count.
+  interface GroupBand {
+    kind: 'H' | 'I';
+    number: number;
+    name: string;
+    classId: number;
+    teacherNames: string[];
+    hour: number;
+  }
+
+  function buildClassPanels(): { panels: ClassPanel[]; bandsByClass: Map<number, GroupBand[]> } {
     const panels: ClassPanel[] = [];
     const byClassId = new Map<number, ClassPanel>();
+    const bandsByClass = new Map<number, GroupBand[]>();
+
+    // Collect group bands first so the class panel can render them at
+    // the top regardless of where the rows appear in the data.
+    const hakBuckets = new Map<string, { classId: number; number: number; teachers: Map<number, string>; hour: number; name: string }>();
+    for (const r of classes) {
+      const hak = Number(r.Hakbatza ?? 0);
+      if (!hak) continue;
+      const key = r.ClassId + '_H_' + hak;
+      let b = hakBuckets.get(key);
+      if (!b) {
+        b = { classId: r.ClassId, number: hak, teachers: new Map(), hour: Number(r.Hour ?? 0), name: '' };
+        hakBuckets.set(key, b);
+      }
+      if (r.TeacherId != null && Number(r.TeacherId) > 0) {
+        b.teachers.set(Number(r.TeacherId), r.TeacherName ?? '');
+      }
+      if (Number(r.Hour ?? 0) > b.hour) b.hour = Number(r.Hour);
+    }
+    // Pull friendly names from hakbatzaRows
+    for (const r of hakbatzaRows) {
+      if (Number(r.LayerId) !== Number(layerId)) continue;
+      const key = r.ClassId + '_H_' + r.Hakbatza;
+      const b = hakBuckets.get(key);
+      if (b && r.Name) b.name = r.Name;
+    }
+
+    const ihudBuckets = new Map<string, { classId: number; number: number; teacherName: string; teacherId: number; hour: number; name: string }>();
+    for (const r of classes) {
+      const ihud = Number(r.Ihud ?? 0);
+      if (!ihud) continue;
+      const key = r.ClassId + '_I_' + ihud;
+      let b = ihudBuckets.get(key);
+      if (!b) {
+        b = { classId: r.ClassId, number: ihud, teacherName: r.TeacherName ?? '', teacherId: Number(r.TeacherId ?? 0), hour: Number(r.Hour ?? 0), name: '' };
+        ihudBuckets.set(key, b);
+      }
+    }
+    for (const r of ihudRows) {
+      if (Number(r.LayerId) !== Number(layerId)) continue;
+      const key = r.ClassId + '_I_' + r.Ihud;
+      const b = ihudBuckets.get(key);
+      if (b && r.Name) b.name = r.Name;
+    }
+
+    for (const b of hakBuckets.values()) {
+      const arr = bandsByClass.get(b.classId) ?? [];
+      arr.push({
+        kind: 'H',
+        number: b.number,
+        name: b.name,
+        classId: b.classId,
+        teacherNames: Array.from(b.teachers.values()).filter(Boolean),
+        hour: b.hour,
+      });
+      bandsByClass.set(b.classId, arr);
+    }
+    for (const b of ihudBuckets.values()) {
+      const arr = bandsByClass.get(b.classId) ?? [];
+      arr.push({
+        kind: 'I',
+        number: b.number,
+        name: b.name,
+        classId: b.classId,
+        teacherNames: b.teacherName ? [b.teacherName] : [],
+        hour: b.hour,
+      });
+      bandsByClass.set(b.classId, arr);
+    }
+
+    // Build the regular teacher list — skip rows that belong to a group
+    // (Hakbatza/Ihud), since those are shown in the band above.
     const rows = classes;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
@@ -834,50 +1277,35 @@ export default function TeacherClass() {
           ClassName: r.ClassName,
           ClassFOREdit: r.ClassFOREdit,
           Seq: r.Seq,
-          ClassCountHour: r.ClassCountHour,
+          ClassCountHour: computeRealHours(r.ClassId),
           teachers: [],
         };
         byClassId.set(r.ClassId, panel);
         panels.push(panel);
       }
-      if (r.ClassTeacherId != null && Number(r.ClassTeacherId) > 0) {
-        const hakbatza = r.Hakbatza;
-        let teacherName = r.TeacherName ?? '';
-        const memberIds: number[] = [];
-        if (r.ClassTeacherId != null) memberIds.push(Number(r.ClassTeacherId));
-        let j = i;
-        if (hakbatza) {
-          while (
-            rows[j + 1] &&
-            hakbatza === rows[j + 1].Hakbatza &&
-            r.ClassId === rows[j + 1].ClassId
-          ) {
-            teacherName = teacherName + '<br>' + (rows[j + 1].TeacherName ?? '');
-            if (rows[j + 1].ClassTeacherId != null) memberIds.push(Number(rows[j + 1].ClassTeacherId));
-            j++;
-          }
-        }
-        const lastRow = rows[j];
-        const ihud = lastRow.Ihud;
-        const displayRaw = ihud ? `<u>${teacherName}</u>` : teacherName;
-        byClassId.get(r.ClassId)!.teachers.push({
-          ClassTeacherId: lastRow.ClassTeacherId,
-          TeacherId: lastRow.TeacherId!,
-          TeacherName: teacherName,
-          TafkidId: lastRow.TafkidId,
-          Hakbatza: lastRow.Hakbatza,
-          Ihud: lastRow.Ihud,
-          Hour: lastRow.Hour,
-          displayRaw,
-          memberClassTeacherIds: memberIds,
-        });
-        i = j;
-      }
+      if (r.ClassTeacherId == null || Number(r.ClassTeacherId) <= 0) continue;
+      // Skip rows that are part of a Hakbatza/Ihud — those are rendered
+      // in the group band, not in the regular list.
+      if (Number(r.Hakbatza ?? 0) > 0 || Number(r.Ihud ?? 0) > 0) continue;
+
+      const memberIds: number[] = [Number(r.ClassTeacherId)];
+      const teacherName = r.TeacherName ?? '';
+      byClassId.get(r.ClassId)!.teachers.push({
+        ClassTeacherId: r.ClassTeacherId,
+        TeacherId: r.TeacherId!,
+        TeacherName: teacherName,
+        TafkidId: r.TafkidId,
+        Hakbatza: r.Hakbatza,
+        Ihud: r.Ihud,
+        Hour: r.Hour,
+        displayRaw: teacherName,
+        memberClassTeacherIds: memberIds,
+      });
     }
-    return panels;
+    return { panels, bandsByClass };
   }
 
-  const classPanels = buildClassPanels();
+  const { panels: classPanels, bandsByClass: classBandsByClass } = buildClassPanels();
   const hoursByDay = showHoursModal ? buildHoursByDay() : null;
 
   // group teachers by tafkid for row breaks (aspx inserts clear:both between tafkid groups)
@@ -937,30 +1365,21 @@ export default function TeacherClass() {
               </button>
               <button
                 type="button"
-                className="btn btn-warning btn-sm"
-                style={{ marginInlineStart: 6, fontWeight: 700 }}
-                onClick={() => openWizard('hakbatza')}
-                title="צור הקבצה חדשה — מורים באותה כיתה שילמדו באותה שעה כקבוצות רמה"
-              >
-                <i className="fa fa-plus" /> הקבצה חדשה
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                style={{ marginInlineStart: 6, fontWeight: 700 }}
-                onClick={() => openWizard('ihud')}
-                title="צור איחוד חדש — מורים מכיתות שונות שילמדו באותה שעה"
-              >
-                <i className="fa fa-plus" /> איחוד חדש
-              </button>
-              <button
-                type="button"
-                className="btn btn-info btn-sm"
+                className="btn btn-success btn-sm tc-add-class"
                 style={{ marginInlineStart: 6 }}
-                onClick={() => setShowGroupsPanel((v) => !v)}
-                title="הצג/הסתר רשימת הקבצות ואיחודים בשכבה"
+                onClick={openWizard}
+                title="צור הקבצה חדשה — בחר כיתות בשכבה ומורים שילמדו באותה שעה כקבוצות רמה"
               >
-                <i className="fa fa-object-group" /> {showGroupsPanel ? 'הסתר קבוצות' : 'הצג קבוצות'}
+                <i className="fa fa-object-group" /> הקבצה חדשה
+              </button>
+              <button
+                type="button"
+                className="btn btn-success btn-sm tc-add-class"
+                style={{ marginInlineStart: 6 }}
+                onClick={openIhudWizard}
+                title="צור איחוד — בחר כיתות בשכבה ומורה אחראי שילמד את כולן באותה שעה"
+              >
+                <i className="fa fa-link" /> איחוד חדש
               </button>
               {/* Export zone — kept in its own pill on the far side so it never
                   gets confused with action controls like "הוסף כיתה". */}
@@ -1002,95 +1421,435 @@ export default function TeacherClass() {
                 })()}
               </div>
             </div>
-            {showGroupsPanel && (() => {
-              const summary = buildGroupsSummary();
-              if (summary.length === 0) {
+            <div className="panel-body" style={{ overflow: 'auto' }}>
+              {(() => {
+                // Build the Hakbatza/Ihud bucket lists once per render. Each
+                // bucket is one card in the layer, exactly the same shape
+                // as a class panel — header + drop zone for teachers.
+                type HakBucket = {
+                  layerId: number;
+                  number: number;
+                  name: string;
+                  classes: Map<number, string>;
+                  teachers: Map<number, string>;
+                  hour: number;
+                };
+                const hakBuckets = new Map<string, HakBucket>();
+                for (const r of hakbatzaRows) {
+                  if (Number(r.LayerId) !== Number(layerId)) continue;
+                  const key = r.LayerId + '_' + r.Hakbatza;
+                  let b = hakBuckets.get(key);
+                  if (!b) {
+                    b = { layerId: r.LayerId, number: r.Hakbatza, name: r.Name ?? '', classes: new Map(), teachers: new Map(), hour: 0 };
+                    hakBuckets.set(key, b);
+                  } else if (!b.name && r.Name) {
+                    b.name = r.Name;
+                  }
+                  b.classes.set(r.ClassId, r.ClassName);
+                  if (r.TeacherId > 0) b.teachers.set(r.TeacherId, r.TeacherName);
+                }
+                // Hakbatza row hours come from the underlying ClassTeacher.Hour
+                // — we read it back from `classes` (the source of truth that
+                // also drives ClassCountHour).
+                for (const r of classes) {
+                  const hak = Number(r.Hakbatza ?? 0);
+                  if (!hak) continue;
+                  const key = layerId + '_' + hak;
+                  const b = hakBuckets.get(key);
+                  if (b && Number(r.Hour ?? 0) > 0) b.hour = Number(r.Hour);
+                }
+                const hakList = Array.from(hakBuckets.values()).sort((a, b) => a.number - b.number);
+
+                type IhudBucket = {
+                  layerId: number;
+                  number: number;
+                  name: string;
+                  classes: Map<number, string>;
+                  teacherId: number;
+                  teacherName: string;
+                  hour: number;
+                };
+                const ihudBuckets = new Map<string, IhudBucket>();
+                for (const r of ihudRows) {
+                  if (Number(r.LayerId) !== Number(layerId)) continue;
+                  const key = r.LayerId + '_' + r.Ihud;
+                  let b = ihudBuckets.get(key);
+                  if (!b) {
+                    b = { layerId: r.LayerId, number: r.Ihud, name: r.Name ?? '', classes: new Map(), teacherId: r.TeacherId, teacherName: r.TeacherName, hour: r.Hour };
+                    ihudBuckets.set(key, b);
+                  } else if (!b.name && r.Name) {
+                    b.name = r.Name;
+                  }
+                  b.classes.set(r.ClassId, r.ClassName);
+                  if (r.TeacherId > 0) {
+                    b.teacherId = r.TeacherId;
+                    b.teacherName = r.TeacherName;
+                  }
+                }
+                const ihudList = Array.from(ihudBuckets.values()).sort((a, b) => a.number - b.number);
+
+                // Compute "have / need" hours per class for the indicator
+                // strip above each class card. ClassCountHour is the total
+                // currently allocated. maxHours is the school's per-class
+                // weekly total (count of non-shehya SchoolHours).
+                const need = maxHours;
+
+                const hasGroups = hakList.length > 0 || ihudList.length > 0;
+
                 return (
-                  <div style={{ padding: 12, background: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: 13, color: '#6b7280' }}>
-                    אין הקבצות או איחודים מוגדרים בשכבה זו.
-                  </div>
-                );
-              }
-              return (
-                <div style={{ padding: 12, background: '#f9fafb', borderBottom: '1px solid #e5e7eb', maxHeight: 180, overflowY: 'auto' }}>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {summary.map((g) => {
-                      const col = groupColor(g.kind, g.number);
-                      const label = g.kind === 'H' ? `ה${g.number}` : `א${g.number}`;
-                      const kindName = g.kind === 'H' ? 'הקבצה' : 'איחוד';
-                      const validation = groupValidations.get(g.kind + '_' + g.number);
-                      const borderColor = validation?.Severity === 'error'
-                        ? '#dc2626'
-                        : validation?.Severity === 'warning'
-                        ? '#ea580c'
-                        : col.bg;
-                      const bgTint = validation?.Severity === 'error'
-                        ? '#fef2f2'
-                        : validation?.Severity === 'warning'
-                        ? '#fff7ed'
-                        : '#fff';
-                      return (
-                        <div
-                          key={g.kind + '_' + g.number + '_' + (g.members[0]?.classId ?? 0)}
-                          style={{
-                            border: `2px solid ${borderColor}`,
-                            background: bgTint,
-                            borderRadius: 6,
-                            padding: 8,
-                            minWidth: 180,
-                            fontSize: 12,
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                            <span style={{ background: col.bg, color: col.fg, padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
-                              {label}
+                  <div className="droppable" onDragOver={allowDrop}>
+                    {hasGroups && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 700, marginBottom: 6, paddingInlineStart: 4 }}>
+                          <i className="fa fa-object-group" style={{ marginInlineEnd: 4 }} /> הקבצות ואיחודים
+                        </div>
+                        <div className="tc-grid-4">
+                          {/* Hakbatza cards — same panel shape as class cards */}
+                          {hakList.map((b) => {
+                            const col = groupColor('H', b.number);
+                            const isHover = dragHoverHak === (b.layerId + '_' + b.number);
+                            const classList = Array.from(b.classes.values());
+                            return (
+                              <div className="tc-grid-4__cell" key={'hak_' + b.layerId + '_' + b.number}>
+                          <div style={{ fontSize: 12, color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, marginBottom: 2 }}>
+                            <span>
+                              <i className="fa fa-object-group" style={{ color: '#d97706', marginInlineEnd: 4 }} />
+                              שעות שבועיות
                             </span>
-                            <strong>{kindName}</strong>
-                            <span style={{ color: '#6b7280' }}>· {g.members.length} חברים</span>
-                            {validation?.Severity === 'error' && (
-                              <i className="fa fa-times-circle" title={validation.Message} style={{ color: '#dc2626', marginInlineStart: 'auto' }} />
-                            )}
-                            {validation?.Severity === 'warning' && (
-                              <i className="fa fa-exclamation-triangle" title={validation.Message} style={{ color: '#ea580c', marginInlineStart: 'auto' }} />
-                            )}
+                            <input
+                              type="number"
+                              min={0}
+                              defaultValue={b.hour}
+                              onBlur={(e) => {
+                                const v = Math.max(0, Math.floor(Number(e.currentTarget.value) || 0));
+                                if (v !== b.hour) setHakbatzaHour(b.layerId, b.number, v);
+                              }}
+                              style={{ width: 48, padding: '1px 4px', fontWeight: 700, textAlign: 'center', border: '1px solid #d97706', borderRadius: 3, background: '#fff' }}
+                            />
                           </div>
-                          {validation && validation.Severity !== 'ok' && (
-                            <div style={{
-                              fontSize: 11,
-                              color: validation.Severity === 'error' ? '#991b1b' : '#9a3412',
-                              background: validation.Severity === 'error' ? '#fee2e2' : '#ffedd5',
-                              padding: '4px 6px',
-                              borderRadius: 4,
-                              marginBottom: 6,
-                              lineHeight: 1.4,
-                            }}>
-                              {validation.Message}
-                            </div>
-                          )}
-                          <div style={{ color: '#374151', lineHeight: 1.5 }}>
-                            {g.members.map((m, i) => (
-                              <div key={i}>
-                                <span style={{ color: '#6b7280' }}>{m.className}:</span> {m.teacherName}
+                          <div className="row dvWeek" style={{ width: '100%' }}>
+                            <div className="panel" style={{ borderColor: col.bg, borderTopWidth: 4 }}>
+                              <div className="panel-heading" style={{ background: col.bg, color: col.fg, borderColor: col.bg, padding: '0.45rem 0.6rem' }}>
+                                <button
+                                  type="button"
+                                  className="tc-class-close"
+                                  onClick={() => setConfirmDeleteGroup({
+                                    kind: 'H',
+                                    layerId: b.layerId,
+                                    number: b.number,
+                                    label: b.name || `הקבצה ${b.number}`,
+                                  })}
+                                  title="מחק הקבצה"
+                                  aria-label="מחק הקבצה"
+                                >
+                                  <i className="fa fa-times" />
+                                </button>
+                                <h3 className="panel-title" style={{ color: col.fg, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span className="tc-class-name" style={{ flex: '0 0 auto', whiteSpace: 'nowrap' }}>{b.name || `הקבצה ${b.number}`}</span>
+                                  <input
+                                    type="text"
+                                    placeholder={`הקבצה ${b.number} — תן שם`}
+                                    defaultValue={b.name || ''}
+                                    onBlur={(e) => {
+                                      const v = e.currentTarget.value.trim();
+                                      if (v !== (b.name || '')) setGroupName('H', b.layerId, b.number, v);
+                                    }}
+                                    title="לחץ לשינוי שם ההקבצה"
+                                    style={{
+                                      flex: 1,
+                                      minWidth: 0,
+                                      background: 'rgba(255,255,255,0.55)',
+                                      border: '1px solid rgba(0,0,0,0.08)',
+                                      borderRadius: 4,
+                                      padding: '1px 6px',
+                                      fontSize: 12,
+                                      fontWeight: 600,
+                                      color: '#1f2937',
+                                    }}
+                                  />
+                                </h3>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                                  {classList.length === 0 ? (
+                                    <span style={{ fontSize: 11, opacity: 0.7 }}>—</span>
+                                  ) : (
+                                    classList.map((cn) => (
+                                      <span
+                                        key={cn}
+                                        style={{
+                                          background: 'rgba(255,255,255,0.65)',
+                                          color: '#1f2937',
+                                          padding: '1px 7px',
+                                          borderRadius: 10,
+                                          fontSize: 11,
+                                          fontWeight: 700,
+                                          lineHeight: 1.5,
+                                          border: '1px solid rgba(0,0,0,0.05)',
+                                        }}
+                                      >
+                                        {cn}
+                                      </span>
+                                    ))
+                                  )}
+                                </div>
                               </div>
-                            ))}
+                              <div
+                                className="panel-body droppable"
+                                style={{
+                                  minHeight: 110,
+                                  padding: '0.5rem',
+                                  background: isHover ? '#fff7ed' : undefined,
+                                  border: isHover ? '2px dashed #d97706' : undefined,
+                                  transition: 'background 120ms',
+                                }}
+                                onDragOver={(e) => {
+                                  allowDrop(e);
+                                  const key = b.layerId + '_' + b.number;
+                                  if (dragHoverHak !== key) setDragHoverHak(key);
+                                }}
+                                onDragLeave={() => setDragHoverHak(null)}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setDragHoverHak(null);
+                                  const info = dragInfo.current;
+                                  if (!info) return;
+                                  dragInfo.current = null;
+                                  const tid = info.teacherId;
+                                  if (b.teachers.has(tid)) {
+                                    toast.warning('המורה כבר בהקבצה');
+                                    return;
+                                  }
+                                  addTeacherToHakbatza(b.layerId, b.number, tid);
+                                }}
+                              >
+                                {b.teachers.size === 0 ? (
+                                  <div style={{ padding: 8, color: '#9ca3af', fontStyle: 'italic', fontSize: 11, textAlign: 'center', border: '1px dashed #d1d5db', borderRadius: 6 }}>
+                                    גרור מורים לכאן
+                                  </div>
+                                ) : (
+                                  Array.from(b.teachers.entries()).map(([tid, tname]) => (
+                                    <div
+                                      key={tid}
+                                      className="draggable"
+                                      style={{ marginBottom: 3, position: 'relative', display: 'flex', alignItems: 'center', gap: 4 }}
+                                    >
+                                      <div
+                                        className="btn btn-primary btn-round"
+                                        style={{ flex: 1, textAlign: 'center', background: col.bg, color: col.fg, borderColor: col.fg + '40', padding: '4px 8px', fontSize: 12 }}
+                                      >
+                                        {tname}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => removeTeacherFromHakbatza(b.layerId, b.number, tid)}
+                                        title="הסר מההקבצה"
+                                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 16, color: '#dc2626', padding: '0 4px' }}
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
                           </div>
                         </div>
                       );
                     })}
-                  </div>
-                </div>
-              );
-            })()}
-            <div className="panel-body" style={{ overflow: 'auto' }}>
-              <div
-                className="droppable"
-                onDragOver={allowDrop}
-              >
-                {classPanels.map((panel) => (
-                  <div className="col-md-3" key={panel.ClassId}>
-                    <div>
-                      סה"כ שעות - <span className="spTotal">{panel.ClassCountHour}</span>
+
+                    {/* Ihud cards — single responsible teacher */}
+                    {ihudList.map((b) => {
+                      const col = groupColor('I', b.number);
+                      const isHover = dragHoverIhud === (b.layerId + '_' + b.number);
+                      const classList = Array.from(b.classes.values());
+                      return (
+                        <div className="tc-grid-4__cell" key={'ihud_' + b.layerId + '_' + b.number}>
+                          <div style={{ fontSize: 12, color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: '#ede9fe', border: '1px solid #ddd6fe', borderRadius: 4, marginBottom: 2 }}>
+                            <span>
+                              <i className="fa fa-link" style={{ color: '#7c3aed', marginInlineEnd: 4 }} />
+                              שעות שבועיות
+                            </span>
+                            <input
+                              type="number"
+                              min={0}
+                              defaultValue={b.hour}
+                              onBlur={(e) => {
+                                const v = Math.max(0, Math.floor(Number(e.currentTarget.value) || 0));
+                                if (v !== b.hour) setIhudHour(b.layerId, b.number, v);
+                              }}
+                              style={{ width: 48, padding: '1px 4px', fontWeight: 700, textAlign: 'center', border: '1px solid #7c3aed', borderRadius: 3, background: '#fff' }}
+                            />
+                          </div>
+                          <div className="row dvWeek" style={{ width: '100%' }}>
+                            <div className="panel" style={{ borderColor: col.bg, borderTopWidth: 4 }}>
+                              <div className="panel-heading" style={{ background: col.bg, color: col.fg, borderColor: col.bg, padding: '0.45rem 0.6rem' }}>
+                                <button
+                                  type="button"
+                                  className="tc-class-close"
+                                  onClick={() => setConfirmDeleteGroup({
+                                    kind: 'I',
+                                    layerId: b.layerId,
+                                    number: b.number,
+                                    label: b.name || `איחוד ${b.number}`,
+                                  })}
+                                  title="מחק איחוד"
+                                  aria-label="מחק איחוד"
+                                >
+                                  <i className="fa fa-times" />
+                                </button>
+                                <h3 className="panel-title" style={{ color: col.fg, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span className="tc-class-name" style={{ flex: '0 0 auto', whiteSpace: 'nowrap' }}>{b.name || `איחוד ${b.number}`}</span>
+                                  <input
+                                    type="text"
+                                    placeholder={`איחוד ${b.number} — תן שם`}
+                                    defaultValue={b.name || ''}
+                                    onBlur={(e) => {
+                                      const v = e.currentTarget.value.trim();
+                                      if (v !== (b.name || '')) setGroupName('I', b.layerId, b.number, v);
+                                    }}
+                                    title="לחץ לשינוי שם האיחוד"
+                                    style={{
+                                      flex: 1,
+                                      minWidth: 0,
+                                      background: 'rgba(255,255,255,0.55)',
+                                      border: '1px solid rgba(0,0,0,0.08)',
+                                      borderRadius: 4,
+                                      padding: '1px 6px',
+                                      fontSize: 12,
+                                      fontWeight: 600,
+                                      color: '#1f2937',
+                                    }}
+                                  />
+                                </h3>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                                  {classList.length === 0 ? (
+                                    <span style={{ fontSize: 11, opacity: 0.7 }}>—</span>
+                                  ) : (
+                                    classList.map((cn) => (
+                                      <span
+                                        key={cn}
+                                        style={{
+                                          background: 'rgba(255,255,255,0.65)',
+                                          color: '#1f2937',
+                                          padding: '1px 7px',
+                                          borderRadius: 10,
+                                          fontSize: 11,
+                                          fontWeight: 700,
+                                          lineHeight: 1.5,
+                                          border: '1px solid rgba(0,0,0,0.05)',
+                                        }}
+                                      >
+                                        {cn}
+                                      </span>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
+                              <div
+                                className="panel-body droppable"
+                                style={{
+                                  minHeight: 90,
+                                  padding: '0.5rem',
+                                  background: isHover ? '#f5f3ff' : undefined,
+                                  border: isHover ? '2px dashed #7c3aed' : undefined,
+                                  transition: 'background 120ms',
+                                }}
+                                onDragOver={(e) => {
+                                  allowDrop(e);
+                                  const key = b.layerId + '_' + b.number;
+                                  if (dragHoverIhud !== key) setDragHoverIhud(key);
+                                }}
+                                onDragLeave={() => setDragHoverIhud(null)}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setDragHoverIhud(null);
+                                  const info = dragInfo.current;
+                                  if (!info) return;
+                                  dragInfo.current = null;
+                                  setIhudTeacher(b.layerId, b.number, info.teacherId);
+                                }}
+                              >
+                                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4, fontWeight: 600 }}>
+                                  מורה אחראי:
+                                </div>
+                                {b.teacherId > 0 ? (
+                                  <div className="draggable" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <div
+                                      className="btn btn-primary btn-round"
+                                      style={{ flex: 1, textAlign: 'center', background: col.bg, color: col.fg, borderColor: col.fg + '40' }}
+                                    >
+                                      {b.teacherName}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div style={{ padding: 6, color: '#9ca3af', fontStyle: 'italic', fontSize: 11, textAlign: 'center', border: '1px dashed #d1d5db', borderRadius: 6 }}>
+                                    גרור מורה לכאן
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                        </div>
+                        <div style={{ borderBottom: '1px dashed #e5e7eb', margin: '14px 0 4px' }} />
+                      </div>
+                    )}
+
+                    {/* Class cards */}
+                    <div className="tc-grid-4">
+                    {classPanels.map((panel) => {
+                      const have = panel.ClassCountHour;
+                      const ratio = need > 0 ? have / need : 0;
+                      const overflow = need > 0 && have > need;
+                      const exact = need > 0 && have === need;
+                      const indicatorColor = overflow ? '#dc2626' : exact ? '#16a34a' : '#374151';
+                      const indicatorBg = overflow ? '#fee2e2' : exact ? '#dcfce7' : '#f3f4f6';
+                      return (
+                  <div className="tc-grid-4__cell" key={panel.ClassId}>
+                    <div
+                      title={overflow ? 'חריגה: יש יותר שעות ממה שמותר לכיתה' : exact ? 'כיתה מלאה' : need > 0 ? `נדרשות עוד ${need - have} שעות` : 'הגדר שעות בית ספר כדי לראות מתוך כמה'}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '4px 8px',
+                        background: indicatorBg,
+                        color: indicatorColor,
+                        border: `1px solid ${indicatorColor}30`,
+                        borderRadius: 4,
+                        marginBottom: 2,
+                        fontSize: 12,
+                        fontWeight: 700,
+                      }}
+                    >
+                      <span title="שעות פרונטליות בלבד — לא כולל שהייה/פרטני">סה"כ פרונטלי</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        {overflow && <i className="fa fa-exclamation-triangle" style={{ fontSize: 11 }} />}
+                        <span className="spTotal">{have}</span>
+                        {need > 0 && (
+                          <>
+                            <span style={{ opacity: 0.6 }}>/</span>
+                            <span>{need}</span>
+                          </>
+                        )}
+                      </span>
                     </div>
+                    {/* Slim progress bar reflecting fill ratio */}
+                    {need > 0 && (
+                      <div style={{ height: 4, background: '#e5e7eb', borderRadius: 2, overflow: 'hidden', marginBottom: 4 }}>
+                        <div
+                          style={{
+                            height: '100%',
+                            width: Math.min(100, ratio * 100) + '%',
+                            background: overflow ? '#dc2626' : exact ? '#16a34a' : '#3b82f6',
+                            transition: 'width 120ms',
+                          }}
+                        />
+                      </div>
+                    )}
                     <div className="row dvWeek" style={{ width: '100%' }}>
                       <div className="panel panel-primary">
                         <div className="panel-heading">
@@ -1122,6 +1881,65 @@ export default function TeacherClass() {
                           onDragOver={allowDrop}
                           onDrop={(e) => onDropOnClass(e, panel.ClassId)}
                         >
+                          {(classBandsByClass.get(panel.ClassId) ?? []).map((band) => {
+                            const col = groupColor(band.kind, band.number);
+                            const label = band.name || (band.kind === 'H' ? `הקבצה ${band.number}` : `איחוד ${band.number}`);
+                            return (
+                              <div
+                                key={`band_${band.kind}_${band.number}`}
+                                style={{
+                                  marginBottom: 4,
+                                  borderRadius: 6,
+                                  background: col.bg,
+                                  border: `1px solid ${col.fg}30`,
+                                  padding: '4px 6px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  fontSize: 11,
+                                  position: 'relative',
+                                }}
+                                title={label}
+                              >
+                                <span
+                                  style={{
+                                    fontWeight: 800,
+                                    color: col.fg,
+                                    fontSize: 10,
+                                    background: 'rgba(255,255,255,0.55)',
+                                    padding: '1px 5px',
+                                    borderRadius: 8,
+                                    flex: '0 0 auto',
+                                  }}
+                                >
+                                  {band.kind === 'H' ? 'ה' : 'א'}{band.number}
+                                </span>
+                                <span style={{ color: col.fg, fontWeight: 700, flex: 1, minWidth: 0, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {band.teacherNames.length === 0
+                                    ? <em style={{ opacity: 0.6 }}>{label} · ללא מורים</em>
+                                    : (
+                                      <>
+                                        {band.name && <span style={{ marginInlineEnd: 4, fontSize: 10, opacity: 0.85 }}>{band.name} · </span>}
+                                        {band.teacherNames.join(' | ')}
+                                      </>
+                                    )}
+                                </span>
+                                <span
+                                  style={{
+                                    background: 'rgba(255,255,255,0.7)',
+                                    color: col.fg,
+                                    padding: '1px 6px',
+                                    borderRadius: 8,
+                                    fontWeight: 700,
+                                    fontSize: 10,
+                                    flex: '0 0 auto',
+                                  }}
+                                >
+                                  {band.hour}ש
+                                </span>
+                              </div>
+                            );
+                          })}
                           {panel.teachers.map((t) => {
                             const hakNum = Number(t.Hakbatza ?? 0);
                             const ihudNum = Number(t.Ihud ?? 0);
@@ -1276,8 +2094,12 @@ export default function TeacherClass() {
                       </div>
                     </div>
                   </div>
-                ))}
-              </div>
+                      );
+                    })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -1547,267 +2369,102 @@ export default function TeacherClass() {
         </div>
       )}
 
-      {/* Create-group wizard (Hakbatza or Ihud) */}
-      {wizardKind && (() => {
-        const kind = wizardKind;
-        const isHak = kind === 'hakbatza';
-        const allClassTeacherRows = classes.filter((r) => r.ClassTeacherId && Number(r.ClassTeacherId) > 0);
-
-        // Hakbatza: teacher list depends on selected class; Ihud: all teachers in layer
-        const candidatePool = isHak
-          ? allClassTeacherRows.filter((r) => r.ClassId === wizardClassId)
-          : allClassTeacherRows;
-
-        // Compute existing group numbers for the "join existing" radio
-        const existingNumbers = new Set<number>();
+      {/* Create-group wizard (Hakbatza only — single step: pick classes). */}
+      {wizardOpen && (() => {
+        // Distinct classes in the currently-loaded layer.
+        const seen = new Set<number>();
+        const allClasses: { ClassId: number; ClassName: string }[] = [];
         for (const r of classes) {
-          if (isHak) {
-            if (wizardClassId && r.ClassId === wizardClassId) {
-              const n = Number(r.Hakbatza ?? 0);
-              if (n > 0) existingNumbers.add(n);
-            }
-          } else {
-            const n = Number(r.Ihud ?? 0);
-            if (n > 0) existingNumbers.add(n);
+          if (r.ClassTeacherId && Number(r.ClassTeacherId) > 0 && !seen.has(r.ClassId)) {
+            seen.add(r.ClassId);
+            allClasses.push({ ClassId: r.ClassId, ClassName: r.ClassName });
           }
         }
-        const sortedExisting = Array.from(existingNumbers).sort((a, b) => a - b);
-        const nextFree = (sortedExisting[sortedExisting.length - 1] ?? 0) + 1;
-
-        // Unique class list for class dropdown (hakbatza)
-        const uniqueClasses: Array<{ ClassId: number; ClassName: string }> = [];
-        const seenC = new Set<number>();
-        for (const r of classes) {
-          if (!seenC.has(r.ClassId)) {
-            seenC.add(r.ClassId);
-            uniqueClasses.push({ ClassId: r.ClassId, ClassName: r.ClassName });
-          }
-        }
-
-        // Group candidates by class for Ihud (render by class for clarity)
-        const ihudByClass = new Map<number, { className: string; items: ClassRow[] }>();
-        if (!isHak) {
-          for (const r of candidatePool) {
-            const entry = ihudByClass.get(r.ClassId);
-            if (entry) entry.items.push(r);
-            else ihudByClass.set(r.ClassId, { className: r.ClassName, items: [r] });
-          }
-        }
-
-        const titleColor = isHak ? '#d97706' : '#2563eb';
-        const titleBg = isHak ? '#fef3c7' : '#dbeafe';
-        const kindName = isHak ? 'הקבצה' : 'איחוד';
+        allClasses.sort((a, b) => a.ClassName.localeCompare(b.ClassName, 'he'));
+        const allSelected = allClasses.length > 0 && allClasses.every((c) => wizardSelectedClasses.has(c.ClassId));
+        const selectedCount = wizardSelectedClasses.size;
 
         return (
           <div
             className="modal fade in"
             role="dialog"
             style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.55)' }}
-            onClick={(e) => {
-              if (e.target === e.currentTarget) closeWizard();
-            }}
+            onClick={(e) => { if (e.target === e.currentTarget) closeWizard(); }}
           >
-            <div className="modal-dialog" style={{ direction: 'rtl', maxWidth: 640 }}>
+            <div className="modal-dialog" style={{ direction: 'rtl', maxWidth: 600 }}>
               <div className="modal-content">
-                <div className="modal-header" style={{ background: titleBg, borderBottom: `2px solid ${titleColor}` }}>
-                  <button
-                    type="button"
-                    className="close"
-                    onClick={closeWizard}
-                    aria-label="Close"
-                    disabled={wizardBusy}
-                  >
+                <div className="modal-header" style={{ background: '#fef3c7', borderBottom: '2px solid #d97706' }}>
+                  <button type="button" className="close" onClick={closeWizard} aria-label="Close" disabled={wizardBusy}>
                     &times;
                   </button>
-                  <h4 className="modal-title" style={{ color: titleColor }}>
-                    <i className="fa fa-object-group" /> יצירת {kindName} חדשה
+                  <h4 className="modal-title" style={{ color: '#d97706' }}>
+                    <i className="fa fa-object-group" /> יצירת הקבצה חדשה
                   </h4>
                   <div style={{ fontSize: 12, color: '#4b5563', marginTop: 4, lineHeight: 1.5 }}>
-                    {isHak
-                      ? 'בחר כיתה, ואז סמן 2 מורים או יותר שילמדו באותה שעה כקבוצות רמה.'
-                      : 'סמן 2 מורים או יותר מכיתות שונות שילמדו באותה שעה (למשל חינוך גופני לכיתות א1/א2/א3).'}
+                    בחר את הכיתות בשכבה שמהן יתפצלו תלמידי ההקבצה. אחרי היצירה גרור מורים לתוך ההקבצה.
                   </div>
                 </div>
-                <div className="modal-body" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
-                  {/* Step 1: class picker (hakbatza only) */}
-                  {isHak && (
-                    <div style={{ marginBottom: 14 }}>
-                      <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
-                        1. בחר כיתה:
+                <div className="modal-body">
+                  {allClasses.length === 0 ? (
+                    <div style={{ padding: 10, color: '#6b7280', fontSize: 13, background: '#f9fafb', borderRadius: 6 }}>
+                      אין כיתות עם מורים בשכבה זו. הוסף מורים לכיתות קודם.
+                    </div>
+                  ) : (
+                    <>
+                      <label style={{ fontWeight: 600, marginBottom: 4, display: 'block' }}>
+                        שם ההקבצה (אופציונלי):
                       </label>
-                      <select
+                      <input
+                        type="text"
                         className="form-control"
-                        value={wizardClassId}
-                        onChange={(e) => {
-                          setWizardClassId(e.target.value ? Number(e.target.value) : '');
-                          setWizardSelectedCtIds(new Set());
-                          setWizardJoinNumber('new');
-                        }}
+                        placeholder="למשל: מתמטיקה / אנגלית / קבוצת רמה א'"
+                        value={wizardName}
+                        onChange={(e) => setWizardName(e.target.value)}
                         disabled={wizardBusy}
-                      >
-                        <option value="">— בחר כיתה —</option>
-                        {uniqueClasses.map((c) => (
-                          <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  {/* Step 2: member picker */}
-                  {(isHak ? wizardClassId : true) && (
-                    <div style={{ marginBottom: 14 }}>
-                      <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
-                        {isHak ? '2' : '1'}. סמן את המורים ({wizardSelectedCtIds.size} נבחרו):
-                      </label>
-                      {candidatePool.length === 0 ? (
-                        <div style={{ padding: 10, color: '#6b7280', fontSize: 13, background: '#f9fafb', borderRadius: 6 }}>
-                          {isHak
-                            ? 'אין מורים משובצים בכיתה זו. הוסף מורים לכיתה קודם (גרירה מהצד).'
-                            : 'אין מורים משובצים בשכבה זו.'}
-                        </div>
-                      ) : isHak ? (
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, maxHeight: 220, overflowY: 'auto', padding: 4 }}>
-                          {candidatePool.map((r) => {
-                            const ctId = Number(r.ClassTeacherId);
-                            const existing = Number(r.Hakbatza ?? 0);
-                            const checked = wizardSelectedCtIds.has(ctId);
-                            return (
-                              <label
-                                key={ctId}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 8,
-                                  padding: '6px 10px',
-                                  background: checked ? '#fef3c7' : '#f9fafb',
-                                  border: `1px solid ${checked ? '#f59e0b' : '#e5e7eb'}`,
-                                  borderRadius: 6,
-                                  cursor: 'pointer',
-                                  fontSize: 13,
-                                }}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => toggleWizardMember(ctId)}
-                                  disabled={wizardBusy}
-                                  style={{ cursor: 'pointer' }}
-                                />
-                                <span style={{ flex: 1 }}>{r.TeacherName}</span>
-                                {existing > 0 && (
-                                  <span style={{ fontSize: 10, background: '#fde68a', color: '#92400e', padding: '1px 5px', borderRadius: 3, fontWeight: 700 }}>
-                                    ה{existing}
-                                  </span>
-                                )}
-                              </label>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <div style={{ maxHeight: 260, overflowY: 'auto', padding: 4 }}>
-                          {Array.from(ihudByClass.entries())
-                            .sort((a, b) => a[1].className.localeCompare(b[1].className, 'he'))
-                            .map(([cid, { className, items }]) => (
-                              <div key={cid} style={{ marginBottom: 8 }}>
-                                <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, marginBottom: 4 }}>{className}</div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
-                                  {items.map((r) => {
-                                    const ctId = Number(r.ClassTeacherId);
-                                    const existing = Number(r.Ihud ?? 0);
-                                    const checked = wizardSelectedCtIds.has(ctId);
-                                    return (
-                                      <label
-                                        key={ctId}
-                                        style={{
-                                          display: 'flex',
-                                          alignItems: 'center',
-                                          gap: 6,
-                                          padding: '5px 8px',
-                                          background: checked ? '#dbeafe' : '#f9fafb',
-                                          border: `1px solid ${checked ? '#3b82f6' : '#e5e7eb'}`,
-                                          borderRadius: 5,
-                                          cursor: 'pointer',
-                                          fontSize: 12,
-                                        }}
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={checked}
-                                          onChange={() => toggleWizardMember(ctId)}
-                                          disabled={wizardBusy}
-                                          style={{ cursor: 'pointer' }}
-                                        />
-                                        <span style={{ flex: 1 }}>{r.TeacherName}</span>
-                                        {existing > 0 && (
-                                          <span style={{ fontSize: 10, background: '#c4b5fd', color: '#4c1d95', padding: '1px 5px', borderRadius: 3, fontWeight: 700 }}>
-                                            א{existing}
-                                          </span>
-                                        )}
-                                      </label>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Step 3: number picker */}
-                  {wizardSelectedCtIds.size >= 2 && (
-                    <div style={{ marginBottom: 10, padding: 10, background: '#f9fafb', borderRadius: 6 }}>
-                      <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
-                        {isHak ? '3' : '2'}. מספר {kindName}:
-                      </label>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                        <label style={{
-                          cursor: 'pointer',
-                          padding: '4px 10px',
-                          borderRadius: 5,
-                          background: wizardJoinNumber === 'new' ? titleBg : '#fff',
-                          border: `1px solid ${wizardJoinNumber === 'new' ? titleColor : '#d1d5db'}`,
-                          fontSize: 13,
-                          fontWeight: 600,
-                        }}>
-                          <input
-                            type="radio"
-                            checked={wizardJoinNumber === 'new'}
-                            onChange={() => setWizardJoinNumber('new')}
-                            disabled={wizardBusy}
-                            style={{ marginInlineEnd: 6 }}
-                          />
-                          חדש (מספר {nextFree})
+                        style={{ marginBottom: 14 }}
+                      />
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <label style={{ fontWeight: 600 }}>
+                          סמן את הכיתות ({selectedCount} נבחרו):
                         </label>
-                        {sortedExisting.map((n) => {
-                          const col = groupColor(isHak ? 'H' : 'I', n);
-                          const sel = wizardJoinNumber === n;
+                        <button
+                          type="button"
+                          className="btn btn-default btn-xs"
+                          disabled={wizardBusy}
+                          onClick={() => {
+                            if (allSelected) setWizardSelectedClasses(new Set());
+                            else setWizardSelectedClasses(new Set(allClasses.map((c) => c.ClassId)));
+                          }}
+                        >
+                          {allSelected ? 'נקה הכל' : 'בחר את כל השכבה'}
+                        </button>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 6 }}>
+                        {allClasses.map((c) => {
+                          const checked = wizardSelectedClasses.has(c.ClassId);
                           return (
                             <label
-                              key={n}
+                              key={c.ClassId}
                               style={{
-                                cursor: 'pointer',
-                                padding: '4px 10px',
-                                borderRadius: 5,
-                                background: sel ? col.bg : '#fff',
-                                border: `1px solid ${sel ? col.fg : '#d1d5db'}`,
-                                fontSize: 13,
-                                fontWeight: 600,
+                                display: 'flex', alignItems: 'center', gap: 6,
+                                padding: '6px 10px',
+                                background: checked ? '#fef3c7' : '#f9fafb',
+                                border: `1px solid ${checked ? '#f59e0b' : '#e5e7eb'}`,
+                                borderRadius: 6, cursor: 'pointer', fontSize: 13,
                               }}
                             >
                               <input
-                                type="radio"
-                                checked={sel}
-                                onChange={() => setWizardJoinNumber(n)}
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleWizardClass(c.ClassId)}
                                 disabled={wizardBusy}
-                                style={{ marginInlineEnd: 6 }}
                               />
-                              צרף ל-{isHak ? 'ה' : 'א'}{n}
+                              <span style={{ flex: 1, fontWeight: 600 }}>{c.ClassName}</span>
                             </label>
                           );
                         })}
                       </div>
-                    </div>
+                    </>
                   )}
                 </div>
                 <div className="modal-footer">
@@ -1815,15 +2472,157 @@ export default function TeacherClass() {
                     type="button"
                     className="btn btn-primary"
                     onClick={saveWizard}
-                    disabled={wizardBusy || wizardSelectedCtIds.size < 2}
+                    disabled={wizardBusy || selectedCount < 2}
                   >
-                    {wizardBusy ? <><span className="spinner" /> שומר...</> : <><i className="fa fa-save" /> צור {kindName}</>}
+                    {wizardBusy ? <><span className="spinner" /> שומר...</> : <><i className="fa fa-save" /> צור הקבצה</>}
                   </button>
                   <button
                     type="button"
                     className="btn btn-default"
                     onClick={closeWizard}
                     disabled={wizardBusy}
+                  >
+                    ביטול
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Create-Ihud wizard. Picks classes + a single responsible teacher,
+          then materialises the Ihud with all rows already populated. */}
+      {ihudWizardOpen && (() => {
+        const seen = new Set<number>();
+        const allClasses: { ClassId: number; ClassName: string }[] = [];
+        for (const r of classes) {
+          if (!seen.has(r.ClassId)) {
+            seen.add(r.ClassId);
+            allClasses.push({ ClassId: r.ClassId, ClassName: r.ClassName });
+          }
+        }
+        allClasses.sort((a, b) => a.ClassName.localeCompare(b.ClassName, 'he'));
+        const selectedCount = ihudWizardClasses.size;
+        const allSelected = allClasses.length > 0 && allClasses.every((c) => ihudWizardClasses.has(c.ClassId));
+
+        return (
+          <div
+            className="modal fade in"
+            role="dialog"
+            style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.55)' }}
+            onClick={(e) => { if (e.target === e.currentTarget) closeIhudWizard(); }}
+          >
+            <div className="modal-dialog" style={{ direction: 'rtl', maxWidth: 600 }}>
+              <div className="modal-content">
+                <div className="modal-header" style={{ background: '#ede9fe', borderBottom: '2px solid #7c3aed' }}>
+                  <button type="button" className="close" onClick={closeIhudWizard} aria-label="Close" disabled={ihudWizardBusy}>
+                    &times;
+                  </button>
+                  <h4 className="modal-title" style={{ color: '#5b21b6' }}>
+                    <i className="fa fa-link" /> יצירת איחוד חדש
+                  </h4>
+                  <div style={{ fontSize: 12, color: '#4b5563', marginTop: 4, lineHeight: 1.5 }}>
+                    איחוד מאחד שתי כיתות או יותר באותה שעה עם מורה אחראי אחד שילמד את כולן ביחד.
+                  </div>
+                </div>
+                <div className="modal-body">
+                  {allClasses.length === 0 ? (
+                    <div style={{ padding: 10, color: '#6b7280', fontSize: 13, background: '#f9fafb', borderRadius: 6 }}>
+                      אין כיתות בשכבה זו.
+                    </div>
+                  ) : (
+                    <>
+                      <label style={{ fontWeight: 600, marginBottom: 4, display: 'block' }}>
+                        שם האיחוד (אופציונלי):
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="למשל: שיעור משותף / לימודי דת"
+                        value={ihudWizardName}
+                        onChange={(e) => setIhudWizardName(e.target.value)}
+                        disabled={ihudWizardBusy}
+                        style={{ marginBottom: 14 }}
+                      />
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <label style={{ fontWeight: 600 }}>
+                          סמן את הכיתות לאיחוד ({selectedCount} נבחרו):
+                        </label>
+                        <button
+                          type="button"
+                          className="btn btn-default btn-xs"
+                          disabled={ihudWizardBusy}
+                          onClick={() => {
+                            if (allSelected) setIhudWizardClasses(new Set());
+                            else setIhudWizardClasses(new Set(allClasses.map((c) => c.ClassId)));
+                          }}
+                        >
+                          {allSelected ? 'נקה הכל' : 'בחר את כל השכבה'}
+                        </button>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 6, marginBottom: 16 }}>
+                        {allClasses.map((c) => {
+                          const checked = ihudWizardClasses.has(c.ClassId);
+                          return (
+                            <label
+                              key={c.ClassId}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 6,
+                                padding: '6px 10px',
+                                background: checked ? '#ede9fe' : '#f9fafb',
+                                border: `1px solid ${checked ? '#7c3aed' : '#e5e7eb'}`,
+                                borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleIhudWizardClass(c.ClassId)}
+                                disabled={ihudWizardBusy}
+                              />
+                              <span style={{ flex: 1, fontWeight: 600 }}>{c.ClassName}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
+                        מורה אחראי:
+                      </label>
+                      <select
+                        className="form-control"
+                        value={ihudWizardTeacher ?? ''}
+                        onChange={(e) => setIhudWizardTeacher(e.target.value ? Number(e.target.value) : null)}
+                        disabled={ihudWizardBusy}
+                      >
+                        <option value="">-- בחר מורה --</option>
+                        {teachers.map((t) => (
+                          <option key={t.TeacherId} value={t.TeacherId}>
+                            {t.FirstName} {t.LastName}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                        ניתן להחליף את המורה האחראי אחר כך ע"י גרירה לכרטיס האיחוד.
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className="modal-footer">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={saveIhudWizard}
+                    disabled={ihudWizardBusy || selectedCount < 2 || !ihudWizardTeacher}
+                  >
+                    {ihudWizardBusy ? <><span className="spinner" /> שומר...</> : <><i className="fa fa-save" /> צור איחוד</>}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-default"
+                    onClick={closeIhudWizard}
+                    disabled={ihudWizardBusy}
                   >
                     ביטול
                   </button>
@@ -1955,7 +2754,19 @@ export default function TeacherClass() {
                     <select
                       className="form-control"
                       value={teacherForm.Tafkid}
-                      onChange={(e) => setTeacherForm({ ...teacherForm, Tafkid: e.target.value })}
+                      onChange={(e) => {
+                        const newTafkid = e.target.value;
+                        // Choosing "מחנכ/ת כיתה" auto-fills the profession
+                        // with "מחנך" — homeroom teachers always teach
+                        // that as their default subject.
+                        const isHomeroom = tafkidOpts.find((t) => String(t.TafkidId) === newTafkid)?.Name?.includes('מחנכ');
+                        let nextProf = teacherForm.ProfessionalId;
+                        if (isHomeroom) {
+                          const homeroomProf = professionalOpts.find((p) => p.Name === 'מחנך');
+                          if (homeroomProf) nextProf = String(homeroomProf.ProfessionalId);
+                        }
+                        setTeacherForm({ ...teacherForm, Tafkid: newTafkid, ProfessionalId: nextProf });
+                      }}
                     >
                       <option value="0">-- בחר תפקיד --</option>
                       {tafkidOpts.map((t) => (
@@ -2145,6 +2956,158 @@ export default function TeacherClass() {
                   סגור
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteGroup && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmDeleteGroup(null);
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon">
+              <i className="fa fa-exclamation-triangle" />
+            </div>
+            <h3 className="confirm-modal__title">
+              מחיקת {confirmDeleteGroup.kind === 'H' ? 'הקבצה' : 'איחוד'}
+            </h3>
+            <p className="confirm-modal__text">
+              האם אתה בטוח שברצונך למחוק את <strong>{confirmDeleteGroup.label}</strong>?
+              <br />
+              {confirmDeleteGroup.kind === 'H'
+                ? 'המורים בהקבצה ישתחררו ויחזרו להיות זמינים.'
+                : 'המורה האחראי ישתחרר משיוך זה.'}
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setConfirmDeleteGroup(null)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => {
+                  const g = confirmDeleteGroup;
+                  setConfirmDeleteGroup(null);
+                  if (g.kind === 'H') deleteHakbatza(g.layerId, g.number);
+                  else deleteIhud(g.layerId, g.number);
+                }}
+                autoFocus
+              >
+                <i className="fa fa-trash" /> מחק לצמיתות
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmTeacherOverflow && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setConfirmTeacherOverflow(null);
+              loadClasses(layerId);
+            }
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon" style={{ background: '#fef3c7', color: '#d97706' }}>
+              <i className="fa fa-user-clock" />
+            </div>
+            <h3 className="confirm-modal__title">חריגה מקצובת המורה</h3>
+            <p className="confirm-modal__text">
+              עדכון זה יביא את המורה <strong>{confirmTeacherOverflow.teacherName}</strong> ל-
+              <strong>{confirmTeacherOverflow.projected}</strong> שעות פרונטליות,
+              מעל הקצובה שהוגדרה ב"ניהול מורים" (<strong>{confirmTeacherOverflow.quota}</strong>).
+              <br />
+              להמשיך בכל זאת? (כדאי לעדכן את שעות הפרונטלי במסך "ניהול מורים")
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => {
+                  setConfirmTeacherOverflow(null);
+                  loadClasses(layerId);
+                }}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-warning"
+                onClick={() => {
+                  const cb = confirmTeacherOverflow.onConfirm;
+                  setConfirmTeacherOverflow(null);
+                  cb();
+                }}
+                autoFocus
+              >
+                <i className="fa fa-check" /> כן, המשך
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmHourOverflow && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setConfirmHourOverflow(null);
+              loadClasses(layerId);
+            }
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon" style={{ background: '#fef3c7', color: '#d97706' }}>
+              <i className="fa fa-clock-o" />
+            </div>
+            <h3 className="confirm-modal__title">חריגה משעות הכיתה</h3>
+            <p className="confirm-modal__text">
+              השעות הפרונטליות המעודכנות יביאו את הכיתה ל-<strong>{confirmHourOverflow.projected}</strong> שעות,
+              מעל המגבלה של <strong>{confirmHourOverflow.maxHours}</strong> (לא כולל שעות שהייה/פרטני).
+              <br />
+              להמשיך בכל זאת?
+            </p>
+            <div className="confirm-modal__actions">
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => {
+                  setConfirmHourOverflow(null);
+                  loadClasses(layerId);
+                }}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-warning"
+                onClick={() => {
+                  const cb = confirmHourOverflow.onConfirm;
+                  setConfirmHourOverflow(null);
+                  cb();
+                }}
+                autoFocus
+              >
+                <i className="fa fa-check" /> כן, המשך
+              </button>
             </div>
           </div>
         </div>

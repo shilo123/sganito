@@ -24,12 +24,20 @@ interface DiagnosticRow {
   Assigned: number;
   Missing: number;
   Hakbatza: number;
-  Ihud: number;
   FreeDay: number;
   IsHomeroom: number;
   TotalRequiredAllClasses: number;
   DefinedHourSlots: number;        // total TeacherHours rows (may include hours not in SchoolHours)
   AvailableHourSlots: number;      // actual hours usable for teaching (SchoolHours intersection)
+}
+
+interface TeacherUnusedRow {
+  TeacherId: number;
+  TeacherName: string;
+  DefinedHours: number;
+  UsedHours: number;
+  UnusedHours: number;
+  UnusedHourIds: string; // CSV of HourIds (HourId = dayDigit + sequence)
 }
 
 type DeleteType = -1 | 0 | 1;
@@ -42,6 +50,20 @@ function formatElapsed(seconds: number): string {
   const mm = Math.floor(seconds / 60);
   const ss = seconds % 60;
   return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+}
+
+// HourId encodes the day in the leading digit (1=ראשון, 2=שני, …) and the
+// hour sequence in the trailing digits — same convention as Assign.tsx.
+function splitUnusedHourIds(csv: string): { day: number; hour: number }[] {
+  if (!csv) return [];
+  return csv
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => ({
+      day: Number(s.charAt(0)) || 0,
+      hour: Number(s.substring(1)) || 0,
+    }));
 }
 
 // ---- Component ----
@@ -62,13 +84,19 @@ export default function AssignAuto() {
 
   const [diagnostic, setDiagnostic] = useState<DiagnosticRow[]>([]);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
+
+  // Teachers with leftover capacity after the run (defined working hours
+  // that didn't end up assigned). Refreshed on every successful run.
+  const [unusedHours, setUnusedHours] = useState<TeacherUnusedRow[]>([]);
+  const [showUnusedHours, setShowUnusedHours] = useState(false);
   // Authoritative count of empty cells in the grid (from DB) — shown in the
   // diagnostic dialog. Can differ from diagnostic.length (unmet ClassTeacher
   // requirements) so we keep both and show emptyCellsState as the headline.
   const [emptyCellsState, setEmptyCellsState] = useState(0);
-
-  // Busy flag for the in-dialog auto-fix button.
-  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  // Current empty-slot count loaded on mount and refreshed after every run.
+  // Drives the main button mode: when > 0 we show "תיקון חוסרים אוטומטי"
+  // which only fills gaps without wiping the existing schedule.
+  const [currentGapCount, setCurrentGapCount] = useState<number | null>(null);
 
   // Elapsed seconds counter while the loading overlay is visible.
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -84,18 +112,6 @@ export default function AssignAuto() {
     }, 1000);
     return () => clearInterval(id);
   }, [isLoading]);
-
-  // Report modal shown after "תקן שעות מורים אוטומטית" — lists each teacher
-  // that had hours added, with the specific slots (day + hour).
-  interface RecoveryReportEntry {
-    TeacherId: number;
-    TeacherName: string;
-    IsHomeroom: boolean;
-    Added: number;
-    Required: number;
-    HourIds: number[];
-  }
-  const [recoveryReport, setRecoveryReport] = useState<RecoveryReportEntry[] | null>(null);
 
   async function fetchShibutzErrors(): Promise<{
     errors: ShibutzErrorRow[];
@@ -149,6 +165,35 @@ export default function AssignAuto() {
     }
   }
 
+  async function fetchUnusedHours(): Promise<TeacherUnusedRow[]> {
+    try {
+      const data = await ajax<TeacherUnusedRow[]>('Assign_GetTeacherUnusedHours');
+      if (!Array.isArray(data)) return [];
+      return data.filter((r) => (r?.TeacherId ?? 0) > 0 && (r?.UnusedHours ?? 0) > 0);
+    } catch (e) {
+      console.error('Assign_GetTeacherUnusedHours failed', e);
+      return [];
+    }
+  }
+
+  async function refreshGapCount(): Promise<number> {
+    try {
+      const res = await ajax<{ EmptySlots?: number }>('Assign_GetEmptySlotsCount');
+      const n = Number(res?.EmptySlots ?? 0);
+      setCurrentGapCount(n);
+      return n;
+    } catch (e) {
+      console.error('Assign_GetEmptySlotsCount failed', e);
+      return 0;
+    }
+  }
+
+  // Load gap count on mount so the main button can offer "fix gaps" right
+  // away when the schedule isn't 100% filled.
+  useEffect(() => {
+    refreshGapCount();
+  }, []);
+
   async function doAssign() {
     setSuccessAlert(false);
     setShowResults(false);
@@ -172,18 +217,20 @@ export default function AssignAuto() {
         console.error('Assign_FillEmptySlots failed', e);
       }
 
-      const diag = await fetchDiagnostic();
+      // Run the post-assignment fetches in parallel — they're independent
+      // reads (diagnostic, empty-slot count, error list, unused-hour list)
+      // and chaining them sequentially was costing ~5–15s per run.
+      const [diag, emptySlotsRes, result, unused] = await Promise.all([
+        fetchDiagnostic(),
+        ajax<{ EmptySlots?: number }>('Assign_GetEmptySlotsCount').catch(() => null),
+        fetchShibutzErrors(),
+        fetchUnusedHours(),
+      ]);
       setDiagnostic(diag);
+      setUnusedHours(unused);
 
-      let emptyCells = 0;
-      try {
-        const es = await ajax<{ EmptySlots?: number }>('Assign_GetEmptySlotsCount');
-        emptyCells = Number(es?.EmptySlots ?? 0);
-      } catch {
-        emptyCells = diag.length;
-      }
+      const emptyCells = emptySlotsRes ? Number(emptySlotsRes.EmptySlots ?? 0) : diag.length;
 
-      const result = await fetchShibutzErrors();
       setSavedCount(Math.max(0, result.savedCount));
       setErrors(result.errors);
 
@@ -210,139 +257,65 @@ export default function AssignAuto() {
       setIsLoading(false);
     } finally {
       setIsLoading(false);
+      refreshGapCount();
     }
   }
 
-  // Recovery flow: auto-add TeacherHours (smart) + re-run the scheduler.
-  // Triggered from the "try auto-fix" button inside the diagnostic report.
-  async function runRecoveryAndRetry() {
-    if (recoveryBusy) return;
-    setRecoveryBusy(true);
+  // Gap-fix mode: keep the existing schedule, just call the server's
+  // FillEmptySlots which slots an available teacher (homeroom first, then
+  // least-loaded) into every empty cell. No deletion, no rebuild.
+  async function doFixGaps() {
+    setSuccessAlert(false);
+    setShowResults(false);
     setShowDiagnostic(false);
-    setLoadingTitle('מוסיף שעות עבודה למורים ומנסה שוב...');
+    setDiagnostic([]);
+    setEmptyCellsState(0);
+    setLoadingTitle('מתקן חוסרים אוטומטית');
     setIsLoading(true);
+
     try {
-      // Step 1: smart auto-assign of teacher working hours
-      let addedHours = 0;
-      let quotaUpdated = 0;
-      let report: RecoveryReportEntry[] = [];
+      let filled = 0;
+      let stillEmpty = 0;
       try {
-        const raw = await fetch('/WebService.asmx/Teacher_AutoAssignHoursSmart', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-          body: 'AutoSetHomeroomFreeDay=0',
-          credentials: 'include',
-        });
-        if (raw.ok) {
-          const data = await raw.json();
-          addedHours = Number(data?.Added || 0);
-          quotaUpdated = Number(data?.QuotaUpdated || 0);
-          if (Array.isArray(data?.DetailsFull)) report = data.DetailsFull as RecoveryReportEntry[];
-        }
+        const res = await ajax<{ Filled?: number; StillEmpty?: number; Error?: string }>(
+          'Assign_FillEmptySlots',
+        );
+        filled = Number(res?.Filled ?? 0);
+        stillEmpty = Number(res?.StillEmpty ?? 0);
       } catch (e) {
-        console.error('Teacher_AutoAssignHoursSmart (recovery) failed', e);
+        console.error('Assign_FillEmptySlots failed', e);
+        toast.error('אירעה שגיאה בתיקון החוסרים. אנא נסה שוב.');
+        return;
       }
 
-      // Step 2: re-run the scheduler
-      setLoadingTitle('מריץ שוב את השיבוץ האוטומטי...');
-      await ajax('Assign_ShibutzAuto');
-      await new Promise((r) => setTimeout(r, 400));
-
-      // Step 3: re-check the final state from the DB
-      setLoadingTitle('מאמת תוצאות מול נתונים');
-      const diag = await fetchDiagnostic();
+      // Refresh post-run state in parallel
+      const [diag, emptySlotsRes, unused] = await Promise.all([
+        fetchDiagnostic(),
+        ajax<{ EmptySlots?: number }>('Assign_GetEmptySlotsCount').catch(() => null),
+        fetchUnusedHours(),
+      ]);
       setDiagnostic(diag);
+      setUnusedHours(unused);
 
-      let emptyCells = 0;
-      try {
-        const es = await ajax<{ EmptySlots?: number }>('Assign_GetEmptySlotsCount');
-        emptyCells = Number(es?.EmptySlots ?? 0);
-      } catch {
-        emptyCells = diag.length;
-      }
+      const remaining = emptySlotsRes ? Number(emptySlotsRes.EmptySlots ?? 0) : stillEmpty;
+      setCurrentGapCount(remaining);
 
-      const result = await fetchShibutzErrors();
-      setSavedCount(Math.max(0, result.savedCount));
-      setErrors(result.errors);
-
-      setIsLoading(false);
-      setRecoveryBusy(false);
-
-      // Show the per-teacher hours report when any teacher was touched.
-      if (report.length > 0) setRecoveryReport(report);
-
-      if (emptyCells === 0 && diag.length === 0) {
+      if (remaining === 0) {
         setResultMode('success');
         setShowResults(true);
         setSuccessAlert(true);
-        const prefix = addedHours > 0 || quotaUpdated > 0
-          ? `השיבוץ הושלם (הוספנו ${addedHours} שעות ל-${quotaUpdated} מורים)`
-          : 'השיבוץ הושלם';
-        toast.success(prefix);
+        toast.success(`הושלם — ${filled} חוסרים מולאו, המערכת מלאה`);
       } else {
-        // Still gaps — reopen the diagnostic with the updated numbers
-        setEmptyCellsState(emptyCells);
-        setErrorCount(emptyCells);
-        setShowDiagnostic(true);
+        setEmptyCellsState(remaining);
+        setErrorCount(remaining);
+        setShowDiagnostic(diag.length > 0);
         setSuccessAlert(true);
-        toast.warning(`נותרו ${emptyCells} משבצות לא משובצות לאחר התיקון האוטומטי`);
+        if (filled > 0) {
+          toast.warning(`מולאו ${filled} חוסרים. נותרו ${remaining} משבצות שאין להן מורה זמין.`);
+        } else {
+          toast.warning(`לא נמצאו מורים פנויים לחוסרים. נותרו ${remaining} משבצות.`);
+        }
       }
-    } catch (e) {
-      console.error('runRecoveryAndRetry failed', e);
-      toast.error('שגיאה בתיקון האוטומטי');
-    } finally {
-      setRecoveryBusy(false);
-      setIsLoading(false);
-    }
-  }
-
-  async function doAutoAddTeacherHours(): Promise<{ added: number; teachers: number; details: string[] } | null> {
-    try {
-      const raw = await fetch('/WebService.asmx/Teacher_AutoAddHours', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Accept: 'application/json' },
-        body: '',
-        credentials: 'include',
-      });
-      if (!raw.ok) return null;
-      const data = await raw.json();
-      if (!data || typeof data !== 'object') return null;
-      return {
-        added: Number(data.Added || 0),
-        teachers: Number(data.Teachers || 0),
-        details: Array.isArray(data.Details) ? data.Details : [],
-      };
-    } catch (e) {
-      console.error('Teacher_AutoAddHours failed', e);
-      return null;
-    }
-  }
-
-  async function doAutoSetHoursBtn() {
-    setLoadingTitle('מגדיר שעות עבודה אוטומטית למורים');
-    setIsLoading(true);
-    try {
-      const res = await doAutoAddTeacherHours();
-      if (!res) {
-        toast.error('הגדרת שעות אוטומטית נכשלה');
-        return;
-      }
-      if (res.added === 0) {
-        toast.info('לא נמצאו מורים שדורשים הוספת שעות עבודה');
-        return;
-      }
-      toast.success(
-        `הוגדרו ${res.added} שעות עבודה ל-${res.teachers} מורים`,
-      );
-      // Refresh the diagnostic if visible
-      if (showDiagnostic) {
-        const diag = await fetchDiagnostic();
-        setDiagnostic(diag);
-        if (diag.length === 0) setShowDiagnostic(false);
-      }
-    } catch (e) {
-      console.error(e);
-      toast.error('שגיאה בהגדרת שעות אוטומטית');
     } finally {
       setIsLoading(false);
     }
@@ -375,6 +348,7 @@ export default function AssignAuto() {
       toast.error('שגיאה בשיבוץ בכפייה');
     } finally {
       setIsLoading(false);
+      refreshGapCount();
     }
   }
 
@@ -421,6 +395,10 @@ export default function AssignAuto() {
       setErrors([]);
       setSavedCount(0);
       setErrorCount(0);
+      // After deletion the schedule is empty — switch the main button back
+      // to "שבץ אוטומטית" by clearing the gap count.
+      setCurrentGapCount(0);
+      setUnusedHours([]);
       toast.success('השיבוץ נמחק בהצלחה');
     } catch (e) {
       console.error('Assign_DeleteAssignAuto failed', e);
@@ -462,43 +440,61 @@ export default function AssignAuto() {
 
       <div className="assign-auto">
         <div className="assign-auto__card">
-          <div className="assign-auto__header">
-            <div>
-              <div className="assign-auto__kicker">פעולת שיבוץ</div>
-              <h2 className="assign-auto__title">שיבוץ אוטומטי</h2>
-            </div>
-            <div className="assign-auto__warning">
-              <i className="fa fa-exclamation-triangle" />
-              <span>שיבוץ אוטומטי מוחק את כל השיבוצים שנעשו עד כה.</span>
-            </div>
-          </div>
+          {(() => {
+            // The schedule has gaps (and a real schedule already exists) →
+            // offer a non-destructive "fix gaps" action instead of the
+            // standard wipe-and-rebuild flow.
+            const inGapMode = currentGapCount !== null && currentGapCount > 0;
+            return (
+              <>
+                <div className="assign-auto__header">
+                  <div>
+                    <div className="assign-auto__kicker">פעולת שיבוץ</div>
+                    <h2 className="assign-auto__title">
+                      {inGapMode ? 'תיקון חוסרים אוטומטי' : 'שיבוץ אוטומטי'}
+                    </h2>
+                  </div>
+                  <div className="assign-auto__warning">
+                    <i
+                      className={`fa fa-${inGapMode ? 'info-circle' : 'exclamation-triangle'}`}
+                    />
+                    <span>
+                      {inGapMode
+                        ? `נותרו ${currentGapCount} משבצות ריקות. הפעולה תשבץ מורים פנויים בחוסרים מבלי לפגוע במה שכבר משובץ.`
+                        : 'שיבוץ אוטומטי מוחק את כל השיבוצים שנעשו עד כה.'}
+                    </span>
+                  </div>
+                </div>
 
-          <div className="assign-auto__actions">
-            <button
-              type="button"
-              className="assign-auto__btn assign-auto__btn--primary"
-              onClick={doAssign}
-            >
-              <i className="fa fa-magic" />
-              <span>שבץ אוטומטית</span>
-            </button>
-            <button
-              type="button"
-              className="assign-auto__btn assign-auto__btn--danger"
-              onClick={() => setConfirmDeletion(0)}
-            >
-              <i className="fa fa-trash" />
-              <span>מחק שיבוץ</span>
-            </button>
-            <button
-              type="button"
-              className="assign-auto__btn assign-auto__btn--info"
-              onClick={showLastErrorsReport}
-            >
-              <i className="fa fa-file-text-o" />
-              <span>הצג דוח שגיאות אחרון</span>
-            </button>
-          </div>
+                <div className="assign-auto__actions">
+                  <button
+                    type="button"
+                    className="assign-auto__btn assign-auto__btn--primary"
+                    onClick={inGapMode ? doFixGaps : doAssign}
+                  >
+                    <i className={`fa fa-${inGapMode ? 'wrench' : 'magic'}`} />
+                    <span>{inGapMode ? 'תקן חוסרים אוטומטית' : 'שבץ אוטומטית'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="assign-auto__btn assign-auto__btn--danger"
+                    onClick={() => setConfirmDeletion(0)}
+                  >
+                    <i className="fa fa-trash" />
+                    <span>מחק שיבוץ</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="assign-auto__btn assign-auto__btn--info"
+                    onClick={showLastErrorsReport}
+                  >
+                    <i className="fa fa-file-text-o" />
+                    <span>הצג דוח שגיאות אחרון</span>
+                  </button>
+                </div>
+              </>
+            );
+          })()}
 
           {successAlert && (
             <div className="assign-auto__success">
@@ -506,8 +502,191 @@ export default function AssignAuto() {
               <span>שיבוץ אוטומטי לשכבה בוצע בהצלחה!</span>
             </div>
           )}
+
+          {/* Unused-capacity banner — shown after a run when any teacher
+              still has free working hours that didn't end up assigned. */}
+          {successAlert && unusedHours.length > 0 && (() => {
+            const totalUnused = unusedHours.reduce((sum, t) => sum + (t.UnusedHours ?? 0), 0);
+            return (
+              <div
+                style={{
+                  marginTop: 12,
+                  background: '#fffbeb',
+                  border: '1px solid #fcd34d',
+                  borderRight: '4px solid #f59e0b',
+                  borderRadius: 6,
+                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <i
+                    className="fa fa-clock-o"
+                    style={{ fontSize: 22, color: '#b45309' }}
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <div style={{ fontWeight: 700, color: '#92400e' }}>
+                      שעות פנויות שלא נוצלו
+                    </div>
+                    <div style={{ fontSize: 13, color: '#78350f', marginTop: 2 }}>
+                      <strong>{unusedHours.length}</strong>{' '}
+                      {unusedHours.length === 1 ? 'מורה' : 'מורים'} עם סה״כ{' '}
+                      <strong>{totalUnused}</strong> שעות עבודה שלא הופכו לשיבוץ
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-warning"
+                  onClick={() => setShowUnusedHours(true)}
+                >
+                  <i className="fa fa-list-ul" /> הצג פירוט
+                </button>
+              </div>
+            );
+          })()}
         </div>
       </div>
+
+      {/* Unused-hours modal — full breakdown per teacher, grouped by day. */}
+      {showUnusedHours && (
+        <div
+          className="modal"
+          style={{
+            display: 'block',
+            background: 'rgba(0,0,0,0.5)',
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            zIndex: 1050,
+            overflow: 'auto',
+          }}
+          onClick={() => setShowUnusedHours(false)}
+        >
+          <div
+            className="modal-dialog modal-lg"
+            style={{ direction: 'rtl', maxWidth: 800 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-content">
+              <div
+                className="modal-header"
+                style={{ background: '#fffbeb', borderBottom: '2px solid #f59e0b' }}
+              >
+                <button
+                  type="button"
+                  className="close"
+                  onClick={() => setShowUnusedHours(false)}
+                  aria-label="Close"
+                >
+                  &times;
+                </button>
+                <h4 className="modal-title" style={{ color: '#92400e' }}>
+                  <i className="fa fa-clock-o" /> שעות פנויות שלא נוצלו
+                </h4>
+              </div>
+              <div className="modal-body">
+                <div
+                  className="alert"
+                  style={{
+                    background: '#fef3c7',
+                    border: '1px solid #fcd34d',
+                    color: '#78350f',
+                    marginBottom: 15,
+                  }}
+                >
+                  המורים הבאים הוגדרו עם שעות עבודה שלא הופכו לשיבוץ. ייתכן
+                  שהדרישות בכיתות (ClassTeacher) פחותות מכמות השעות שהוגדרה,
+                  או שהשעות מתנגשות עם שיבוצים אחרים.
+                </div>
+
+                {unusedHours.map((t) => {
+                  const slots = splitUnusedHourIds(t.UnusedHourIds);
+                  // Group slots by day for compact display.
+                  const byDay = new Map<number, number[]>();
+                  for (const s of slots) {
+                    const arr = byDay.get(s.day) ?? [];
+                    arr.push(s.hour);
+                    byDay.set(s.day, arr);
+                  }
+                  const dayKeys = Array.from(byDay.keys()).sort((a, b) => a - b);
+                  return (
+                    <div
+                      key={t.TeacherId}
+                      style={{
+                        background: '#fff',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: 6,
+                        padding: '10px 12px',
+                        marginBottom: 8,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          marginBottom: 6,
+                          flexWrap: 'wrap',
+                          gap: 6,
+                        }}
+                      >
+                        <strong style={{ fontSize: 15 }}>{t.TeacherName}</strong>
+                        <span
+                          style={{
+                            background: '#fde68a',
+                            color: '#78350f',
+                            padding: '2px 10px',
+                            borderRadius: 12,
+                            fontSize: 12,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {t.UnusedHours} שעות פנויות מתוך {t.DefinedHours}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 13, color: '#4b5563' }}>
+                        {dayKeys.length === 0 ? (
+                          <em>אין פירוט שעות</em>
+                        ) : (
+                          dayKeys.map((d) => (
+                            <div key={d} style={{ marginBottom: 2 }}>
+                              <span style={{ color: '#1f2937', fontWeight: 600 }}>
+                                יום {DAY_NAMES[d - 1] || d}:
+                              </span>{' '}
+                              {byDay
+                                .get(d)!
+                                .sort((a, b) => a - b)
+                                .map((h) => `שעה ${h}`)
+                                .join(', ')}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn btn-default"
+                  onClick={() => setShowUnusedHours(false)}
+                >
+                  סגור
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
 
       {/* Diagnostic modal (new) */}
@@ -638,24 +817,10 @@ export default function AssignAuto() {
                       className="alert alert-danger"
                       style={{ marginBottom: 15, borderLeft: '4px solid #d32f2f' }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+                      <div style={{ marginBottom: 8 }}>
                         <strong>
                           <i className="fa fa-user-times" /> חסרות שעות עבודה למורים:
                         </strong>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-warning"
-                          onClick={async () => {
-                            await doAutoSetHoursBtn();
-                            // Re-run diagnostic to refresh the view
-                            const diag = await fetchDiagnostic();
-                            setDiagnostic(diag);
-                            if (diag.length === 0) setShowDiagnostic(false);
-                          }}
-                          title="הגדר אוטומטית שעות עבודה לכל המורים שחסרות להם"
-                        >
-                          <i className="fa fa-magic" /> הגדר שעות אוטומטית לכולם
-                        </button>
                       </div>
                       <ul style={{ marginBottom: 0, marginTop: 6 }}>
                         {uniqueTeachers.map((r) => {
@@ -714,11 +879,6 @@ export default function AssignAuto() {
                       if (r.Hakbatza > 0) {
                         tips.push(
                           `המורה חלק/ה מהקבצה ${r.Hakbatza} - בדוק שכל המורים בהקבצה זמינים באותן שעות`,
-                        );
-                      }
-                      if (r.Ihud > 0) {
-                        tips.push(
-                          `המורה חלק/ה מאיחוד ${r.Ihud} עם כיתות אחרות - בדוק זמינות בכיתות השותפות`,
                         );
                       }
                       if (r.IsHomeroom === 1) {
@@ -787,20 +947,7 @@ export default function AssignAuto() {
                   </ul>
                 </div>
               </div>
-              <div className="modal-footer" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-start' }}>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => runRecoveryAndRetry()}
-                  disabled={recoveryBusy}
-                  style={{ background: '#d97706', color: '#fff', fontWeight: 700, border: 'none', padding: '8px 16px', borderRadius: 6, opacity: recoveryBusy ? 0.7 : 1, cursor: recoveryBusy ? 'wait' : 'pointer' }}
-                >
-                  {recoveryBusy ? (
-                    <><span className="spinner" style={{ marginLeft: 6 }} />מנסה לפתור...</>
-                  ) : (
-                    <><i className="fa fa-magic" style={{ marginLeft: 6 }} /> תקן שעות מורים אוטומטית ונסה שוב</>
-                  )}
-                </button>
+              <div className="modal-footer">
                 <button
                   type="button"
                   className="btn btn-info"
@@ -815,106 +962,6 @@ export default function AssignAuto() {
       )}
 
       {/* Results modal */}
-      {/* Hours-added report — shown after auto-fix recovery runs */}
-      {recoveryReport && recoveryReport.length > 0 && (() => {
-        const DAY_LBL = ['', 'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'];
-        // Group hours per teacher by day for readability
-        const bucketed = recoveryReport
-          .slice()
-          .sort((a, b) => b.Added - a.Added)
-          .map((e) => {
-            const perDay = new Map<number, number[]>();
-            for (const hid of e.HourIds) {
-              const day = Math.floor(hid / 10);
-              const hour = hid % 10;
-              const arr = perDay.get(day) ?? [];
-              arr.push(hour);
-              perDay.set(day, arr);
-            }
-            return { entry: e, perDay };
-          });
-        const totalAdded = recoveryReport.reduce((a, e) => a + e.Added, 0);
-        return (
-          <div
-            className="modal"
-            style={{ display: 'block', background: 'rgba(0,0,0,0.55)', position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1070, overflow: 'auto' }}
-            onClick={() => setRecoveryReport(null)}
-          >
-            <div
-              className="modal-dialog"
-              style={{ direction: 'rtl', maxWidth: 720, marginTop: '5vh' }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="modal-content" style={{ borderRadius: 12, overflow: 'hidden' }}>
-                <div style={{ background: 'linear-gradient(135deg, #0f766e 0%, #0d9488 100%)', padding: '16px 22px', color: '#fff' }}>
-                  <h4 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>
-                    <i className="fa fa-clock-o" style={{ marginLeft: 8 }} />
-                    דוח הגדרת שעות — {totalAdded} שעות נוספו ל-{recoveryReport.length} מורים
-                  </h4>
-                  <div style={{ fontSize: 13, opacity: 0.9, marginTop: 4 }}>
-                    הפירוט הבא מראה לכל מורה אילו שעות עבודה נוספו לו
-                  </div>
-                </div>
-                <div className="modal-body" style={{ padding: '16px 20px', maxHeight: '60vh', overflowY: 'auto' }}>
-                  {bucketed.map(({ entry, perDay }) => (
-                    <div
-                      key={entry.TeacherId}
-                      style={{
-                        marginBottom: 10,
-                        padding: '10px 12px',
-                        background: entry.IsHomeroom ? '#fef3c7' : '#f1f5f9',
-                        border: `1px solid ${entry.IsHomeroom ? '#fcd34d' : '#cbd5e1'}`,
-                        borderRadius: 8,
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                        <strong style={{ color: '#0f172a' }}>{entry.TeacherName}</strong>
-                        {entry.IsHomeroom && (
-                          <span style={{ fontSize: 11, background: '#f59e0b', color: '#fff', padding: '1px 6px', borderRadius: 4, fontWeight: 700 }}>מחנך</span>
-                        )}
-                        <span style={{ marginInlineStart: 'auto', fontSize: 13, color: '#047857', fontWeight: 700 }}>
-                          + {entry.Added} שעות
-                        </span>
-                        <span style={{ fontSize: 11, color: '#6b7280' }}>(דרוש {entry.Required})</span>
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {Array.from(perDay.entries())
-                          .sort((a, b) => a[0] - b[0])
-                          .map(([day, hours]) => (
-                            <span
-                              key={day}
-                              style={{
-                                background: '#fff',
-                                border: '1px solid #e2e8f0',
-                                padding: '3px 8px',
-                                borderRadius: 6,
-                                fontSize: 12,
-                                color: '#334155',
-                              }}
-                            >
-                              <strong>{DAY_LBL[day] || '?'}</strong>:{' '}
-                              {hours.sort((a, b) => a - b).join(', ')}
-                            </span>
-                          ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="modal-footer" style={{ padding: '12px 20px', borderTop: '1px solid #e5e7eb' }}>
-                  <button
-                    type="button"
-                    className="btn btn-info"
-                    onClick={() => setRecoveryReport(null)}
-                  >
-                    סגור
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
       {showResults && (
         <div
           className="modal"

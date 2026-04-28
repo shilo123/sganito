@@ -204,6 +204,23 @@ public class Dal
         }
     }
 
+    // Transaction-aware variant: runs the SELECT on an existing connection
+    // (and optional transaction) so callers in tight INSERT/SELECT loops can
+    // see their own uncommitted writes without having to commit each row.
+    public static DataTable GetDataTable(SqlConnection con, SqlTransaction tx, string sqlCommand)
+    {
+        using (SqlCommand myCommand = new SqlCommand(sqlCommand, con))
+        {
+            if (tx != null) myCommand.Transaction = tx;
+            using (SqlDataReader myReader = myCommand.ExecuteReader())
+            {
+                DataTable myTable = new DataTable();
+                myTable.Load(myReader);
+                return myTable;
+            }
+        }
+    }
+
     // Oren 10/08/2010
     /// <summary>
     /// Returns DataTable from the soutce connection and command text provided.
@@ -418,9 +435,19 @@ public class Dal
     // calls per run).
     public static void ExeSpBigNonQuery(SqlConnection mySqlConnection, string storedProcedureName, params object[] Params)
     {
+        ExeSpBigNonQuery(mySqlConnection, null, storedProcedureName, Params);
+    }
+
+    // Transaction-aware overload: when called inside a tight loop (e.g.
+    // SaveAssignmentsToDatabase) wrapping the loop in a single transaction
+    // collapses N implicit per-row commits into one batch commit and cuts
+    // total wall-time dramatically.
+    public static void ExeSpBigNonQuery(SqlConnection mySqlConnection, SqlTransaction tx, string storedProcedureName, params object[] Params)
+    {
         using (SqlCommand cmd = new SqlCommand(storedProcedureName, mySqlConnection))
         {
             cmd.CommandType = CommandType.StoredProcedure;
+            if (tx != null) cmd.Transaction = tx;
             FillParametersFromCache(cmd);
 
             for (int i = 1; i < cmd.Parameters.Count; i++)

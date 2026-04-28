@@ -11,6 +11,11 @@ interface SchoolHourRow {
   [k: string]: unknown;
 }
 
+interface AssignmentLite {
+  HourId: string | number;
+  HourTypeId?: string | number | null;
+}
+
 const DAYS: { num: number; label: string }[] = [
   { num: 1, label: 'יום ראשון' },
   { num: 2, label: 'יום שני' },
@@ -56,8 +61,26 @@ export default function SchoolHours() {
   // מפה: HourId -> האם נבחר, האם פרטני/שהייה בלבד
   const [activeMap, setActiveMap] = useState<Record<string, boolean>>({});
   const [shehyaOnlyMap, setShehyaOnlyMap] = useState<Record<string, boolean>>({});
+  // מפה: HourId -> כמה שיבוצים תלויים בשעה הזו. שעה במפה דורשת אישור לפני
+  // הסרה כי המחיקה תפיל את כל ה-TeacherAssignment שמצביע על HourId זה.
+  const [assignedHourCounts, setAssignedHourCounts] = useState<Record<string, number>>({});
   const [initialLoading, setInitialLoading] = useState(true);
   const [menu, setMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, hourId: '' });
+  // פופאפ אישור — מופיע כש-מסירים שעה שמשובצת בה כיתה
+  const [removeConfirm, setRemoveConfirm] = useState<{
+    hourId: string;
+    day: number;
+    seq: number;
+    count: number;
+  } | null>(null);
+  // פופאפ אישור — מופיע בלחיצה ראשונה להוסיף שעה. אחרי אישור פעם אחת
+  // הסשן נפתח עד mouseup וה-drag עובד חופשי בלי אישורים נוספים.
+  const [addConfirm, setAddConfirm] = useState<{
+    hourId: string;
+    day: number;
+    seq: number;
+  } | null>(null);
+  const addConfirmedThisSession = useRef(false);
 
   // גרירה לבחירה
   const dragMode = useRef<null | 'add' | 'remove'>(null);
@@ -66,21 +89,41 @@ export default function SchoolHours() {
   const loadData = useCallback(async () => {
     if (!configurationId) return;
     try {
-      const data = await ajax<SchoolHourRow[]>('Gen_GetTable', {
-        TableName: 'SchoolHours',
-        Condition: `ConfigurationId=${configurationId}`,
-      });
-      setRows(Array.isArray(data) ? data : []);
+      // Load schedule definition + assignment counts in parallel — the
+      // assignment counts feed the "this hour is in use" warning popup.
+      const [hoursData, assignmentsData] = await Promise.all([
+        ajax<SchoolHourRow[]>('Gen_GetTable', {
+          TableName: 'SchoolHours',
+          Condition: `ConfigurationId=${configurationId}`,
+        }),
+        ajax<AssignmentLite[]>('Gen_GetTable', {
+          TableName: 'TeacherAssignment',
+          Condition: `ConfigurationId=${configurationId}`,
+        }).catch(() => [] as AssignmentLite[]),
+      ]);
+
+      setRows(Array.isArray(hoursData) ? hoursData : []);
 
       const active: Record<string, boolean> = {};
       const shehya: Record<string, boolean> = {};
-      for (const r of data || []) {
+      for (const r of hoursData || []) {
         const id = String(r.HourId);
         active[id] = true;
         if (String(r.IsOnlyShehya ?? '') === '1') shehya[id] = true;
       }
       setActiveMap(active);
       setShehyaOnlyMap(shehya);
+
+      // Count only real teaching slots (HourTypeId=1). Shehya/partani rows
+      // (HourTypeId 2/3) are weaker links and don't justify a popup since
+      // removing the school-hour just turns them into "ghost" rows.
+      const counts: Record<string, number> = {};
+      for (const a of assignmentsData || []) {
+        if (Number(a.HourTypeId ?? 0) !== 1) continue;
+        const id = String(a.HourId);
+        counts[id] = (counts[id] || 0) + 1;
+      }
+      setAssignedHourCounts(counts);
     } finally {
       setInitialLoading(false);
     }
@@ -128,10 +171,44 @@ export default function SchoolHours() {
     [updateHour],
   );
 
+  // Pop a confirmation dialog when removing an hour with assignments behind
+  // it. Returns true if the popup was shown (and therefore the caller
+  // shouldn't proceed with the actual removal).
+  const guardRemoveAssigned = useCallback(
+    (hourId: string): boolean => {
+      const count = assignedHourCounts[hourId] || 0;
+      if (count <= 0) return false;
+      setRemoveConfirm({
+        hourId,
+        day: Number(hourId.charAt(0)),
+        seq: Number(hourId.slice(1)),
+        count,
+      });
+      // Cancel any in-progress drag so the user has to consciously confirm
+      // before the next removal.
+      dragStarted.current = false;
+      dragMode.current = null;
+      return true;
+    },
+    [assignedHourCounts],
+  );
+
   const onCellMouseDown = (e: React.MouseEvent, hourId: string) => {
     if (e.button !== 0) return; // רק לחיצה שמאלית
-    dragStarted.current = true;
     const isActive = !!activeMap[hourId];
+    if (isActive && guardRemoveAssigned(hourId)) return;
+    // First add in a fresh session needs explicit confirmation. Once
+    // confirmed (or once the user finishes a drag and releases the mouse),
+    // the rest of the drag-add session runs without further popups.
+    if (!isActive && !addConfirmedThisSession.current) {
+      setAddConfirm({
+        hourId,
+        day: Number(hourId.charAt(0)),
+        seq: Number(hourId.slice(1)),
+      });
+      return;
+    }
+    dragStarted.current = true;
     dragMode.current = isActive ? 'remove' : 'add';
     setActive(hourId, !isActive);
   };
@@ -139,14 +216,23 @@ export default function SchoolHours() {
   const onCellMouseEnter = (hourId: string) => {
     if (!dragStarted.current || !dragMode.current) return;
     const isActive = !!activeMap[hourId];
-    if (dragMode.current === 'add' && !isActive) setActive(hourId, true);
-    else if (dragMode.current === 'remove' && isActive) setActive(hourId, false);
+    if (dragMode.current === 'add' && !isActive) {
+      setActive(hourId, true);
+    } else if (dragMode.current === 'remove' && isActive) {
+      // While drag-removing, hitting an assigned hour pauses the drag and
+      // asks the admin to confirm explicitly for that hour.
+      if (guardRemoveAssigned(hourId)) return;
+      setActive(hourId, false);
+    }
   };
 
   useEffect(() => {
     const stop = () => {
       dragStarted.current = false;
       dragMode.current = null;
+      // Re-arm the add confirmation for the next click. Without this the
+      // user could keep adding hours indefinitely after a single approval.
+      addConfirmedThisSession.current = false;
     };
     window.addEventListener('mouseup', stop);
     return () => window.removeEventListener('mouseup', stop);
@@ -315,6 +401,133 @@ export default function SchoolHours() {
           </li>
         </ul>
       )}
+
+      {removeConfirm && (() => {
+        const c = removeConfirm;
+        const dayLabel = DAYS.find((d) => d.num === c.day)?.label || `יום ${c.day}`;
+        const timeRange = HOUR_SLOTS.find((h) => h.seq === c.seq)?.time || '';
+        return (
+          <div
+            className="confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setRemoveConfirm(null);
+            }}
+          >
+            <div className="confirm-modal__card">
+              <div className="confirm-modal__icon" style={{ color: '#dc2626' }}>
+                <i className="fa fa-exclamation-triangle" />
+              </div>
+              <h3 className="confirm-modal__title">השעה משובצת במערכת</h3>
+              <p className="confirm-modal__text" style={{ textAlign: 'right' }}>
+                שעה זו (<strong>{dayLabel} · שעה {c.seq}{timeRange ? `, ${timeRange}` : ''}</strong>)
+                משמשת כעת ב-<strong>{c.count}</strong>{' '}
+                {c.count === 1 ? 'שיבוץ של מורה לכיתה' : 'שיבוצים של מורים לכיתות'}.
+                <br />
+                <br />
+                ביטול השעה ממצבת בית הספר ימחק את כל השיבוצים בה ויפגע
+                במערכת השבועית.
+                <br />
+                <br />
+                האם להמשיך?
+              </p>
+              <div className="confirm-modal__actions" style={{ marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="btn btn-default"
+                  onClick={() => setRemoveConfirm(null)}
+                  autoFocus
+                >
+                  ביטול
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => {
+                    const hid = c.hourId;
+                    setRemoveConfirm(null);
+                    setActive(hid, false);
+                    // The teaching slot is gone — drop it from the
+                    // assignment-count map so further drag actions on the
+                    // same cell don't re-trigger the popup.
+                    setAssignedHourCounts((prev) => {
+                      if (!prev[hid]) return prev;
+                      const next = { ...prev };
+                      delete next[hid];
+                      return next;
+                    });
+                  }}
+                >
+                  <i className="fa fa-trash" /> בטל בכל זאת
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {addConfirm && (() => {
+        const c = addConfirm;
+        const dayLabel = DAYS.find((d) => d.num === c.day)?.label || `יום ${c.day}`;
+        const timeRange = HOUR_SLOTS.find((h) => h.seq === c.seq)?.time || '';
+        return (
+          <div
+            className="confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setAddConfirm(null);
+            }}
+          >
+            <div className="confirm-modal__card">
+              <div className="confirm-modal__icon" style={{ color: '#0ea5e9' }}>
+                <i className="fa fa-info-circle" />
+              </div>
+              <h3 className="confirm-modal__title">הוספת שעה למצבת בית הספר</h3>
+              <p className="confirm-modal__text" style={{ textAlign: 'right' }}>
+                אתה עומד להוסיף את השעה{' '}
+                <strong>{dayLabel} · שעה {c.seq}{timeRange ? `, ${timeRange}` : ''}</strong>{' '}
+                למצבת בית הספר.
+                <br />
+                <br />
+                כל הכיתות יקבלו משבצת ריקה חדשה בשעה זו, ויידרש שיבוץ מורים
+                כדי למלא אותן. אישור פעם אחת מאפשר להוסיף עוד שעות בגרירה
+                ללא אישורים נוספים בלחיצה הזו.
+                <br />
+                <br />
+                האם להמשיך?
+              </p>
+              <div className="confirm-modal__actions" style={{ marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="btn btn-default"
+                  onClick={() => setAddConfirm(null)}
+                  autoFocus
+                >
+                  ביטול
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => {
+                    const hid = c.hourId;
+                    setAddConfirm(null);
+                    // Mark the session as confirmed so a follow-up drag can
+                    // keep adding hours without re-prompting.
+                    addConfirmedThisSession.current = true;
+                    dragStarted.current = true;
+                    dragMode.current = 'add';
+                    setActive(hid, true);
+                  }}
+                >
+                  <i className="fa fa-plus" /> הוסף שעה
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* שומר שדה גולמי לצורך debug בעתיד - rows.length: {rows.length} */}
       <span style={{ display: 'none' }}>{rows.length}</span>
