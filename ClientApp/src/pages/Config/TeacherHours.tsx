@@ -131,11 +131,22 @@ function buildHourCellsForDay(day: number, rawRows: TeacherHourRow[]): HourCell[
     });
   }
 
-  // מציגים רק תאים שיש להם משמעות ויזואלית: שיבוץ כיתה, שהייה, פרטני.
-  // תאים "מסומנים למורה בלבד" (TeacherHours ללא HourTypeId) נבלעים ב-render
-  // הרגיל של תא ריק - משאירים אותם ב-hourMap לצורך לוגיקה אבל לא מציגים אותם.
+  // משמעות חדשה: שורה ב-TeacherHours בלי HourTypeId (=0/NULL) מסמנת
+  // שעה *לא זמינה* — שעה שהמורה אינו יכול ללמד בה. שיבוץ אוטומטי ידלג עליה.
+  // שאר הסוגים (1=שיבוץ ישן/2=פרטני/3=שהייה) ממשיכים להיות מטופלים כמקודם.
+  // הערה: ה-SP Teacher_GetTeacherHours מחזיר גם שעות בית-ספר ללא רשומת
+  // TeacherHours (TeacherId=null). אלה תאים פנויים — חייבים לסנן אותם החוצה.
   return Array.from(byId.values())
-    .filter((c) => c.HourTypeId === 1 || c.HourTypeId === 2 || c.HourTypeId === 3)
+    .filter((c) => {
+      // במסך החדש אין הצגה של שיבוצי כיתה (HourTypeId=1) — רק
+      // פרטני (2), שהייה (3), ו"לא זמין" (0 + teacherHas).
+      if (c.HourTypeId === 2 || c.HourTypeId === 3) return true;
+      return c.HourTypeId === 0 && c.teacherHas;
+    })
+    .map((c) => {
+      if (c.HourTypeId === 0) return { ...c, label: 'לא זמין' };
+      return c;
+    })
     .sort((a, b) => a.seq - b.seq);
 }
 
@@ -193,20 +204,21 @@ export default function TeacherHours() {
   // Classes the currently-selected teacher is linked to in TeacherClass
   // (regular, hakbatza, or ihud). Picker uses this to constrain options.
   const [teacherClasses, setTeacherClasses] = useState<Array<{ ClassId: number; ClassName: string; Hakbatza: number; Ihud: number; LayerId: number }>>([]);
+  // All teacher→class assignments, keyed by TeacherId. Loaded once for the
+  // table tag column so each row can list its classes without N round-trips.
+  const [classesByTeacher, setClassesByTeacher] = useState<Map<string, Array<{
+    ClassId: number;
+    ClassName: string;
+    LayerName: string;
+    Hour: number;
+    Hakbatza: number;
+    Ihud: number;
+    IsHomeroom: boolean;
+  }>>>(new Map());
   const [filterName, setFilterName] = useState('');
   const [filterTafkid, setFilterTafkid] = useState<string>('');
   const [filterClass, setFilterClass] = useState<string>('');
   const [initialLoading, setInitialLoading] = useState(true);
-  const [classPicker, setClassPicker] = useState<{ hourId: string; day: number; seq: number } | null>(null);
-  const [pickerBusy, setPickerBusy] = useState(false);
-  const [quotaModal, setQuotaModal] = useState<{
-    hourId: string;
-    day: number;
-    seq: number;
-    manageClassId: number;
-  } | null>(null);
-  const [quotaValue, setQuotaValue] = useState<number>(0);
-  const [quotaBusy, setQuotaBusy] = useState(false);
   const [freeDayBusy, setFreeDayBusy] = useState(false);
   const [maxHoursEdit, setMaxHoursEdit] = useState<string>('');
   const [maxHoursBusy, setMaxHoursBusy] = useState(false);
@@ -230,7 +242,6 @@ export default function TeacherHours() {
   });
 
   const dragMode = useRef<null | 'add' | 'remove'>(null);
-  const dragClassId = useRef<number>(0);
   const dragActive = useRef(false);
   const draggedCells = useRef<Set<string>>(new Set());
   const busyCellsRef = useRef<Set<string>>(new Set());
@@ -251,16 +262,16 @@ export default function TeacherHours() {
     dragFailCount.current = 0;
     const t = toastRef.current;
     if (mode === 'add') {
-      if (count > 1 && failed === 0) t.success(`${ok} שעות שובצו בהצלחה`);
-      else if (count > 1 && failed > 0 && ok > 0) t.warning(`${ok} שובצו, ${failed} נכשלו`);
+      if (count > 1 && failed === 0) t.success(`${ok} שעות סומנו כלא זמינות`);
+      else if (count > 1 && failed > 0 && ok > 0) t.warning(`${ok} סומנו, ${failed} נכשלו`);
       else if (failed > 0 && ok === 0) {
-        t.warning(count === 1 ? 'שיבוץ השעה נכשל — ייתכן חריגה ממגבלה' : `שיבוץ של ${failed} שעות נכשל`);
+        t.warning(count === 1 ? 'סימון השעה כלא זמינה נכשל' : `סימון של ${failed} שעות נכשל`);
       }
     } else if (mode === 'remove') {
-      if (count > 1 && failed === 0) t.success(`${ok} שיבוצים הוסרו`);
-      else if (count > 1 && failed > 0 && ok > 0) t.warning(`${ok} הוסרו, ${failed} נכשלו`);
+      if (count > 1 && failed === 0) t.success(`${ok} שעות שוחררו`);
+      else if (count > 1 && failed > 0 && ok > 0) t.warning(`${ok} שוחררו, ${failed} נכשלו`);
       else if (failed > 0 && ok === 0) {
-        t.error(count === 1 ? 'הסרת השיבוץ נכשלה' : `הסרה של ${failed} שיבוצים נכשלה`);
+        t.error(count === 1 ? 'שחרור השעה נכשל' : `שחרור של ${failed} שעות נכשל`);
       }
     }
   }, []);
@@ -347,6 +358,60 @@ export default function TeacherHours() {
         }
         setSchoolHourIds(all);
         setShehyaOnlyHourIds(shehyaOnly);
+      }),
+      // Load class→teacher assignments for every layer in parallel and group
+      // by TeacherId, so the table can render a "כיתות" tag column per row.
+      Promise.all([1, 2, 3, 4, 5, 6].map((layerId) =>
+        ajax<Array<{
+          ClassId: number;
+          ClassName: string;
+          Name1?: string;
+          TeacherId: number | string | null;
+          Hour: number | string | null;
+          Hakbatza: number | string | null;
+          Ihud: number | string | null;
+          IsTeacher?: boolean | number | string | null;
+        }>>('Class_GetClassByLayerId', { LayerId: layerId }).catch(() => [])
+      )).then((layerResults) => {
+        if (cancelled) return;
+        const map = new Map<string, Array<{
+          ClassId: number;
+          ClassName: string;
+          LayerName: string;
+          Hour: number;
+          Hakbatza: number;
+          Ihud: number;
+          IsHomeroom: boolean;
+        }>>();
+        // Each row in Class_GetClassByLayerId is one (Class, Teacher, Hour)
+        // tuple. The same class appears multiple times when Hakbatza/Ihud
+        // bring more teachers in. Push one tag per row keyed by teacher.
+        for (const rows of layerResults) {
+          if (!Array.isArray(rows)) continue;
+          for (const r of rows) {
+            const tid = r.TeacherId == null ? '' : String(r.TeacherId);
+            if (!tid) continue;
+            const entry = {
+              ClassId: Number(r.ClassId ?? 0),
+              ClassName: String(r.ClassName ?? ''),
+              LayerName: String(r.Name1 ?? ''),
+              Hour: Number(r.Hour ?? 0),
+              Hakbatza: Number(r.Hakbatza ?? 0) || 0,
+              Ihud: Number(r.Ihud ?? 0) || 0,
+              IsHomeroom: r.IsTeacher === true || r.IsTeacher === 1 || String(r.IsTeacher ?? '').toLowerCase() === 'true',
+            };
+            const list = map.get(tid);
+            if (list) list.push(entry); else map.set(tid, [entry]);
+          }
+        }
+        // Stable sort: layer first, then class name.
+        for (const list of map.values()) {
+          list.sort((a, b) => {
+            if (a.LayerName !== b.LayerName) return a.LayerName.localeCompare(b.LayerName, 'he');
+            return a.ClassName.localeCompare(b.ClassName, 'he');
+          });
+        }
+        setClassesByTeacher(map);
       }),
     ]).finally(() => {
       if (!cancelled) setInitialLoading(false);
@@ -453,10 +518,47 @@ export default function TeacherHours() {
     return out;
   }, [teacherHours]);
 
+  // ספירת שעות זמינות לשיבוץ — סה"כ שעות בית-ספר פחות:
+  //   • שעות לא זמינות (TeacherHours בלי HourTypeId)
+  //   • שעות פרטני / שהייה
+  //   • כל יום חופשי (השעות הוירטואליות שביום זה)
+  const availableCount = useMemo(() => {
+    if (!selectedTeacher) return 0;
+    const blocked = new Set<string>();
+    for (const r of teacherHours) {
+      const t = Number(r.HourTypeId ?? 0);
+      const hasTeacher = (r as { TeacherId?: number | string | null }).TeacherId != null;
+      if (hasTeacher && (t === 0 || t === 2 || t === 3)) blocked.add(String(r.HourId));
+    }
+    const freeDay = Number(selectedTeacher.FreeDay ?? 0);
+    let count = 0;
+    for (const id of schoolHourIds) {
+      if (shehyaOnlyHourIds.has(id)) continue;
+      if (Number(id.charAt(0)) === freeDay) continue;
+      if (blocked.has(id)) continue;
+      count += 1;
+    }
+    return count;
+  }, [teacherHours, schoolHourIds, shehyaOnlyHourIds, selectedTeacher]);
+
+  // מספר השיבוצים הקיימים (לתצוגה אינפורמטיבית; לא בשימוש פעיל יותר)
   const frontalCount = useMemo(() => {
     const ids = new Set<string>();
     for (const r of teacherHours) {
       if (Number(r.HourTypeId) === 1) ids.add(String(r.HourId));
+    }
+    return ids.size;
+  }, [teacherHours]);
+
+  // ספירת שעות לא זמינות — שורות ב-TeacherHours בלי HourTypeId אבל עם TeacherId.
+  // הערה: ה-SP מחזיר גם שורות placeholder עם TeacherId=null עבור שעות פנויות
+  // בבי"ס — אסור לספור אותן כלא זמינות.
+  const blockedCount = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of teacherHours) {
+      const t = Number(r.HourTypeId ?? 0);
+      const hasTeacher = (r as { TeacherId?: number | string | null }).TeacherId != null;
+      if (t === 0 && hasTeacher) ids.add(String(r.HourId));
     }
     return ids.size;
   }, [teacherHours]);
@@ -494,50 +596,40 @@ export default function TeacherHours() {
     }
   }, [selectedTeacher, loadTeacherHours]);
 
-  // פעולה ברמה נמוכה: שיבוץ שעה לכיתה. מחזירה קוד res מהשרת (0/1 הצלחה).
-  const doAssignOp = useCallback(
-    async (hourId: string, classId: number): Promise<number> => {
-      if (!selectedTeacher) return -1;
+  // סימון שעה כלא זמינה — שעה שהמורה אינו יכול ללמד בה.
+  // יוצר רשומה ב-TeacherHours ללא TeacherAssignment.
+  // השיבוץ האוטומטי ידע לדלג על שעות אלו.
+  // הגנה: לא לאפשר חסימה שתוריד את הזמינות מתחת למכסה (Frontaly) של המורה.
+  const doMarkBlocked = useCallback(
+    async (hourId: string): Promise<boolean> => {
+      if (!selectedTeacher) return false;
+      // אם החסימה תוריד את availableCount מתחת ל-Frontaly, חוסמים אותה.
+      const quota = Number(selectedTeacher.Frontaly ?? 0);
+      if (quota > 0 && availableCount - 1 < quota) {
+        toast.warning(
+          `לא ניתן לחסום עוד שעות — נשארו ${availableCount} שעות זמינות מול מכסה של ${quota}. הקטן את המכסה או שחרר שעות אחרות תחילה.`,
+          { title: 'חסימה מעבר למכסה' },
+        );
+        return false;
+      }
       addBusy(hourId);
       try {
-        try {
-          await ajax('Teacher_SetTeacherHours', {
-            TeacherId: selectedTeacher.TeacherId,
-            HourId: hourId,
-            Type: 1,
-          });
-        } catch {
-          /* row already exists - proceed */
-        }
-        const result = await ajax<Array<{ res: number }>>('Assign_SetAssignManual', {
+        await ajax('Teacher_SetTeacherHours', {
+          TeacherId: selectedTeacher.TeacherId,
+          HourId: hourId,
           Type: 1,
-          SourceId: selectedTeacher.TeacherId,
-          SourceTeacherId: selectedTeacher.TeacherId,
-          SourceClassId: '',
-          SourceHourId: '',
-          SourceProfessionalId: '',
-          SourceHakbatza: '',
-          SourceIhud: '',
-          TargetId: '',
-          TargetTeacherId: '',
-          TargetClassId: classId,
-          TargetHourId: hourId,
-          TargetProfessionalId: '',
-          TargetHakbatza: '',
-          TargetIhud: '',
         });
-        const res = Array.isArray(result) && result[0] ? Number(result[0].res ?? 0) : 0;
         needsReload.current = true;
-        return res;
+        return true;
       } catch (err) {
-        console.error('doAssignOp failed', err);
-        return -1;
+        console.error('doMarkBlocked failed', err);
+        return false;
       } finally {
         delBusy(hourId);
         maybeReload();
       }
     },
-    [selectedTeacher, addBusy, delBusy, maybeReload],
+    [selectedTeacher, addBusy, delBusy, maybeReload, availableCount, toast],
   );
 
   const doRemoveOp = useCallback(
@@ -615,6 +707,14 @@ export default function TeacherHours() {
   const onCellMouseDown = (e: React.MouseEvent, hourId: string) => {
     if (e.button !== 0 || !selectedTeacher) return;
     if (busyCellsRef.current.has(hourId)) return;
+    // איפוס מצב גרירה תקוע מקליקים קודמים. ייתכן ש-mouseup
+    // לא נתפס (למשל אם המשתמש שחרר מחוץ לחלון), ואז dragActive
+    // נשאר true ושומר על דאת mouseEnter במצב לא רצוי.
+    if (dragActive.current) {
+      dragActive.current = false;
+      dragMode.current = null;
+      draggedCells.current = new Set();
+    }
     // Block interaction on hours that aren't defined in SchoolHours for this config
     if (schoolHourIds.size > 0 && !schoolHourIds.has(hourId)) {
       toast.warning('שעה זו אינה מוגדרת כשעת לימוד בבית הספר. הוסף אותה תחילה במסך "שעות בית הספר"', { title: 'שעה לא זמינה' });
@@ -625,15 +725,14 @@ export default function TeacherHours() {
       return;
     }
     const existing = hourMap[hourId];
-    // תא נחשב "מסומן" רק אם יש לו HourTypeId (1=שיבוץ, 2=פרטני, 3=שהייה).
-    // רשומות ללא HourTypeId הן רק מידע על שעות פתוחות בביה"ס - תא ריק למשתמש.
-    const existingType = existing ? Number(existing.HourTypeId ?? 0) : 0;
-    const isMarked = existingType === 1 || existingType === 2 || existingType === 3;
-    // לחיצה על שעה מסומנת (שיבוץ כיתה/שהייה/פרטני) - הופכת אותה לריקה
+    const existingType = existing ? Number(existing.HourTypeId ?? 0) : -1;
+    // התא נחשב מסומן רק אם יש שורת TeacherHours אמיתית (TeacherId לא null).
+    // ה-SP מחזיר גם שורות placeholder עם TeacherId=null עבור שעות פנויות בבי"ס.
+    const hasTeacherRow = existing != null
+      && (existing as { TeacherId?: number | string | null }).TeacherId != null;
+    const isMarked = hasTeacherRow;
     if (isMarked) {
-      // If this is a class assignment and there's a real TeacherAssignment
-      // backing it, removing the working hour will wipe the assignment too.
-      // Pause and ask the admin to confirm before doing damage to the schedule.
+      // שיבוץ כיתה ישן (HourTypeId=1) — דורש אישור כי הסרה תפגע במערכת
       if (existingType === 1) {
         const linkedAssignments = teacherAssignments.filter(
           (a) => String(a.HourId) === String(hourId),
@@ -660,6 +759,7 @@ export default function TeacherHours() {
           return;
         }
       }
+      // הסרת סימון "לא זמין" / פרטני / שהייה — גרירה להסרה
       dragMode.current = 'remove';
       dragActive.current = true;
       draggedCells.current = new Set([hourId]);
@@ -669,52 +769,14 @@ export default function TeacherHours() {
       });
       return;
     }
-    const manageClassId = Number((selectedTeacher as { ManageClassId?: unknown }).ManageClassId ?? 0);
-    // מכסה מלאה - מודל מכסה (לא מתחילים גרירה)
-    const frontalyQuota = Number(selectedTeacher.Frontaly ?? 0);
-    if (frontalyQuota > 0 && frontalCount >= frontalyQuota) {
-      const day = Number(hourId.charAt(0));
-      const seq = Number(hourId.slice(1));
-      setQuotaValue(frontalyQuota + 1);
-      setQuotaModal({ hourId, day, seq, manageClassId });
-      return;
-    }
-    // Pick the option list before deciding the flow:
-    // - 0 options → fall back to all classes (legacy behaviour) so the user
-    //   isn't blocked when classes haven't been linked yet
-    // - 1 option → assign immediately, no popup
-    // - 2+ options → open the picker constrained to those classes
-    const linkedClasses = teacherClasses.length > 0
-      ? teacherClasses
-      : classOptions.map((c) => ({ ClassId: c.ClassId, ClassName: c.ClassName, Hakbatza: 0, Ihud: 0, LayerId: 0 }));
-
-    if (manageClassId === 0) {
-      if (linkedClasses.length === 1) {
-        // Single class — drag-assign directly to it
-        const onlyClass = linkedClasses[0].ClassId;
-        dragMode.current = 'add';
-        dragClassId.current = onlyClass;
-        dragActive.current = true;
-        draggedCells.current = new Set([hourId]);
-        dragFailCount.current = 0;
-        doAssignOp(hourId, onlyClass).then((res) => {
-          if (res !== 0 && res !== 1) dragFailCount.current += 1;
-        });
-        return;
-      }
-      const day = Number(hourId.charAt(0));
-      const seq = Number(hourId.slice(1));
-      setClassPicker({ hourId, day, seq });
-      return;
-    }
-    // מורה מחנכת - מתחילים גרירת שיבוץ לכיתה שלה
+    // תא ריק — מסמנים כשעה לא זמינה (שעה שהמורה אינו יכול ללמד בה).
+    // לא צריך לבחור כיתה, כי זה חוסם בכל הכיתות.
     dragMode.current = 'add';
-    dragClassId.current = manageClassId;
     dragActive.current = true;
     draggedCells.current = new Set([hourId]);
     dragFailCount.current = 0;
-    doAssignOp(hourId, manageClassId).then((res) => {
-      if (res !== 0 && res !== 1) dragFailCount.current += 1;
+    doMarkBlocked(hourId).then((ok) => {
+      if (!ok) dragFailCount.current += 1;
     });
   };
 
@@ -726,19 +788,17 @@ export default function TeacherHours() {
     if (schoolHourIds.size > 0 && !schoolHourIds.has(hourId)) return;
     if (shehyaOnlyHourIds.has(hourId)) return;
     const existing = hourMap[hourId];
-    const existingType = existing ? Number(existing.HourTypeId ?? 0) : 0;
-    const isMarked = existingType === 1 || existingType === 2 || existingType === 3;
+    const isMarked = existing != null
+      && (existing as { TeacherId?: number | string | null }).TeacherId != null;
 
     if (dragMode.current === 'add') {
-      if (isMarked) return; // בגרירת שיבוץ מדלגים על תאים כבר מסומנים
-      const quota = Number(selectedTeacher.Frontaly ?? 0);
-      if (quota > 0 && frontalCount + draggedCells.current.size >= quota) return;
+      if (isMarked) return; // גרירת סימון — מדלגים על מסומנים
       draggedCells.current.add(hourId);
-      doAssignOp(hourId, dragClassId.current).then((res) => {
-        if (res !== 0 && res !== 1) dragFailCount.current += 1;
+      doMarkBlocked(hourId).then((ok) => {
+        if (!ok) dragFailCount.current += 1;
       });
     } else if (dragMode.current === 'remove') {
-      if (!isMarked) return; // בגרירת הסרה מדלגים על תאים ריקים
+      if (!isMarked) return; // גרירת הסרה — מדלגים על תאים ריקים
       draggedCells.current.add(hourId);
       doRemoveOp(hourId).then((ok) => {
         if (!ok) dragFailCount.current += 1;
@@ -746,38 +806,11 @@ export default function TeacherHours() {
     }
   };
 
-  async function assignHourToClass(hourId: string, classId: number) {
-    if (!selectedTeacher) return;
-    setPickerBusy(true);
-    try {
-      const res = await doAssignOp(hourId, classId);
-      if (res !== 0 && res !== 1) {
-        if (res === 2) toast.warning('השעה כבר משובצת לכיתה אחרת', { title: 'שיבוץ נכשל' });
-        else if (res === 3) toast.warning('יש לקשר את המורה לכיתה תחילה במסך "הגדרות כיתות ומורים"', { title: 'שיבוץ נכשל' });
-        else if (res === 4) toast.warning('לא ניתן לשבץ — חריגה ממגבלות המערכת', { title: 'שיבוץ נכשל' });
-        else if (res === -1) toast.error('שיבוץ נכשל — בעיית רשת או שרת');
-        else toast.error(`שיבוץ נכשל (קוד ${res})`);
-      } else {
-        toast.success('השעה שובצה לכיתה בהצלחה');
-        setClassPicker(null);
-      }
-    } finally {
-      setPickerBusy(false);
-    }
-  }
-
   async function updateMaxHours(newVal: number) {
     if (!selectedTeacher) return;
     if (maxHoursBusy) return;
     if (!Number.isFinite(newVal) || newVal <= 0) {
       toast.warning('הזן מספר חיובי של שעות');
-      return;
-    }
-    if (newVal < frontalCount) {
-      toast.warning(
-        `המורה משובצת כבר ל-${frontalCount} שעות — הסר שיבוצים לפני הקטנת המכסה`,
-      );
-      setMaxHoursEdit(String(selectedTeacher.Frontaly ?? 0));
       return;
     }
     setMaxHoursBusy(true);
@@ -849,71 +882,6 @@ export default function TeacherHours() {
     }
   }
 
-  async function updateFrontalyQuota(newVal: number) {
-    if (!selectedTeacher || !quotaModal) return;
-    if (!Number.isFinite(newVal) || newVal <= 0) {
-      toast.warning('הזן מספר חיובי של שעות');
-      return;
-    }
-    if (newVal < frontalCount) {
-      toast.warning(`המורה משובצת כבר ל-${frontalCount} שעות פרונטלי — הסר שיבוצים קודם`);
-      return;
-    }
-    setQuotaBusy(true);
-    try {
-      const t = selectedTeacher;
-      await ajax('Teacher_DML', {
-        TeacherId: t.TeacherId,
-        Tafkid: t.TafkidId ?? '',
-        ProfessionalId: t.ProfessionalId ?? '',
-        FirstName: t.FirstName ?? '',
-        LastName: t.LastName ?? '',
-        Email: t.Email ?? '',
-        Frontaly: String(newVal),
-        FreeDay: t.FreeDay ?? '',
-        Tz: t.Tz ?? '',
-        Shehya: t.Shehya ?? '',
-        Partani: t.Partani ?? '',
-        Type: 1,
-      });
-      const updated: Teacher = { ...t, Frontaly: newVal };
-      setSelectedTeacher(updated);
-      setTeachers((prev) =>
-        prev.map((x) => (String(x.TeacherId) === String(updated.TeacherId) ? updated : x)),
-      );
-      toast.success(`המכסה עודכנה ל-${newVal} שעות פרונטלי`);
-      const pending = quotaModal;
-      setQuotaModal(null);
-      // אחרי עדכון מוצלח - ממשיכים אוטומטית לשיבוץ שהתבקש
-      if (pending.manageClassId > 0) {
-        assignHourToClass(pending.hourId, pending.manageClassId);
-      } else {
-        setClassPicker({ hourId: pending.hourId, day: pending.day, seq: pending.seq });
-      }
-    } catch (err) {
-      console.error('updateFrontalyQuota failed', err);
-      toast.error('עדכון המכסה נכשל');
-    } finally {
-      setQuotaBusy(false);
-    }
-  }
-
-  async function removeAssignment(hourId: string) {
-    if (!selectedTeacher) return;
-    setPickerBusy(true);
-    try {
-      const ok = await doRemoveOp(hourId);
-      if (ok) {
-        setClassPicker(null);
-        toast.success('השיבוץ הוסר');
-      } else {
-        toast.error('הסרת השיבוץ נכשלה');
-      }
-    } finally {
-      setPickerBusy(false);
-    }
-  }
-
   useEffect(() => {
     const stop = () => {
       if (!dragActive.current) return;
@@ -921,7 +889,6 @@ export default function TeacherHours() {
       const count = draggedCells.current.size;
       dragActive.current = false;
       dragMode.current = null;
-      dragClassId.current = 0;
       draggedCells.current = new Set();
       if (mode && count > 0) {
         dragSummary.current = { mode, count };
@@ -1034,7 +1001,7 @@ export default function TeacherHours() {
   const saveEditTeacher = useCallback(async () => {
     if (!editTeacher || editTeacherBusy) return;
     if (editTeacher.Tafkid === '0' || !editTeacher.FirstName || !editTeacher.LastName || !editTeacher.Frontaly) {
-      toast.warning('יש למלא תפקיד, שם, שם משפחה ושעות פרונטלי', { title: 'חסרים שדות חובה' });
+      toast.warning('יש למלא תפקיד, שם, שם משפחה ומכסת שעות שבועיות', { title: 'חסרים שדות חובה' });
       return;
     }
     setEditTeacherBusy(true);
@@ -1274,7 +1241,7 @@ export default function TeacherHours() {
           <div className="th-modal__shell" id="dvAllDays">
             <div className="th-modal__header">
               <div className="th-modal__heading">
-                <div className="th-modal__kicker">הגדרת שעות שבועיות</div>
+                <div className="th-modal__kicker">סימון שעות לא זמינות (לא ניתן ללמד)</div>
                 <h2 className="th-modal__title">{teacherFullName}</h2>
                 {(() => {
                   const t = selectedTeacher;
@@ -1286,7 +1253,7 @@ export default function TeacherHours() {
                   if (t.Tz) items.push({ icon: 'fa-id-card', label: 'ת״ז', value: String(t.Tz) });
                   if (t.Email) items.push({ icon: 'fa-envelope', label: 'אימייל', value: String(t.Email) });
                   items.push({ icon: 'fa-calendar-times-o', label: 'יום חופשי', value: dayName || 'אין' });
-                  if (t.Frontaly != null && String(t.Frontaly) !== '') items.push({ icon: 'fa-clock-o', label: 'פרונטלי', value: `${frontalCount}/${t.Frontaly}` });
+                  if (t.Frontaly != null && String(t.Frontaly) !== '') items.push({ icon: 'fa-clock-o', label: 'זמינות / מכסה', value: `${availableCount}/${t.Frontaly}` });
                   if (t.Shehya != null && String(t.Shehya) !== '') items.push({ icon: 'fa-users', label: 'שהייה', value: `${shehyaCount}/${t.Shehya}` });
                   if (t.Partani != null && String(t.Partani) !== '') items.push({ icon: 'fa-user', label: 'פרטני', value: `${partaniCount}/${t.Partani}` });
                   if (items.length === 0) return null;
@@ -1381,21 +1348,63 @@ export default function TeacherHours() {
                     gap: 6,
                     padding: '10px 14px',
                     minWidth: 170,
+                    background: 'linear-gradient(135deg, #dc2626, #b91c1c)',
+                    border: '1px solid #991b1b',
+                    color: '#fff',
+                    borderRadius: 8,
                   }}
                 >
                   <div
                     style={{
                       display: 'flex',
-                      alignItems: 'center',
+                      alignItems: 'baseline',
                       justifyContent: 'center',
-                      gap: 6,
+                      gap: 8,
                       lineHeight: 1,
                     }}
                   >
+                    <i className="fa fa-ban" style={{ fontSize: 22 }} />
                     <strong style={{ fontSize: 32, minWidth: 36, textAlign: 'center' }}>
-                      {frontalCount}
+                      {blockedCount}
                     </strong>
-                    <span style={{ fontSize: 22, opacity: 0.8 }}>/</span>
+                  </div>
+                  <span
+                    className="th-stat__label"
+                    style={{ whiteSpace: 'nowrap', fontSize: 12, opacity: 0.95 }}
+                  >
+                    שעות לא זמינות
+                  </span>
+                </div>
+                <div
+                  className="th-stat"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    padding: '10px 14px',
+                    minWidth: 170,
+                    background: 'rgba(255,255,255,0.18)',
+                    border: '1px solid rgba(255,255,255,0.25)',
+                    borderRadius: 8,
+                    color: '#fff',
+                  }}
+                  title="כמה שעות שבועיות זמינות לשיבוץ ביחס למכסה הנדרשת."
+                >
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                    <strong
+                      style={{
+                        fontSize: 26,
+                        color:
+                          availableCount < Number(selectedTeacher?.Frontaly ?? 0)
+                            ? '#fbbf24'
+                            : '#fff',
+                      }}
+                    >
+                      {availableCount}
+                    </strong>
+                    <span style={{ fontSize: 18, opacity: 0.7 }}>/</span>
                     <input
                       type="number"
                       min={1}
@@ -1418,11 +1427,10 @@ export default function TeacherHours() {
                         }
                       }}
                       style={{
-                        width: 56,
-                        height: 36,
-                        fontSize: 22,
+                        width: 50,
+                        height: 30,
+                        fontSize: 18,
                         fontWeight: 700,
-                        lineHeight: 1,
                         textAlign: 'center',
                         padding: '0 4px',
                         border: '1px solid rgba(255,255,255,0.45)',
@@ -1431,15 +1439,9 @@ export default function TeacherHours() {
                         color: '#1f2937',
                         boxSizing: 'border-box',
                       }}
-                      title="לחץ כדי לערוך את מקסימום השעות"
                     />
                   </div>
-                  <span
-                    className="th-stat__label"
-                    style={{ whiteSpace: 'nowrap', fontSize: 12, opacity: 0.95 }}
-                  >
-                    שובצו / מקסימום
-                  </span>
+                  <span style={{ fontSize: 11, opacity: 0.92 }}>זמינות / מכסה שבועית</span>
                 </div>
 
                 <div
@@ -1507,13 +1509,13 @@ export default function TeacherHours() {
             </div>
             <div className="th-modal__hint">
               <i className="fa fa-info-circle" />
-              <span>בחר שעות על־ידי לחיצה וגרירה; לחיצה ימנית פותחת תפריט הגדרות (שהייה/פרטני).</span>
+              <span>סמן שעות שהמורה <strong>לא יכול</strong> ללמד בהן (אדום) ע"י לחיצה וגרירה. לחיצה חוזרת מסירה את הסימון. לחיצה ימנית — שהייה/פרטני. כל שעה לא מסומנת — זמינה לשיבוץ אוטומטי.</span>
             </div>
             <div className="th-modal__legend">
-              <span className="th-legend__item th-legend__item--regular"><i /> פרונטלי</span>
+              <span className="th-legend__item th-legend__item--blocked"><i /> לא זמין (לא יכול ללמד)</span>
               <span className="th-legend__item th-legend__item--shehya"><i /> שהייה</span>
               <span className="th-legend__item th-legend__item--partani"><i /> פרטני</span>
-              <span className="th-legend__item th-legend__item--available"><i /> פנוי בבי"ס</span>
+              <span className="th-legend__item th-legend__item--available"><i /> זמין לשיבוץ</span>
               <span className="th-legend__item th-legend__item--empty"><i /> אין שעה בבי"ס</span>
             </div>
             <div className="th-modal__body">
@@ -1538,11 +1540,7 @@ export default function TeacherHours() {
                     <div
                       className={`th-day${isFreeDay ? ' th-day--free' : ''}`}
                       key={d.num}
-                      style={
-                        isFreeDay
-                          ? { opacity: 0.55, position: 'relative' }
-                          : undefined
-                      }
+                      style={isFreeDay ? { position: 'relative' } : undefined}
                     >
                       {isFreeDay && (
                         <div
@@ -1665,6 +1663,33 @@ export default function TeacherHours() {
                               </div>
                             );
                           }
+                          // ביום חופשי: כל תא ריק (וקיים בבי"ס) מוצג אוטומטית
+                          // כלא זמין — המורה לא יכולה ללמד באף שעה ביום זה.
+                          // הקליק עדיין יעבוד ויסמן רישום ב-DB אם רצוי.
+                          if (isFreeDay) {
+                            return (
+                              <div
+                                key={`free-${hourId}`}
+                                id={hourId}
+                                className={`th-cell th-cell--blocked dv_HourTypeId_0 selected th-cell--free-day${isBusy ? ' th-cell--busy' : ''}`}
+                                title="יום חופשי — המורה אינו יכול ללמד בשעה זו"
+                                onMouseDown={(e) => onCellMouseDown(e, hourId)}
+                                onMouseEnter={() => onCellMouseEnter(hourId)}
+                                onContextMenu={(e) => onEmptyCellContextMenu(e, hourId)}
+                              >
+                                <div className="th-cell__meta">
+                                  <span className="th-cell__seq">{seq}</span>
+                                  <span className="th-cell__time">{HOUR_TIME_RANGES[seq]}</span>
+                                </div>
+                                <div className="th-cell__label">לא מלמד ביום זה</div>
+                                {isBusy && (
+                                  <div className="th-cell__busy" aria-hidden="true">
+                                    <span className="spinner" />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
                           return (
                             <div
                               key={`empty-${hourId}`}
@@ -1758,20 +1783,18 @@ export default function TeacherHours() {
         </div>
         <div id="dvTeacherTable" style={{ paddingTop: 8 }}>
           <div className="col-md-2 dvRequireTitle">שם מורה</div>
-          <div className="col-md-2 dvRequireTitle">תפקיד</div>
+          <div className="col-md-1 dvRequireTitle">תפקיד</div>
           <div className="col-md-1 dvRequireTitle">מקצוע</div>
           <div className="col-md-1 dvRequireTitle">יום חופשי</div>
           <div className="col-md-1 dvRequireTitle">שהייה</div>
           <div className="col-md-1 dvRequireTitle">פרטני</div>
           <div className="col-md-1 dvRequireTitle" title="סה״כ שעות מוקצבות בשבוע (סכום שעות כל הכיתות שהמורה מלמד/ת)">מוקצבות</div>
-          <div className="col-md-1 dvRequireTitle" title="כמה שעות שובצו בפועל במערכת הסופית">שיבוץ</div>
-          <div className="col-md-2 dvRequireTitle" style={{ textAlign: 'center' }}>אפשרויות</div>
+          <div className="col-md-3 dvRequireTitle" title="הכיתות שהמורה מלמד/ת בהן">כיתות</div>
+          <div className="col-md-1 dvRequireTitle" style={{ textAlign: 'center' }}>אפשרויות</div>
           <div id="dvReqContainer" className="dvPanelReq clear">
             {tableTeachers.map((t) => {
               const required = Number(t.TotalRequired ?? 0);
-              const assigned = Number(t.AssignedCount ?? 0);
-              const gap = assigned - required;
-              const assignedColor = required === 0 ? '#6b7280' : gap === 0 ? '#16a34a' : gap < 0 ? '#dc2626' : '#d97706';
+              const teacherClassTags = classesByTeacher.get(String(t.TeacherId)) ?? [];
               return (
                 <div key={String(t.TeacherId)}>
                   <div className="col-md-2 dvRequireDetails">
@@ -1785,7 +1808,7 @@ export default function TeacherHours() {
                       {isNullDB(t.FullText)}
                     </a>
                   </div>
-                  <div className="col-md-2 dvRequireDetails">{isNullDB(t.Tafkid)}</div>
+                  <div className="col-md-1 dvRequireDetails">{isNullDB(t.Tafkid)}</div>
                   <div className="col-md-1 dvRequireDetails">{isNullDB(t.Professional)}</div>
                   <div className="col-md-1 dvRequireDetails">
                     {(() => {
@@ -1796,18 +1819,76 @@ export default function TeacherHours() {
                   <div className="col-md-1 dvRequireDetails">{isNullDB(t.Shehya)}</div>
                   <div className="col-md-1 dvRequireDetails">{isNullDB(t.Partani)}</div>
                   <div className="col-md-1 dvRequireDetails" style={{ fontWeight: 600 }}>{required}</div>
-                  <div className="col-md-1 dvRequireDetails" style={{ color: assignedColor, fontWeight: 600 }}>
-                    {assigned}
-                    {required > 0 && gap !== 0 && (
-                      <span style={{ fontSize: 11, marginInlineStart: 4, opacity: 0.8 }}>
-                        ({gap > 0 ? '+' : ''}{gap})
-                      </span>
+                  <div className="col-md-3 dvRequireDetails" style={{ alignContent: 'center' }}>
+                    {teacherClassTags.length === 0 ? (
+                      <span style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: 11 }}>—</span>
+                    ) : (
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))',
+                        gap: 4,
+                        width: '100%',
+                      }}>
+                        {teacherClassTags.map((c, idx) => {
+                          const isHak = c.Hakbatza > 0;
+                          const isIhud = c.Ihud > 0;
+                          const palette = isHak
+                            ? { bg: '#fef3c7', fg: '#92400e', border: '#fcd34d', tag: 'ה' }
+                            : isIhud
+                              ? { bg: '#dcfce7', fg: '#166534', border: '#86efac', tag: 'א' }
+                              : { bg: '#e0e7ff', fg: '#3730a3', border: '#c7d2fe', tag: '' };
+                          const ringColor = c.IsHomeroom ? '#1d4ed8' : palette.border;
+                          const titleParts: string[] = [];
+                          if (c.LayerName) titleParts.push(c.LayerName);
+                          titleParts.push(`${c.Hour} ש"ש`);
+                          if (isHak) titleParts.push('הקבצה');
+                          if (isIhud) titleParts.push('איחוד');
+                          if (c.IsHomeroom) titleParts.push('מחנכ/ת');
+                          const tipText = `${c.ClassName} — ${titleParts.join(' · ')}`;
+                          return (
+                            <span
+                              key={`${c.ClassId}-${idx}`}
+                              className="class-tag-tip"
+                              data-tip={tipText}
+                              title={tipText}
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: palette.tag ? '12px 1fr auto' : '1fr auto',
+                                alignItems: 'center',
+                                gap: 4,
+                                padding: '2px 7px',
+                                background: palette.bg,
+                                color: palette.fg,
+                                border: `1px solid ${ringColor}`,
+                                borderRadius: 10,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                lineHeight: 1.4,
+                                minWidth: 0,
+                                boxShadow: c.IsHomeroom ? `inset 0 0 0 1px ${ringColor}` : 'none',
+                              }}
+                            >
+                              {palette.tag && (
+                                <span style={{ fontSize: 9, opacity: 0.85, fontWeight: 700, textAlign: 'center' }}>{palette.tag}</span>
+                              )}
+                              <span style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                minWidth: 0,
+                              }}>{c.ClassName}</span>
+                              <span style={{ fontSize: 10, opacity: 0.7, whiteSpace: 'nowrap' }}>·{c.Hour}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
-                  <div className="col-md-2 dvRequireDetails" style={{ textAlign: 'center', display: 'inline-flex', justifyContent: 'center', gap: 4, flexWrap: 'wrap' }}>
+                  <div className="col-md-1 dvRequireDetails" style={{ textAlign: 'center', display: 'inline-flex', justifyContent: 'center', gap: 4, flexWrap: 'wrap' }}>
                     <button
                       type="button"
                       title="הגדרת שעות שבועיות"
+                      aria-label="הגדרת שעות שבועיות"
                       onClick={(e) => {
                         e.stopPropagation();
                         pickTeacher(t);
@@ -1815,22 +1896,23 @@ export default function TeacherHours() {
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: 3,
-                        padding: '3px 8px',
+                        justifyContent: 'center',
+                        width: 26,
+                        height: 26,
                         background: '#dcfce7',
                         color: '#166534',
                         border: '1px solid #86efac',
-                        borderRadius: 14,
-                        fontWeight: 600,
-                        fontSize: 11,
+                        borderRadius: 999,
+                        fontSize: 12,
                         cursor: 'pointer',
                       }}
                     >
-                      <i className="fa fa-clock-o" /> שעות
+                      <i className="fa fa-clock-o" />
                     </button>
                     <button
                       type="button"
                       title="עריכת פרטי מורה"
+                      aria-label="עריכת פרטי מורה"
                       onClick={(e) => {
                         e.stopPropagation();
                         openEditTeacher(t.TeacherId);
@@ -1838,22 +1920,23 @@ export default function TeacherHours() {
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: 3,
-                        padding: '3px 8px',
+                        justifyContent: 'center',
+                        width: 26,
+                        height: 26,
                         background: '#ede9fe',
                         color: '#5b21b6',
                         border: '1px solid #c4b5fd',
-                        borderRadius: 14,
-                        fontWeight: 600,
-                        fontSize: 11,
+                        borderRadius: 999,
+                        fontSize: 12,
                         cursor: 'pointer',
                       }}
                     >
-                      <i className="fa fa-pencil" /> ערוך
+                      <i className="fa fa-pencil" />
                     </button>
                     <button
                       type="button"
                       title="מחיקת מורה"
+                      aria-label="מחיקת מורה"
                       onClick={(e) => {
                         e.stopPropagation();
                         setDeleteTeacher({
@@ -1864,18 +1947,18 @@ export default function TeacherHours() {
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: 3,
-                        padding: '3px 8px',
+                        justifyContent: 'center',
+                        width: 26,
+                        height: 26,
                         background: '#fee2e2',
                         color: '#991b1b',
                         border: '1px solid #fca5a5',
-                        borderRadius: 14,
-                        fontWeight: 600,
-                        fontSize: 11,
+                        borderRadius: 999,
+                        fontSize: 12,
                         cursor: 'pointer',
                       }}
                     >
-                      <i className="fa fa-trash" /> מחק
+                      <i className="fa fa-trash" />
                     </button>
                   </div>
                 </div>
@@ -2044,8 +2127,8 @@ export default function TeacherHours() {
                 <strong>{c.classNames.join(', ')}</strong>.
                 <br />
                 <br />
-                הסרת השעה ממורה <strong>{teacherFullName}</strong> תמחק גם את השיבוץ
-                במערכת ותפגע במערכת בית הספר.
+                סימון השעה כ"לא זמין" עבור <strong>{teacherFullName}</strong> ימחק גם את השיבוץ
+                ויפגע במערכת בית הספר.
                 <br />
                 <br />
                 האם להמשיך?
@@ -2062,13 +2145,16 @@ export default function TeacherHours() {
                 <button
                   type="button"
                   className="btn btn-danger"
-                  onClick={() => {
+                  onClick={async () => {
                     const hourId = c.hourId;
                     setRemoveAssignConfirm(null);
-                    doRemoveOp(hourId);
+                    // הסרת השיבוץ הקיים ולאחר מכן סימון השעה כ"לא זמין"
+                    // — ב-1 פעולה ידידותית.
+                    await doRemoveOp(hourId);
+                    await doMarkBlocked(hourId);
                   }}
                 >
-                  <i className="fa fa-trash" /> הסר בכל זאת
+                  <i className="fa fa-ban" /> הסר ושבץ כלא זמין
                 </button>
               </div>
             </div>
@@ -2076,213 +2162,10 @@ export default function TeacherHours() {
         );
       })()}
 
-      {quotaModal && selectedTeacher && (() => {
-        const cls = classOptions.find((c) => c.ClassId === quotaModal.manageClassId);
-        const className = cls?.ClassName ?? '';
-        const isHomeroom = quotaModal.manageClassId > 0 && !!className;
-        return (
-        <div
-          className="confirm-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="quotaModalTitle"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget && !quotaBusy) setQuotaModal(null);
-          }}
-        >
-          <div className="confirm-modal__card quota-modal__card">
-            <div className="confirm-modal__icon quota-modal__icon">
-              <i className="fa fa-clock-o" />
-            </div>
-            <h3 className="confirm-modal__title" id="quotaModalTitle">
-              {isHomeroom ? <>שעות המורה לכיתה {className}</> : <>הגדלת מכסת שעות פרונטלי</>}
-            </h3>
-            <p className="confirm-modal__text">
-              {isHomeroom ? (
-                <>
-                  המורה <strong>{teacherFullName}</strong> משובצת כבר
-                  {' '}ל־<strong>{frontalCount}</strong> שעות בכיתה
-                  {' '}<strong>{className}</strong> מתוך
-                  {' '}<strong>{String(selectedTeacher.Frontaly ?? 0)}</strong> שעות.
-                  <br />
-                  הזן מספר שעות חדש כדי לשבץ את השעה שבחרת.
-                </>
-              ) : (
-                <>
-                  המורה <strong>{teacherFullName}</strong> משובצת כבר
-                  {' '}ל־<strong>{frontalCount}</strong> שעות פרונטלי מתוך מכסה של
-                  {' '}<strong>{String(selectedTeacher.Frontaly ?? 0)}</strong>.
-                  <br />
-                  הגדל את המכסה כדי להוסיף את השעה שנבחרה.
-                </>
-              )}
-            </p>
-            <div className="quota-modal__field">
-              <label htmlFor="quotaValueInput">מכסה חדשה</label>
-              <div className="quota-modal__stepper">
-                <button
-                  type="button"
-                  aria-label="הפחת"
-                  disabled={quotaBusy || quotaValue <= 1}
-                  onClick={() => setQuotaValue((v) => Math.max(1, v - 1))}
-                >
-                  <i className="fa fa-minus" />
-                </button>
-                <input
-                  id="quotaValueInput"
-                  type="number"
-                  min={1}
-                  value={quotaValue}
-                  disabled={quotaBusy}
-                  onChange={(e) => setQuotaValue(Math.max(0, Number(e.target.value) || 0))}
-                />
-                <button
-                  type="button"
-                  aria-label="הוסף"
-                  disabled={quotaBusy}
-                  onClick={() => setQuotaValue((v) => v + 1)}
-                >
-                  <i className="fa fa-plus" />
-                </button>
-              </div>
-              <div className="quota-modal__hint">
-                <i className="fa fa-info-circle" />
-                <span>
-                  ניצול יהיה {frontalCount} / {quotaValue || 0}
-                </span>
-              </div>
-            </div>
-            <div className="confirm-modal__actions">
-              <button
-                type="button"
-                className="btn btn-default"
-                onClick={() => !quotaBusy && setQuotaModal(null)}
-                disabled={quotaBusy}
-              >
-                ביטול
-              </button>
-              <button
-                type="button"
-                className="btn btn-info"
-                onClick={() => updateFrontalyQuota(quotaValue)}
-                disabled={quotaBusy || quotaValue <= 0}
-                autoFocus
-              >
-                {quotaBusy ? (
-                  <>
-                    <span className="spinner" /> מעדכן…
-                  </>
-                ) : (
-                  <>
-                    <i className="fa fa-check" /> עדכן ושבץ
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-        );
-      })()}
+      {/* quota-modal הוסר — לא רלוונטי במסך החדש שמסמן רק שעות לא זמינות. */}
 
-      {classPicker && (
-        <div
-          className="class-picker"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget && !pickerBusy) setClassPicker(null);
-          }}
-        >
-          <div className="class-picker__card">
-            <div className="class-picker__header">
-              <div>
-                <div className="class-picker__kicker">שיבוץ לכיתה</div>
-                <h3 className="class-picker__title">
-                  {teacherFullName} · יום {['', 'ראשון','שני','שלישי','רביעי','חמישי','שישי'][classPicker.day]} · שעה {classPicker.seq}
-                </h3>
-              </div>
-              <button
-                type="button"
-                className="class-picker__close"
-                onClick={() => !pickerBusy && setClassPicker(null)}
-                aria-label="סגור"
-              >
-                <i className="fa fa-times" />
-              </button>
-            </div>
-            <div className="class-picker__body">
-              {(() => {
-                // Only show classes the teacher is linked to in TeacherClass.
-                // If nothing is linked yet, fall back to all classes so the
-                // user can still proceed (they'll be informed by the
-                // assignHourToClass response if it's blocked server-side).
-                const opts = teacherClasses.length > 0
-                  ? teacherClasses.map((c) => ({
-                      ClassId: c.ClassId,
-                      ClassName: c.ClassName,
-                      isHakbatza: Number(c.Hakbatza) > 0,
-                      isIhud: Number(c.Ihud) > 0,
-                    }))
-                  : classOptions.map((c) => ({
-                      ClassId: c.ClassId,
-                      ClassName: c.ClassName,
-                      isHakbatza: false,
-                      isIhud: false,
-                    }));
-                if (opts.length === 0) return <div className="class-picker__empty">לא נמצאו כיתות להצגה</div>;
-                return (
-                  <>
-                    {teacherClasses.length === 0 && classOptions.length > 0 && (
-                      <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '6px 10px', borderRadius: 6, fontSize: 12, marginBottom: 8 }}>
-                        <i className="fa fa-info-circle" /> המורה לא מקושר לכיתה ב"הגדרות כיתות ומורים". מוצגות כל הכיתות כברירת מחדל.
-                      </div>
-                    )}
-                    <div className="class-picker__grid">
-                      {opts.map((c) => (
-                        <button
-                          key={c.ClassId + '_' + (c.isHakbatza ? 'H' : c.isIhud ? 'I' : 'R')}
-                          type="button"
-                          className="class-picker__chip"
-                          disabled={pickerBusy}
-                          onClick={() => classPicker && assignHourToClass(classPicker.hourId, c.ClassId)}
-                          title={c.isHakbatza ? 'שיבוץ דרך הקבצה' : c.isIhud ? 'שיבוץ דרך איחוד' : 'שיבוץ רגיל'}
-                          style={c.isHakbatza ? { borderColor: '#d97706', background: '#fef3c7' }
-                            : c.isIhud ? { borderColor: '#7c3aed', background: '#ede9fe' } : undefined}
-                        >
-                          <i className={`fa ${c.isHakbatza ? 'fa-object-group' : c.isIhud ? 'fa-link' : 'fa-users'}`} /> {c.ClassName}
-                          {c.isHakbatza && <span style={{ fontSize: 10, marginInlineStart: 4, opacity: 0.7 }}>הקבצה</span>}
-                          {c.isIhud && <span style={{ fontSize: 10, marginInlineStart: 4, opacity: 0.7 }}>איחוד</span>}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-            <div className="class-picker__footer">
-              {hourMap[classPicker.hourId] && (
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  disabled={pickerBusy}
-                  onClick={() => removeAssignment(classPicker.hourId)}
-                >
-                  <i className="fa fa-trash" /> הסר שיבוץ
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn btn-default"
-                disabled={pickerBusy}
-                onClick={() => setClassPicker(null)}
-              >
-                ביטול
-              </button>
-              {pickerBusy && <span className="class-picker__busy"><span className="spinner" /> מעדכן…</span>}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* class-picker הוסר — בעבר שימש לבחירת כיתה לשיבוץ ידני, אך כעת
+          מסך זה מסמן רק שעות לא זמינות ולכן אין צורך בכיתה. */}
 
       {editTeacher && (
         <div
@@ -2407,7 +2290,7 @@ export default function TeacherHours() {
                 </select>
               </div>
               <div>
-                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block', color: '#7c3aed' }}>שעות פרונטלי</label>
+                <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, display: 'block', color: '#7c3aed' }}>מכסת שעות שבועיות</label>
                 <input
                   type="number"
                   min={0}
@@ -2529,9 +2412,11 @@ const HOUR_TIME_RANGES: Record<number, string> = {
 };
 
 function hourTypeVariant(id: number, teacherHas: boolean): string {
-  // Per HourType table in DB: 1=רגילה (frontaly), 2=פרטני, 3=שהייה.
+  // משמעות חדשה: HourTypeId=0/NULL = לא זמין (אדום)
+  // 1=שיבוץ כיתה (תצוגה היסטורית), 2=פרטני (כתום), 3=שהייה (תכלת)
   if (id === 1) return 'regular';
   if (id === 2) return 'partani';
   if (id === 3) return 'shehya';
-  return teacherHas ? 'marked' : 'available';
+  if (teacherHas) return 'blocked';
+  return 'available';
 }

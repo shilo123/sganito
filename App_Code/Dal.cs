@@ -416,8 +416,13 @@ public class Dal
 
             for (int i = 1; i < cmd.Parameters.Count; i++)
             {
-                string v = Params[i - 1].ToString();
-                cmd.Parameters[i].Value = (v == "" || v == "null") ? (object)DBNull.Value : (object)v;
+                // Cookie sub-keys can return null for missing fields, and callers
+                // sometimes pass null as a placeholder. Coerce both null and the
+                // string sentinels "" / "null" to DBNull rather than NREing.
+                int idx = i - 1;
+                object raw = (Params != null && idx < Params.Length) ? Params[idx] : null;
+                string v = raw == null ? null : raw.ToString();
+                cmd.Parameters[i].Value = (v == null || v == "" || v == "null") ? (object)DBNull.Value : (object)v;
             }
 
             using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))
@@ -452,8 +457,13 @@ public class Dal
 
             for (int i = 1; i < cmd.Parameters.Count; i++)
             {
-                string v = Params[i - 1].ToString();
-                cmd.Parameters[i].Value = (v == "" || v == "null") ? (object)DBNull.Value : (object)v;
+                // Cookie sub-keys can return null for missing fields, and callers
+                // sometimes pass null as a placeholder. Coerce both null and the
+                // string sentinels "" / "null" to DBNull rather than NREing.
+                int idx = i - 1;
+                object raw = (Params != null && idx < Params.Length) ? Params[idx] : null;
+                string v = raw == null ? null : raw.ToString();
+                cmd.Parameters[i].Value = (v == null || v == "" || v == "null") ? (object)DBNull.Value : (object)v;
             }
 
             cmd.ExecuteNonQuery();
@@ -471,8 +481,13 @@ public class Dal
 
             for (int i = 1; i < cmd.Parameters.Count; i++)
             {
-                string v = Params[i - 1].ToString();
-                cmd.Parameters[i].Value = (v == "" || v == "null") ? (object)DBNull.Value : (object)v;
+                // Cookie sub-keys can return null for missing fields, and callers
+                // sometimes pass null as a placeholder. Coerce both null and the
+                // string sentinels "" / "null" to DBNull rather than NREing.
+                int idx = i - 1;
+                object raw = (Params != null && idx < Params.Length) ? Params[idx] : null;
+                string v = raw == null ? null : raw.ToString();
+                cmd.Parameters[i].Value = (v == null || v == "" || v == "null") ? (object)DBNull.Value : (object)v;
             }
 
             using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))
@@ -498,8 +513,13 @@ public class Dal
 
             for (int i = 1; i < cmd.Parameters.Count; i++)
             {
-                string v = Params[i - 1].ToString();
-                cmd.Parameters[i].Value = (v == "" || v == "null") ? (object)DBNull.Value : (object)v;
+                // Cookie sub-keys can return null for missing fields, and callers
+                // sometimes pass null as a placeholder. Coerce both null and the
+                // string sentinels "" / "null" to DBNull rather than NREing.
+                int idx = i - 1;
+                object raw = (Params != null && idx < Params.Length) ? Params[idx] : null;
+                string v = raw == null ? null : raw.ToString();
+                cmd.Parameters[i].Value = (v == null || v == "" || v == "null") ? (object)DBNull.Value : (object)v;
             }
 
             using (SqlDataAdapter adapter = new SqlDataAdapter(cmd))

@@ -147,12 +147,23 @@ public class Shibutz
     // students out of every class in the same grade and have multiple
     // teachers working in parallel — one per class.
     private readonly Dictionary<int, int> _classLayer = new Dictionary<int, int>();
+    // teacherId -> FreeDay (1-6, 0 means no free day). Pulled from the Teacher
+    // table at BuildModel time so the scheduler can hard-block any candidate
+    // whose FreeDay matches the slot's day digit (HourId / 10).
+    private readonly Dictionary<int, int> _teacherFreeDay = new Dictionary<int, int>();
 
     // TeacherId -> TeacherName
     private readonly Dictionary<int, string> _teacherNames = new Dictionary<int, string>();
 
     // TeacherId -> HashSet of HourId (working hours for each teacher)
     private readonly Dictionary<int, HashSet<int>> _teacherWorkingHours = new Dictionary<int, HashSet<int>>();
+
+    // (TeacherId × ClassId × Day) → count of hours already assigned. Used by
+    // ScoreCandidate to apply a quadratic penalty so the scheduler spreads a
+    // teacher's hours in a class across multiple days, instead of letting one
+    // teacher own a full day. Updated on every ApplyAssign / UndoAssign.
+    private readonly Dictionary<int, Dictionary<int, Dictionary<int, int>>> _teacherClassDayCount =
+        new Dictionary<int, Dictionary<int, Dictionary<int, int>>>();
 
     // Flag: When true, protect homeroom teachers at hour 1 from being moved
     private bool _protectHomeroomHour1 = false;
@@ -189,6 +200,7 @@ public class Shibutz
         Errors.Clear();
         _busy.Clear();
         _teacherDayHours.Clear();
+        _teacherClassDayCount.Clear();
         ProgressLog.Clear();
         _sw = System.Diagnostics.Stopwatch.StartNew();
         _lastLoggedRed = -1;
@@ -395,10 +407,31 @@ public class Shibutz
                 int remCheck;
                 if (!_remaining.TryGetValue(rkCheck, out remCheck) || remCheck <= 0) continue;
 
-                // If teacher is busy at this time, skip (the bumping logic was
-                // too expensive - 175s/run - and rarely helped. Force-Smart
-                // handles the hard cases at user request instead.)
-                if (IsBusy(ct.TeacherId, s.Day, s.Hour))
+                // If teacher is busy at this time, skip — UNLESS the busy
+                // mark is from the original Hakbatza placement we're now
+                // propagating (i.e. ct.TeacherId == s.AssignedTeacherId).
+                // Without this exception, the primary teacher gets marked
+                // busy when assigned to slot s, then the propagation loop
+                // refuses to add her to her partner classes in the same
+                // Hakbatza — leaving real Hakbatza groups assigned to only
+                // ONE of their classes (caught by the loop test: Hakbatza 4
+                // in layer 5 / hour 44 was placed in ענת but never copied
+                // to אודיה because מלי herself was "busy").
+                bool busyFromSelf = (ct.TeacherId == s.AssignedTeacherId);
+                if (!busyFromSelf && IsBusy(ct.TeacherId, s.Day, s.Hour))
+                {
+                    continue;
+                }
+
+                // Hakbatza propagation must also respect FreeDay — without
+                // this, a Hakbatza assigned at a slot on day D would drag in
+                // partners whose FreeDay = D, producing a real violation
+                // (real case: teacher 30 / FreeDay=2 was extra-assigned at
+                // HourId=24 because her Hakbatza partner was placed there).
+                int partnerFreeDay;
+                if (_teacherFreeDay.TryGetValue(ct.TeacherId, out partnerFreeDay)
+                    && partnerFreeDay > 0
+                    && partnerFreeDay == s.Day)
                 {
                     continue;
                 }
@@ -789,6 +822,7 @@ public class Shibutz
         _classLayer.Clear();
         _teacherNames.Clear();
         _teacherWorkingHours.Clear();
+        _teacherFreeDay.Clear();
         Errors.Clear();
 
         // Pull LayerId for every class once. Used for keying Hakbatza groups
@@ -812,6 +846,29 @@ public class Shibutz
             /* keep going — falls back to per-class behavior */
         }
 
+        // Pull every teacher's FreeDay so we can hard-block assignment on
+        // that day. The init-data SP doesn't always filter by FreeDay (we've
+        // observed teachers ending up assigned on their off day even though
+        // FreeDay is set). Loading it here lets us scrub candidates BEFORE
+        // they reach the scheduler, regardless of upstream SP behavior.
+        try
+        {
+            DataTable dtTeachers = Dal.GetDataTable(
+                "SELECT TeacherId, ISNULL(FreeDay,0) AS FreeDay FROM Teacher WHERE ConfigurationId=" +
+                _configurationId);
+            for (int ti = 0; ti < dtTeachers.Rows.Count; ti++)
+            {
+                int tid = ToInt(dtTeachers.Rows[ti]["TeacherId"]);
+                int fd = ToInt(dtTeachers.Rows[ti]["FreeDay"]);
+                if (tid > 0 && fd > 0) _teacherFreeDay[tid] = fd;
+            }
+        }
+        catch
+        {
+            /* if the lookup fails we proceed without FreeDay enforcement —
+               the FillEmptySlots SP still has its own filter as a safety net */
+        }
+
         if (ds == null || ds.Tables.Count == 0 || ds.Tables[0] == null)
             return;
 
@@ -822,7 +879,7 @@ public class Shibutz
         if (ds.Tables.Count > 2 && ds.Tables[2] != null)
         {
             DataTable dtTeacherHours = ds.Tables[2];
-            
+
             // Check if HourId column exists in this table
             if (dtTeacherHours.Columns.Contains("HourId") && dtTeacherHours.Columns.Contains("TeacherId"))
             {
@@ -831,9 +888,18 @@ public class Shibutz
                     DataRow row = dtTeacherHours.Rows[i];
                     int teacherId = ToInt(row["TeacherId"]);
                     int hourId = ToInt(row["HourId"]);
-                    
+
                     if (teacherId > 0 && hourId > 0)
                     {
+                        // Skip hours that fall on the teacher's FreeDay —
+                        // HourId leading digit is the day (1=Sun..6=Fri).
+                        int freeDay;
+                        if (_teacherFreeDay.TryGetValue(teacherId, out freeDay)
+                            && freeDay > 0
+                            && (hourId / 10) == freeDay)
+                        {
+                            continue;
+                        }
                         if (!_teacherWorkingHours.ContainsKey(teacherId))
                         {
                             _teacherWorkingHours[teacherId] = new HashSet<int>();
@@ -895,6 +961,20 @@ public class Shibutz
                     ClassTeacher ct = new ClassTeacher(item, classId);
                     if (ct == null) continue;
                     if (ct.TeacherId <= 0) continue;
+
+                    // Drop any candidate whose FreeDay falls on this slot's
+                    // day. The init-data SP doesn't always filter this — and
+                    // letting such candidates through resulted in real
+                    // FreeDay violations (e.g. teacher 30 / FreeDay=2 was
+                    // assigned to HourId=24). Cheaper to filter here than
+                    // to chase the SP.
+                    int teacherFreeDay;
+                    if (_teacherFreeDay.TryGetValue(ct.TeacherId, out teacherFreeDay)
+                        && teacherFreeDay > 0
+                        && teacherFreeDay == day)
+                    {
+                        continue;
+                    }
 
                     slot.Candidates.Add(ct);
 
@@ -2902,6 +2982,16 @@ public class Shibutz
         if (ct.Hakbatza > 0) score += 5;
         if (ct.Ihud > 0) score += 5;
 
+        // 7) פיזור על פני ימים: אם המורה כבר משבץ שעות בכיתה זו ביום זה,
+        //    הענק penalty גדל בריבוע. כך אם יש לו 0 שעות → 0 penalty,
+        //    1 שעה → -200, 2 שעות → -800, 3 שעות → -1800.
+        //    מורה שזו הפעם היחידה לתפוס את התא יקבל את התא בכל זאת,
+        //    כי בונוסים אחרים (homeroom +100000, remaining +50/לכל שעה)
+        //    גוברים על ה-penalty. אבל כשיש מועמד אחר עם פחות שעות באותו
+        //    יום באותה כיתה — הוא ייבחר.
+        int sameDayCount = GetClassDayCount(ct.TeacherId, slot.ClassId, slot.Day);
+        if (sameDayCount > 0) score -= 200 * sameDayCount * sameDayCount;
+
         return score;
     }
 
@@ -3681,7 +3771,7 @@ public class Shibutz
         // CRITICAL RULE: Teacher can ONLY be assigned if he appears in slot.Candidates (TeachList)
         // A teacher cannot be assigned to a class if he is not in that class's TeachList
         if (slot.Candidates == null || slot.Candidates.Count == 0) return false;
-        
+
         bool isInCandidates = false;
         for (int i = 0; i < slot.Candidates.Count; i++)
         {
@@ -3692,6 +3782,10 @@ public class Shibutz
             }
         }
         if (!isInCandidates) return false; // Teacher not in TeachList - CANNOT assign
+
+        // NEW SEMANTIC (אפריל 2026): שורה ב-TeacherHours = שעה חסומה / פרטני / שהייה.
+        // המורה אינו יכול ללמד בשעה זו — דלג עליה בשיבוץ אוטומטי.
+        if (IsTeacherBlockedAtHour(ct.TeacherId, slot.HourId)) return false;
         
         // Ensure remaining hours are initialized for this teacher/class combination
         string rk = Key(slot.ClassId, ct.TeacherId);
@@ -3734,10 +3828,24 @@ public class Shibutz
 
         if (IsHomeroomLockedToHome(slot, ct)) return false;
 
-        // NOTE: If teacher appears in TeachList, it means he works at this hour and is available
-        // No need to check IsTeacherWorkingAtHour - TeachList already contains only available teachers
+        // NEW SEMANTIC (אפריל 2026): TeacherHours = שעה חסומה / פרטני / שהייה.
+        // גם בהזזת מורים פנויים, אסור להעביר מורה לשעה שהוא חסום בה.
+        if (IsTeacherBlockedAtHour(ct.TeacherId, slot.HourId)) return false;
 
         return true;
+    }
+
+    // SP Assign_GetDataForAssignAuto Table 2 מחזיר רשימה **פוזיטיבית** של
+    // שעות שהמורה יכול לעבוד (אחרי סינון TeacherHours חסומות + יום חופשי).
+    // לכן: השעה חסומה אם היא לא נמצאת ברשימה הזמינה של המורה.
+    private bool IsTeacherBlockedAtHour(int teacherId, int hourId)
+    {
+        if (_teacherWorkingHours == null || _teacherWorkingHours.Count == 0)
+            return false; // אין נתונים בכלל — לא חוסמים (תאימות לאחור)
+        HashSet<int> set;
+        if (!_teacherWorkingHours.TryGetValue(teacherId, out set))
+            return false; // אין נתונים על המורה — לא חוסמים
+        return !set.Contains(hourId); // השעה לא ברשימה הזמינה ⇒ חסומה
     }
 
     private bool HasRemaining(int classId, int teacherId)
@@ -3792,6 +3900,39 @@ public class Shibutz
         // Only block if it would exceed the limit
         // MAX_CONSECUTIVE is 15, so this should rarely block
         return count > MAX_CONSECUTIVE;
+    }
+
+    // הצופה כמה שעות כבר משובץ למורה ת בכיתה ק ביום י. משמש את ScoreCandidate
+    // לעודד פיזור שעות לאורך השבוע במקום ריכוזן ביום אחד.
+    private int GetClassDayCount(int teacherId, int classId, int day)
+    {
+        Dictionary<int, Dictionary<int, int>> classMap;
+        if (!_teacherClassDayCount.TryGetValue(teacherId, out classMap)) return 0;
+        Dictionary<int, int> dayMap;
+        if (!classMap.TryGetValue(classId, out dayMap)) return 0;
+        int n;
+        return dayMap.TryGetValue(day, out n) ? n : 0;
+    }
+
+    private void IncClassDayCount(int teacherId, int classId, int day, int delta)
+    {
+        Dictionary<int, Dictionary<int, int>> classMap;
+        if (!_teacherClassDayCount.TryGetValue(teacherId, out classMap))
+        {
+            classMap = new Dictionary<int, Dictionary<int, int>>();
+            _teacherClassDayCount[teacherId] = classMap;
+        }
+        Dictionary<int, int> dayMap;
+        if (!classMap.TryGetValue(classId, out dayMap))
+        {
+            dayMap = new Dictionary<int, int>();
+            classMap[classId] = dayMap;
+        }
+        int cur;
+        dayMap.TryGetValue(day, out cur);
+        int next = cur + delta;
+        if (next <= 0) dayMap.Remove(day);
+        else dayMap[day] = next;
     }
 
     private HashSet<int> GetDaySet(int teacherId, int day)
@@ -3961,6 +4102,7 @@ public class Shibutz
 
         GetDaySet(ct.TeacherId, slot.Day).Add(slot.Hour);
         SetBusy(ct.TeacherId, slot.Day, slot.Hour, slot);
+        IncClassDayCount(ct.TeacherId, slot.ClassId, slot.Day, +1);
     }
 
     private void UndoAssign(HourSlot slot)
@@ -3984,6 +4126,7 @@ public class Shibutz
             set.Remove(slot.Hour);
 
         ClearBusy(t, slot.Day, slot.Hour);
+        IncClassDayCount(t, slot.ClassId, slot.Day, -1);
 
         slot.AssignedTeacherId = 0;
         slot.AssignedProfessionalId = 0;

@@ -25,6 +25,11 @@ export default function MasterLayout() {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [classes, setClasses] = useState<ClassStatusRow[]>([]);
+  // Effective demand (Hakbatza counted as MAX, others as SUM). When this
+  // is greater than total HourSchool capacity, the schedule physically
+  // cannot reach 100% — we use it as denominator so the pill reflects
+  // reality instead of "100% (828/828)" while 22 hours can't be placed.
+  const [totalRequired, setTotalRequired] = useState<number>(0);
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
     try { return localStorage.getItem('sidebarExpanded') === '1'; } catch { return false; }
   });
@@ -43,7 +48,20 @@ export default function MasterLayout() {
 
   useEffect(() => {
     if (!user) return;
-    ajax<ClassStatusRow[]>('Class_GetClassStatus').then(setClasses).catch(() => setClasses([]));
+    const reload = () => {
+      ajax<ClassStatusRow[]>('Class_GetClassStatus').then(setClasses).catch(() => setClasses([]));
+      // Pull effective demand alongside the per-class status so the pill
+      // can detect over-demand (Required > Capacity) and avoid claiming
+      // 100% when X hours physically can't be placed.
+      ajax<{ TotalRequired?: number }>('Assign_GetEmptySlotsCount')
+        .then((r) => setTotalRequired(Number(r?.TotalRequired ?? 0)))
+        .catch(() => setTotalRequired(0));
+    };
+    reload();
+    // האזנה לאירוע גלובלי — מסכים אחרים (AssignAuto, Assign וכד') מפעילים
+    // את האירוע אחרי שיבוץ/מחיקה כדי שה-pill האחוזים יתעדכן בזמן אמת.
+    window.addEventListener('class-status-changed', reload);
+    return () => window.removeEventListener('class-status-changed', reload);
   }, [user, location.pathname]);
 
   // Auto-collapse the side navigation ONLY on the transition INTO the
@@ -108,12 +126,28 @@ export default function MasterLayout() {
                 list.push(c);
                 byLayer.set(layerKey, list);
               }
-              // Overall percentage = sum(ClassHour) / sum(HourSchool). Counting
-              // classes that are EXACTLY at 100% was too strict — most classes
-              // hover around 85-95% so nothing ever showed as "done".
+              // Overall percentage = sum(ClassHour) / sum(HourSchool).
+              // Show 2 decimal places when below 100%, integer when exactly
+              // 100%. Rounding 99.77 to 100 used to hide that the schedule
+              // was actually missing slots — the deputy principal would see
+              // a green "100%" badge while the diagnostic still listed gaps.
               const totalHours = classes.reduce((a, c) => a + (Number(c.HourSchool) || 0), 0);
               const filledHours = classes.reduce((a, c) => a + (Number(c.ClassHour) || 0), 0);
-              const overallPct = totalHours > 0 ? Math.round((filledHours / totalHours) * 100) : 0;
+              // If user changed SchoolHours/ClassTeacher.Hour so demand
+              // exceeds capacity, anchor the percentage to the demand —
+              // otherwise filling every grid cell shows 100% even with
+              // hours that can't be scheduled. MAX(capacity, demand) keeps
+              // the denominator honest.
+              const effectiveTotal = Math.max(totalHours, totalRequired || 0);
+              const formatPct = (filled: number, total: number): string => {
+                if (total <= 0) return '0';
+                if (filled >= total) return '100';
+                const exact = (filled / total) * 100;
+                // Never let the display round up to 100 — clamp at 99.99.
+                const rounded = Math.floor(exact * 100) / 100;
+                return rounded >= 100 ? '99.99' : rounded.toFixed(2);
+              };
+              const overallPct = formatPct(filledHours, effectiveTotal);
               const totalClasses = classes.length;
               const totalDone = classes.filter((c) => c.ClassHour === c.HourSchool).length;
               const sortedLayers = Array.from(byLayer.entries()).sort((a, b) =>
@@ -130,7 +164,7 @@ export default function MasterLayout() {
                   >
                     <i className="fa fa-check-circle" />
                     <strong>{overallPct}%</strong>
-                    <span className="class-status-strip__frac">({filledHours}/{totalHours})</span>
+                    <span className="class-status-strip__frac">({filledHours}/{effectiveTotal})</span>
                     <i className={`fa fa-chevron-${statusDetailsOpen ? 'up' : 'down'} class-status-strip__caret`} />
                   </button>
                   {statusDetailsOpen && (
@@ -142,8 +176,8 @@ export default function MasterLayout() {
                         {sortedLayers.map(([layer, list]) => {
                           const layerFilled = list.reduce((a, c) => a + (Number(c.ClassHour) || 0), 0);
                           const layerTotal = list.reduce((a, c) => a + (Number(c.HourSchool) || 0), 0);
-                          const layerPct = layerTotal > 0 ? Math.round((layerFilled / layerTotal) * 100) : 0;
-                          const full = layerPct >= 100;
+                          const layerPct = formatPct(layerFilled, layerTotal);
+                          const full = layerFilled >= layerTotal;
                           return (
                             <div key={layer} className="class-status-strip__layer-row">
                               <div className="class-status-strip__layer-head">

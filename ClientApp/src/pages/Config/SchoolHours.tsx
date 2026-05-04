@@ -142,6 +142,12 @@ export default function SchoolHours() {
   const updateHour = useCallback(async (hourId: string, mode: 1 | 2 | 3 | 4) => {
     try {
       await ajax('School_UpdateHour', { HourId: hourId, Mode: mode });
+      // Adding/removing a teaching hour changes total capacity, which means
+      // the coverage % at the top of the screen is now stale. Notify the
+      // MasterLayout pill so it re-fetches assigned/total counts. Modes 1
+      // and 2 (shehya/private toggles) also change which hours count as
+      // "valid teaching slots" → same recomputation needed.
+      window.dispatchEvent(new CustomEvent('class-status-changed'));
     } catch (e) {
       console.error('School_UpdateHour failed', e);
     }

@@ -4,12 +4,16 @@ import {
   DragOverlay,
   MeasuringStrategy,
   PointerSensor,
+  pointerWithin,
+  rectIntersection,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
+  type DropAnimation,
 } from '@dnd-kit/core';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
@@ -314,9 +318,10 @@ function DraggableFreeTeacher({
         style={{
           float: 'right',
           margin: 2,
-          opacity: isDragging ? 0.4 : 1,
-          cursor: 'move',
+          opacity: isDragging ? 0.35 : 1,
+          cursor: isDragging ? 'grabbing' : 'grab',
           userSelect: 'none',
+          touchAction: 'none',
         }}
         onMouseEnter={handleEnter}
         onMouseLeave={handleLeave}
@@ -458,11 +463,10 @@ function FreeTeacherDropZone({ children }: { children: React.ReactNode }) {
       ref={setNodeRef}
       className="panel-body"
       style={{
-        // Height grows with content (the pills wrap), but capped so the
-        // dock never swallows the page when many teachers are returned.
+        // No internal scroll — dnd-kit's auto-scroll inside small containers
+        // causes the dragged pill to jitter/snap-back. Container grows with
+        // content; if too long the page itself scrolls (cleaner UX).
         minHeight: 56,
-        maxHeight: 150,
-        overflow: 'auto',
         background: isOver ? '#fff0d4' : undefined,
       }}
     >
@@ -652,9 +656,8 @@ function AssignBadgeImpl({
   };
 
   const isBlocked = !!dragBlockReason;
-  // Solid colors only — earlier we used `repeating-linear-gradient` here,
-  // which the browser repaints on every dnd-kit move event across all 1500+
-  // grid cells and made the drag feel laggy.
+  // הילה פשוטה לתא דרופ (רקע ירוק/אדום, בלי transform/transition שגוזלים
+  // frames כשיש 1500+ תאים).
   const style: React.CSSProperties = {
     zIndex: 10,
     margin: 2,
@@ -662,12 +665,16 @@ function AssignBadgeImpl({
     background: isBlocked
       ? '#fecaca'
       : droppable.isOver
-        ? '#cfe8ff'
+        ? '#86efac'
         : undefined,
     opacity: draggable.isDragging ? 0.4 : isBlocked ? 0.6 : 1,
     position: 'relative',
-    ...(isBlocked ? { boxShadow: 'inset 0 0 0 2px #dc2626' } : null),
-    ...(isHighlighted && !isBlocked
+    ...(isBlocked
+      ? { boxShadow: 'inset 0 0 0 2px #dc2626' }
+      : droppable.isOver
+        ? { boxShadow: 'inset 0 0 0 3px #16a34a' }
+        : null),
+    ...(isHighlighted && !isBlocked && !droppable.isOver
       ? { backgroundColor: '#ffeb3b', boxShadow: '0 0 8px #ff9800' }
       : null),
   };
@@ -1093,14 +1100,14 @@ export default function Assign() {
     // only teachers whose working hours match at least one empty (class,
     // hour) slot. Teachers that can't actually help stay hidden.
     if (!classId) {
-      return ajax<FreeTeacher[]>('Assign_GetFreeTeachersForEmpty')
+      return ajax<FreeTeacher[]>('Assign_GetFreeTeachersForEmpty', { LayerId: layerId })
         .then((data) => setFreeTeachers(Array.isArray(data) ? data : []))
         .catch((err) => console.error('Assign_GetFreeTeachersForEmpty', err));
     }
     return ajax<FreeTeacher[]>('Assign_GetFreeTeacher', { ClassId: classId })
       .then((data) => setFreeTeachers(Array.isArray(data) ? data : []))
       .catch((err) => console.error('Assign_GetFreeTeacher', err));
-  }, []);
+  }, [layerId]);
 
   const loadProfessionals = useCallback(() => {
     return ajax<Professional[]>('Gen_GetTable', {
@@ -1178,7 +1185,15 @@ export default function Assign() {
       totalCells = classCount * 5 * 9;
       filledCells = assignments.filter((a) => a.TeacherId).length;
     }
-    const pct = totalCells > 0 ? Math.round((filledCells / totalCells) * 100) : 0;
+    // Show 2 decimal places when below 100% — rounding 99.77 to 100 made the
+    // schedule look complete while gaps still remained.
+    const pct = (() => {
+      if (totalCells <= 0) return '0';
+      if (filledCells >= totalCells) return '100';
+      const exact = (filledCells / totalCells) * 100;
+      const rounded = Math.floor(exact * 100) / 100;
+      return rounded >= 100 ? '99.99' : rounded.toFixed(2);
+    })();
     return { filledCells, totalCells, pct, classCount };
   }, [grid, assignments]);
 
@@ -1223,11 +1238,12 @@ export default function Assign() {
       if (freeDay > 0 && getDayId(hid) === freeDay) {
         return `יום חופשי של המורה (${dayName(freeDay)})`;
       }
-      const allowed = teacherHourMap.get(tid);
-      // If we somehow never loaded TeacherHours for this teacher, fail open
-      // — the server still validates and will reject with err=3.
-      if (allowed && allowed.size > 0 && !allowed.has(hid)) {
-        return 'השעה אינה מוגדרת בשעות העבודה של המורה';
+      // NEW SEMANTIC: TeacherHours = שעות *לא זמינות*. אם השעה כן ברשימה,
+      // המורה אינו יכול ללמד בה. אם לא ברשימה — מותר (תחת הסמנטיקה הקודמת
+      // זה היה הפוך).
+      const blocked = teacherHourMap.get(tid);
+      if (blocked && blocked.has(hid)) {
+        return 'השעה מסומנת כלא זמינה למורה';
       }
       return '';
     },
@@ -1235,11 +1251,32 @@ export default function Assign() {
   );
 
   // --- dnd-kit ---
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  // distance בלבד — שילוב distance+delay ב-dnd-kit לא נתמך ויגרום לדרופים
+  // לחזור (cancel). 4px מספיק כדי למנוע "false drag" מקליק רגיל.
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 4 },
+    }),
+  );
+
+  // collision detection מותאם: pointerWithin הוא הכי מדויק לתאי גריד
+  // (מחזיר את התא שהסמן ממש בתוכו), עם fallback ל-rectIntersection אם
+  // הסמן לא ממוקם בתוך אף אחד (קצוות).
+  const collisionDetection = useCallback<CollisionDetection>((args) => {
+    const inside = pointerWithin(args);
+    if (inside.length > 0) return inside;
+    return rectIntersection(args);
+  }, []);
+
+  // dropAnimation null = ה-overlay נעלם מיידית בסיום הגרירה במקום לחזור
+  // למקור. זה מונע תחושת "snap-back" שמרגישה לא מקצועית.
+  const dropAnimation: DropAnimation | null = null;
 
   const handleDragStart = (e: DragStartEvent) => {
     const data = e.active.data.current as DragPayload | undefined;
     if (data) setActiveDrag(data);
+    // Tag body so global CSS can adapt UI during a drag (cursor, hover hints, etc.)
+    document.body.dataset.dndActive = '1';
   };
 
   // Figure out Type per the original drop logic, fill Source/Target objects, call DB.
@@ -1377,6 +1414,7 @@ export default function Assign() {
 
   const handleDragEnd = (e: DragEndEvent) => {
     setActiveDrag(null);
+    delete document.body.dataset.dndActive;
     if (!e.over) return;
     const src = e.active.data.current as DragPayload | undefined;
     const tgt = e.over.data.current as DropPayload | undefined;
@@ -1436,9 +1474,20 @@ export default function Assign() {
       // pointer move. Without this, dnd-kit's default `WhileDragging`
       // strategy re-measures the whole grid each frame and the drag stutters.
       measuring={{ droppable: { strategy: MeasuringStrategy.BeforeDragging } }}
+      // pointerWithin הוא ה-collision מדויק ביותר לתאים בגריד: מחזיר את
+      // הdroppable שהסמן ממש בתוכו (לא לפי overlay center). אם הסמן בין
+      // שני תאים — fallback ל-rectIntersection כדי שתמיד יהיה target.
+      collisionDetection={collisionDetection}
+      // Disable dnd-kit's autoScroll: with many overflow:auto ancestors it
+      // causes the dragged item to "snap" away from the cursor as the kit
+      // tries to scroll the wrong container.
+      autoScroll={false}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      onDragCancel={() => setActiveDrag(null)}
+      onDragCancel={() => {
+        setActiveDrag(null);
+        delete document.body.dataset.dndActive;
+      }}
     >
       <div className="assign-page assign-page--with-side">
       {initialLoading && <PageLoader title="טוען מערכת בית הספר" subtitle="מאחזר כיתות, מורים ומקצועות..." />}
@@ -1471,7 +1520,7 @@ export default function Assign() {
                 <div className="assign-coverage-pill__track">
                   <div
                     className="assign-coverage-pill__fill"
-                    style={{ width: `${Math.min(100, coverage.pct)}%` }}
+                    style={{ width: `${Math.min(100, Number(coverage.pct))}%` }}
                   />
                 </div>
                 <div className="assign-coverage-pill__label">
@@ -1687,18 +1736,28 @@ export default function Assign() {
       )}
       </div>
 
-      {/* Drag overlay ghost */}
-      <DragOverlay>
+      {/* Drag overlay ghost — gives smooth, professional feel during drag.
+          dropAnimation null = no snap-back when releasing. */}
+      <DragOverlay dropAnimation={dropAnimation ?? null}>
         {activeDrag?.kind === 'freeTeacher' && (
-          <div className="btn btn-success btn-round">{activeDrag.TeacherName}</div>
+          <div className="dnd-overlay dnd-overlay--teacher">
+            <i className="fa fa-user-circle" />
+            <span>{activeDrag.TeacherName}</span>
+          </div>
         )}
         {activeDrag?.kind === 'professional' && (
-          <div className="btn btn-primary btn-round">{activeDrag.Name}</div>
+          <div className="dnd-overlay dnd-overlay--pro">
+            <i className="fa fa-book" />
+            <span>{activeDrag.Name}</span>
+          </div>
         )}
         {activeDrag?.kind === 'assign' && (
-          <div className="btn btn-primary btnWorker">
-            {activeDrag.Professional ? `${activeDrag.Professional} - ` : ''}
-            {activeDrag.TeacherName}
+          <div className="dnd-overlay dnd-overlay--assign">
+            <i className="fa fa-arrows" />
+            <span>
+              {activeDrag.Professional ? `${activeDrag.Professional} · ` : ''}
+              {activeDrag.TeacherName}
+            </span>
           </div>
         )}
       </DragOverlay>

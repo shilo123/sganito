@@ -990,6 +990,223 @@ VALUES (" + cfgId + @", " + teacherId + @", " + hourId + @", " + newType + @", N
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
     }
 
+    // עבור כל שכבה: כמה כיתות יש בה, כמה מהן משובצות במלואן (SUM(Hour) ==
+    // קיבולת בית-הספר). משמש את הטאבים של מסך TeacherClass כדי להראות
+    // למשתמש מבט-מהיר אם השכבה כולה תקינה.
+    // מזהה התנגשויות יום חופשי בתוך כיתה: כיתות שיש בהן יותר מורים שיום
+    // החופש שלהם זהה מאשר ניתן לוותר עליהם. החזרה: שורה לכל (ClassId,
+    // FreeDay) שיש בו "עומס" (יותר מ-MaxAllowed מורים), כולל רשימת המורים.
+    // בדיקה מקדימה מהירה: מחזיר את הסיבות שהשיבוץ האוטומטי עלול לא להצליח.
+    // לא מבצעת שיבוץ — רק קוראת מ-DB. מיועדת לרקע, בלי loading למשתמש.
+    [WebMethod]
+    public void Assign_PreCheck()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            // 1) over-demand גלובלי. כל הטקסטים העבריים חייבים להיות N''...''
+            // והקאסטים ל-NVARCHAR — אחרת SQL Server דוחס לעמודה בלי תמיכת
+            // Unicode ומחזיר '?' במקום אותיות עבריות.
+            string sql = @"
+DECLARE @capPerClass INT = (SELECT COUNT(*) FROM SchoolHours WHERE ConfigurationId=" + cfgId + @" AND (IsOnlyShehya=0 OR IsOnlyShehya IS NULL));
+DECLARE @dayNames TABLE (D INT, Name NVARCHAR(20));
+INSERT INTO @dayNames (D, Name) VALUES (1, N'ראשון'), (2, N'שני'), (3, N'שלישי'), (4, N'רביעי'), (5, N'חמישי'), (6, N'שישי');
+
+-- כיתות עם over-demand (סכום השעות הנדרשות > מספר השעות בלוח השבועי)
+SELECT N'class_over_demand' AS Kind,
+  c.ClassId AS Id1, 0 AS Id2,
+  c.Name AS Label,
+  CAST(SUM(ct.Hour) - @capPerClass AS NVARCHAR(10)) + N' שעות מעבר לקיבולת — נדרשות ' + CAST(SUM(ct.Hour) AS NVARCHAR(10)) + N' שעות אך בלוח יש רק ' + CAST(@capPerClass AS NVARCHAR(10)) AS Detail
+FROM Class c INNER JOIN ClassTeacher ct ON ct.ClassId=c.ClassId
+WHERE c.ConfigurationId=" + cfgId + @" AND ct.Hour IS NOT NULL
+GROUP BY c.ClassId, c.Name
+HAVING SUM(ct.Hour) > @capPerClass
+
+UNION ALL
+
+-- מורים עם over-demand (Required > Available)
+SELECT N'teacher_over_demand' AS Kind,
+  t.TeacherId AS Id1, 0 AS Id2,
+  ISNULL(t.FirstName, N'') + N' ' + ISNULL(t.LastName, N'') AS Label,
+  CAST(req.Required - av.AvailableHourSlots AS NVARCHAR(10)) + N' שעות מעבר לזמינות — נדרשות ' + CAST(req.Required AS NVARCHAR(10)) + N' אך זמינות רק ' + CAST(av.AvailableHourSlots AS NVARCHAR(10)) AS Detail
+FROM Teacher t
+CROSS APPLY (
+  SELECT ISNULL(SUM(ct.Hour),0) AS Required FROM ClassTeacher ct
+  WHERE ct.TeacherId=t.TeacherId AND ct.ConfigurationId=t.ConfigurationId AND ct.Hour IS NOT NULL
+) req
+CROSS APPLY (
+  SELECT COUNT(*) AS AvailableHourSlots FROM SchoolHours sh
+  WHERE sh.ConfigurationId=t.ConfigurationId
+    AND (sh.IsOnlyShehya=0 OR sh.IsOnlyShehya IS NULL)
+    AND (t.FreeDay IS NULL OR t.FreeDay=0 OR (sh.HourId/10) <> t.FreeDay)
+    AND NOT EXISTS (SELECT 1 FROM TeacherHours th WHERE th.TeacherId=t.TeacherId AND th.HourId=sh.HourId AND th.ConfigurationId=sh.ConfigurationId)
+) av
+WHERE t.ConfigurationId=" + cfgId + @"
+  AND req.Required > av.AvailableHourSlots
+  AND req.Required > 0
+
+UNION ALL
+
+-- כיתות עם 3+ מורים שחולקים יום חופש זהה
+SELECT N'class_freeday_overload' AS Kind,
+  c.ClassId AS Id1, t.FreeDay AS Id2,
+  c.Name AS Label,
+  CAST(COUNT(DISTINCT t.TeacherId) AS NVARCHAR(10)) + N' מורים חולקים יום חופש ביום ' + ISNULL((SELECT Name FROM @dayNames WHERE D = t.FreeDay), CAST(t.FreeDay AS NVARCHAR(10))) AS Detail
+FROM Class c
+INNER JOIN ClassTeacher ct ON ct.ClassId=c.ClassId
+INNER JOIN Teacher t ON t.TeacherId=ct.TeacherId
+WHERE c.ConfigurationId=" + cfgId + @"
+  AND ct.ConfigurationId=" + cfgId + @"
+  AND t.ConfigurationId=" + cfgId + @"
+  AND t.FreeDay IS NOT NULL AND t.FreeDay > 0
+GROUP BY c.ClassId, c.Name, t.FreeDay
+HAVING COUNT(DISTINCT t.TeacherId) >= 3";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[]");
+            // log only — pre-check failure shouldn't block the user
+            System.Diagnostics.Debug.WriteLine("Assign_PreCheck failed: " + ex.Message);
+        }
+    }
+
+    // עדכון מהיר של יום חופשי למורה. משמש את הdialog של פתרון התנגשויות.
+    [WebMethod]
+    public void Teacher_SetFreeDay()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            int teacherId = Helper.ConvertToInt(GetParams("TeacherId"));
+            string freeDayStr = GetParams("FreeDay");
+            string freeDayValue = string.IsNullOrEmpty(freeDayStr) || freeDayStr == "0" ? "NULL" : Helper.ConvertToInt(freeDayStr).ToString();
+            string sql = "UPDATE Teacher SET FreeDay = " + freeDayValue
+                + " WHERE TeacherId = " + teacherId + " AND ConfigurationId = " + cfgId;
+            Dal.ExecuteNonQuery(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"res\":0}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    [WebMethod]
+    public void Class_GetFreeDayConflicts()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            // Optional MinTeachers param: default 3 (the pre-assign warning's
+            // historical threshold). The post-failure recovery path passes
+            // MinTeachers=2 so it picks up softer conflicts that still hurt
+            // the schedule but wouldn't have fired the up-front warning.
+            // Use GetParamsValueIfExist — the regular GetParams calls
+            // .ToString() on a missing form key and throws NRE, breaking the
+            // entire endpoint when callers don't pass MinTeachers (which is
+            // the common case from the page-load banner check).
+            string minStr = GetParamsValueIfExist("MinTeachers");
+            int minTeachers = 3;
+            int parsed;
+            if (!string.IsNullOrEmpty(minStr) && int.TryParse(minStr, out parsed) && parsed >= 2)
+            {
+                minTeachers = parsed;
+            }
+            // ספירת מורים פר כיתה+יום-חופש (רק מי שמלמד בכיתה ויש לו FreeDay).
+            // כיתה "עמוסה" ביום מסוים אם N+ מורים שלה חולקים את אותו יום חופש.
+            string sql = @"
+SELECT
+  c.ClassId,
+  c.Name AS ClassName,
+  ISNULL(c.LayerId, 0) AS LayerId,
+  t.FreeDay,
+  COUNT(DISTINCT t.TeacherId) AS TeacherCount,
+  STUFF((
+    SELECT '|' + CAST(t2.TeacherId AS varchar(20)) + ':' + ISNULL(t2.FirstName,'') + ' ' + ISNULL(t2.LastName,'')
+    FROM ClassTeacher ct2
+    INNER JOIN Teacher t2 ON t2.TeacherId = ct2.TeacherId
+    WHERE ct2.ClassId = c.ClassId
+      AND ct2.ConfigurationId = " + cfgId + @"
+      AND t2.FreeDay = t.FreeDay
+      AND t2.ConfigurationId = " + cfgId + @"
+    FOR XML PATH(''), TYPE
+  ).value('.', 'NVARCHAR(MAX)'), 1, 1, '') AS TeachersCsv
+FROM Class c
+INNER JOIN ClassTeacher ct ON ct.ClassId = c.ClassId
+INNER JOIN Teacher t ON t.TeacherId = ct.TeacherId
+WHERE c.ConfigurationId = " + cfgId + @"
+  AND ct.ConfigurationId = " + cfgId + @"
+  AND t.ConfigurationId = " + cfgId + @"
+  AND t.FreeDay IS NOT NULL AND t.FreeDay > 0
+GROUP BY c.ClassId, c.Name, c.LayerId, t.FreeDay
+HAVING COUNT(DISTINCT t.TeacherId) >= " + minTeachers + @"
+ORDER BY TeacherCount DESC, c.LayerId, c.Name";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
+    [WebMethod]
+    public void Class_GetLayersStatus()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            string sql = @"
+DECLARE @cap INT = (SELECT COUNT(*) FROM SchoolHours
+                    WHERE ConfigurationId = " + cfgId + @"
+                      AND (IsOnlyShehya = 0 OR IsOnlyShehya IS NULL));
+SELECT
+  c.LayerId,
+  COUNT(DISTINCT c.ClassId) AS ClassCount,
+  SUM(CASE WHEN x.RequiredHours = @cap THEN 1 ELSE 0 END) AS FullyBookedCount,
+  @cap AS Capacity
+FROM Class c
+OUTER APPLY (
+  SELECT ISNULL(SUM(ct.Hour), 0) AS RequiredHours
+  FROM ClassTeacher ct
+  WHERE ct.ClassId = c.ClassId
+    AND ct.ConfigurationId = c.ConfigurationId
+    AND ct.Hour IS NOT NULL
+) x
+WHERE c.ConfigurationId = " + cfgId + @"
+GROUP BY c.LayerId
+ORDER BY c.LayerId";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+        }
+    }
+
     [WebMethod]
     public void Class_GetClassByLayerId()
     {
@@ -1087,6 +1304,8 @@ VALUES (" + cfgId + @", " + teacherId + @", " + hourId + @", " + newType + @", N
             int layerId = Helper.ConvertToInt(GetParams("LayerId"));
             string classIdsCsv = GetParams("ClassIds") ?? "";
             string name = (GetParams("Name") ?? "").Trim();
+            // ProfessionalId חובה — הקבצה תמיד שייכת למקצוע ספציפי.
+            int professionalId = Helper.ConvertToInt(GetParams("ProfessionalId"));
 
             List<int> classIds = new List<int>();
             foreach (string p in classIdsCsv.Split(','))
@@ -1099,6 +1318,13 @@ VALUES (" + cfgId + @", " + teacherId + @", " + hourId + @", " + newType + @", N
                 HttpContext.Current.Response.Clear();
                 HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
                 HttpContext.Current.Response.Write("{\"Error\":\"need at least 2 classes\"}");
+                return;
+            }
+            if (professionalId <= 0)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"missing ProfessionalId — must select subject for hakbatza\"}");
                 return;
             }
 
@@ -1124,15 +1350,21 @@ WHERE ct.ConfigurationId=" + cfgId + @"
                   .Append(classIds[i]).Append(", NULL, 1, ")
                   .Append(nextNum).Append(", NULL);");
             }
-            // Persist the optional friendly name in GroupInfo.
+            // GroupInfo תמיד נוצר עבור הקבצה כדי לאחסן ProfessionalId,
+            // גם אם אין שם ידידותי. השם — אופציונלי.
+            sb.Append("INSERT INTO GroupInfo (ConfigurationId, LayerId, Number, Kind, Name, ProfessionalId) VALUES (")
+              .Append(cfgId).Append(", ")
+              .Append(layerId).Append(", ")
+              .Append(nextNum).Append(", 'H', ");
             if (!string.IsNullOrEmpty(name))
             {
-                sb.Append("INSERT INTO GroupInfo (ConfigurationId, LayerId, Number, Kind, Name) VALUES (")
-                  .Append(cfgId).Append(", ")
-                  .Append(layerId).Append(", ")
-                  .Append(nextNum).Append(", 'H', N'")
-                  .Append(EscSql(name)).Append("');");
+                sb.Append("N'").Append(EscSql(name)).Append("'");
             }
+            else
+            {
+                sb.Append("NULL");
+            }
+            sb.Append(", ").Append(professionalId).Append(");");
             Dal.ExecuteNonQuery(sb.ToString());
 
             HttpContext.Current.Response.Clear();
@@ -1201,7 +1433,9 @@ SELECT
   ISNULL(c.LayerId,0) AS LayerId,
   ISNULL(ct.TeacherId, 0) AS TeacherId,
   ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
-  ISNULL(gi.Name, '') AS Name
+  ISNULL(gi.Name, '') AS Name,
+  ISNULL(gi.ProfessionalId, 0) AS ProfessionalId,
+  ISNULL(p.Name, '') AS ProfessionalName
 FROM ClassTeacher ct
 INNER JOIN Class c ON c.ClassId = ct.ClassId
 LEFT JOIN Teacher t ON t.TeacherId = ct.TeacherId
@@ -1210,6 +1444,7 @@ LEFT JOIN GroupInfo gi
  AND gi.LayerId = c.LayerId
  AND gi.Number = ct.Hakbatza
  AND gi.Kind = 'H'
+LEFT JOIN Professional p ON p.ProfessionalId = gi.ProfessionalId
 WHERE ct.ConfigurationId=" + cfgId + @"
   AND ISNULL(ct.Hakbatza,0) > 0
 ORDER BY c.LayerId, ct.Hakbatza, c.Name, TeacherName";
@@ -1247,6 +1482,21 @@ ORDER BY c.LayerId, ct.Hakbatza, c.Name, TeacherName";
                 HttpContext.Current.Response.Clear();
                 HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
                 HttpContext.Current.Response.Write("{\"Error\":\"missing params\"}");
+                return;
+            }
+
+            // לא לאפשר הוספה של מחנך/ת כיתה (TafkidId=1) להקבצה.
+            // מחנך מלמד את כל המקצועות של כיתתו, לכן לא הגיוני שיהיה חלק
+            // מהקבצה (קבוצת רמה משותפת בין כיתות).
+            string sqlTafkid = "SELECT TafkidId FROM Teacher WHERE TeacherId=" + teacherId
+                + " AND ConfigurationId=" + cfgId;
+            DataTable dtTafkid = Dal.GetDataTable(sqlTafkid);
+            if (dtTafkid.Rows.Count > 0
+                && Helper.ConvertToInt(dtTafkid.Rows[0]["TafkidId"].ToString()) == 1)
+            {
+                HttpContext.Current.Response.Clear();
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                HttpContext.Current.Response.Write("{\"Error\":\"לא ניתן לצרף מחנך/ת כיתה להקבצה\"}");
                 return;
             }
 
@@ -2437,25 +2687,55 @@ WHERE ct.ConfigurationId = " + cfgId + @"
         {
             string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
             int cId = Helper.ConvertToInt(configId);
+            // מחזיר 4 מטריקות:
+            // - EmptySlots: תאים בלוח שלא מולאו
+            // - AssignedSlots: תאי לוח ייחודיים שמולאו
+            // - Capacity: סך תאים אפשריים (= AssignedSlots + EmptySlots תמיד)
+            // - TotalRequired: סך הדרישה האפקטיבית (הקבצה כ-MAX, השאר SUM)
+            // אם TotalRequired > Capacity → over-demand פיזית בלתי אפשרי לכסות
+            // למרות ש-EmptySlots יכול להיות 0 (greedy ממלא תאים אבל לא דרישות).
             string sql = @"
-SELECT COUNT(*) AS EmptySlots FROM (
-  SELECT c.ClassId, sh.HourId
-  FROM Class c
-  CROSS JOIN SchoolHours sh
-  WHERE c.ConfigurationId = " + cId + @"
-    AND sh.ConfigurationId = " + cId + @"
-    AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
-  EXCEPT
-  SELECT DISTINCT ClassId, HourId
-  FROM TeacherAssignment
-  WHERE ConfigurationId = " + cId + @" AND HourTypeId = 1
-) e";
+WITH PerGroup AS (
+  SELECT ClassId,
+    ISNULL(CAST(Hakbatza AS varchar(10)), 'T'+CAST(TeacherId AS varchar(10))) AS GKey,
+    MAX(Hour) AS Hour
+  FROM ClassTeacher WHERE ConfigurationId = " + cId + @" AND Hour > 0
+  GROUP BY ClassId, ISNULL(CAST(Hakbatza AS varchar(10)), 'T'+CAST(TeacherId AS varchar(10)))
+)
+SELECT
+  (SELECT COUNT(*) FROM (
+    SELECT c.ClassId, sh.HourId
+    FROM Class c CROSS JOIN SchoolHours sh
+    WHERE c.ConfigurationId = " + cId + @" AND sh.ConfigurationId = " + cId + @"
+      AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+    EXCEPT
+    SELECT DISTINCT ClassId, HourId FROM TeacherAssignment
+    WHERE ConfigurationId = " + cId + @" AND HourTypeId = 1
+  ) e) AS EmptySlots,
+  (SELECT COUNT(DISTINCT CAST(ClassId AS varchar(20))+'_'+CAST(HourId AS varchar(20)))
+   FROM TeacherAssignment WHERE ConfigurationId = " + cId + @" AND HourTypeId = 1) AS AssignedSlots,
+  (SELECT COUNT(*) FROM Class c CROSS JOIN SchoolHours sh
+   WHERE c.ConfigurationId = " + cId + @" AND sh.ConfigurationId = " + cId + @"
+     AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)) AS Capacity,
+  ISNULL((SELECT SUM(Hour) FROM PerGroup), 0) AS TotalRequired";
             DataTable dt = Dal.GetDataTable(sql);
             int empty = 0;
-            if (dt.Rows.Count > 0) empty = Helper.ConvertToInt(dt.Rows[0]["EmptySlots"].ToString());
+            int assigned = 0;
+            int capacity = 0;
+            int totalRequired = 0;
+            if (dt.Rows.Count > 0)
+            {
+                empty = Helper.ConvertToInt(dt.Rows[0]["EmptySlots"].ToString());
+                assigned = Helper.ConvertToInt(dt.Rows[0]["AssignedSlots"].ToString());
+                capacity = Helper.ConvertToInt(dt.Rows[0]["Capacity"].ToString());
+                totalRequired = Helper.ConvertToInt(dt.Rows[0]["TotalRequired"].ToString());
+            }
             HttpContext.Current.Response.Clear();
             HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
-            HttpContext.Current.Response.Write("{\"EmptySlots\":" + empty + "}");
+            HttpContext.Current.Response.Write("{\"EmptySlots\":" + empty +
+                ",\"AssignedSlots\":" + assigned +
+                ",\"Capacity\":" + capacity +
+                ",\"TotalRequired\":" + totalRequired + "}");
         }
         catch (Exception ex)
         {
@@ -2613,14 +2893,28 @@ SELECT
   ISNULL(t.FreeDay, 0) AS FreeDay,
   CASE WHEN t.ManageClassId = ct.ClassId THEN 1 ELSE 0 END AS IsHomeroom,
   (SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + cIdForDiag + @") AS TotalRequiredAllClasses,
-  -- Total work hours defined in TeacherHours (including hours that don't exist in SchoolHours)
-  (SELECT COUNT(*) FROM TeacherHours WHERE TeacherId=ct.TeacherId AND ConfigurationId=" + cIdForDiag + @") AS DefinedHourSlots,
-  -- Only count hours that EXIST in SchoolHours (and aren't shehya-only)
-  (SELECT COUNT(*) FROM TeacherHours th
-     INNER JOIN SchoolHours sh ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
-     WHERE th.TeacherId = ct.TeacherId
-       AND th.ConfigurationId = " + cIdForDiag + @"
-       AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)) AS AvailableHourSlots
+  -- NEW SEMANTIC: TeacherHours = שעות חסומות. השעות הזמינות הן: כל שעות
+  -- בית-הספר (לא IsOnlyShehya) פחות חסומות פחות יום חופשי של המורה.
+  (SELECT COUNT(*) FROM SchoolHours sh
+     WHERE sh.ConfigurationId = " + cIdForDiag + @"
+       AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+       AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
+       AND NOT EXISTS (
+         SELECT 1 FROM TeacherHours th
+         WHERE th.TeacherId = ct.TeacherId
+           AND th.HourId = sh.HourId
+           AND th.ConfigurationId = sh.ConfigurationId
+       )) AS DefinedHourSlots,
+  (SELECT COUNT(*) FROM SchoolHours sh
+     WHERE sh.ConfigurationId = " + cIdForDiag + @"
+       AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+       AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
+       AND NOT EXISTS (
+         SELECT 1 FROM TeacherHours th
+         WHERE th.TeacherId = ct.TeacherId
+           AND th.HourId = sh.HourId
+           AND th.ConfigurationId = sh.ConfigurationId
+       )) AS AvailableHourSlots
 FROM ClassTeacher ct
 LEFT JOIN (
   SELECT ClassId, TeacherId, COUNT(*) AS Assigned
@@ -2665,18 +2959,34 @@ ORDER BY Missing DESC, ct.ClassId, ct.TeacherId
             string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
             int cId = Helper.ConvertToInt(configId);
             string sql = @"
+-- NEW SEMANTIC: AvailableHourSlots = SchoolHours זמינות (לא IsOnlyShehya,
+-- לא ביום חופשי, לא ב-TeacherHours).
+WITH avail AS (
+  SELECT t.TeacherId,
+    (SELECT COUNT(*) FROM SchoolHours sh
+       WHERE sh.ConfigurationId = " + cId + @"
+         AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+         AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
+         AND NOT EXISTS (SELECT 1 FROM TeacherHours th
+                          WHERE th.TeacherId = t.TeacherId
+                            AND th.HourId = sh.HourId
+                            AND th.ConfigurationId = sh.ConfigurationId)
+    ) AS AvailableHourSlots
+  FROM Teacher t
+  WHERE t.ConfigurationId = " + cId + @"
+)
 SELECT
   t.TeacherId,
   ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
   ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS TotalRequired,
-  ISNULL((SELECT COUNT(*) FROM TeacherHours WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) AS AvailableHourSlots,
+  ISNULL(av.AvailableHourSlots, 0) AS AvailableHourSlots,
   ISNULL(t.FreeDay, 0) AS FreeDay,
   ISNULL(t.ManageClassId, 0) AS ManageClassId
 FROM Teacher t
-WHERE t.ConfigurationId=" + cId + @"
+LEFT JOIN avail av ON av.TeacherId = t.TeacherId
+WHERE t.ConfigurationId = " + cId + @"
   AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) > 0
-  AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) >=
-      ISNULL((SELECT COUNT(*) FROM TeacherHours WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) - 1
+  AND ISNULL((SELECT SUM(Hour) FROM ClassTeacher WHERE TeacherId=t.TeacherId AND ConfigurationId=" + cId + @"), 0) >= ISNULL(av.AvailableHourSlots, 0) - 1
 ORDER BY (TotalRequired - AvailableHourSlots) DESC";
             DataTable dt = Dal.GetDataTable(sql);
             HttpContext.Current.Response.Clear();
@@ -2710,43 +3020,41 @@ ORDER BY (TotalRequired - AvailableHourSlots) DESC";
             string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
             int cId = Helper.ConvertToInt(configId);
             string sql = @"
+-- NEW SEMANTIC: TeacherHours = שעות חסומות.
+-- DefinedHours = שעות שאפשר ללמד (SchoolHours פחות חסומות פחות יום חופשי).
+-- UnusedHours = שעות שניתן ללמד שלא נוצלו בשיבוץ.
 SELECT
   t.TeacherId,
   ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
-  -- Working hours that actually correspond to a real, non-shehya school slot
   defined.DefinedHours,
-  -- Slots already taken by a real assignment (HourTypeId = 1)
   ISNULL(used.UsedHours, 0) AS UsedHours,
   defined.DefinedHours - ISNULL(used.UsedHours, 0) AS UnusedHours,
-  -- CSV of free HourIds, sorted; client splits into day/hour for display
   STUFF((
-    SELECT ',' + CAST(th.HourId AS VARCHAR(10))
-    FROM TeacherHours th
-    INNER JOIN SchoolHours sh
-      ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
-    WHERE th.TeacherId = t.TeacherId
-      AND th.ConfigurationId = " + cId + @"
+    SELECT ',' + CAST(sh.HourId AS VARCHAR(10))
+    FROM SchoolHours sh
+    WHERE sh.ConfigurationId = " + cId + @"
       AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+      AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
+      AND NOT EXISTS (SELECT 1 FROM TeacherHours th WHERE th.TeacherId = t.TeacherId AND th.HourId = sh.HourId AND th.ConfigurationId = sh.ConfigurationId)
       AND NOT EXISTS (
         SELECT 1 FROM TeacherAssignment ta
-        WHERE ta.TeacherId = th.TeacherId
-          AND ta.HourId = th.HourId
-          AND ta.ConfigurationId = th.ConfigurationId
+        WHERE ta.TeacherId = t.TeacherId
+          AND ta.HourId = sh.HourId
+          AND ta.ConfigurationId = sh.ConfigurationId
           AND ta.HourTypeId = 1
       )
-    ORDER BY th.HourId
+    ORDER BY sh.HourId
     FOR XML PATH(''), TYPE
   ).value('.', 'NVARCHAR(MAX)'), 1, 1, '') AS UnusedHourIds
 FROM Teacher t
-INNER JOIN (
-  SELECT th.TeacherId, COUNT(*) AS DefinedHours
-  FROM TeacherHours th
-  INNER JOIN SchoolHours sh
-    ON sh.HourId = th.HourId AND sh.ConfigurationId = th.ConfigurationId
-  WHERE th.ConfigurationId = " + cId + @"
+CROSS APPLY (
+  SELECT COUNT(*) AS DefinedHours
+  FROM SchoolHours sh
+  WHERE sh.ConfigurationId = " + cId + @"
     AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
-  GROUP BY th.TeacherId
-) defined ON defined.TeacherId = t.TeacherId
+    AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
+    AND NOT EXISTS (SELECT 1 FROM TeacherHours th WHERE th.TeacherId = t.TeacherId AND th.HourId = sh.HourId AND th.ConfigurationId = sh.ConfigurationId)
+) defined
 LEFT JOIN (
   SELECT TeacherId, COUNT(DISTINCT HourId) AS UsedHours
   FROM TeacherAssignment
@@ -3113,11 +3421,15 @@ WHERE ct.ConfigurationId=" + cId + @"
 
                     int remainingToFill = missing;
 
-                    // Stage 1: simple force (empty slot)
+                    // Stage 1: simple force (empty slot).
+                    // NEW SEMANTIC: TeacherHours = שעות חסומות. שעה זמינה
+                    // למורה אם אין רשומת TeacherHours, ולא ביום החופשי.
                     string sqlEmptySlots = @"
 SELECT sh.HourId FROM SchoolHours sh
-INNER JOIN TeacherHours th ON th.HourId=sh.HourId AND th.TeacherId=" + teacherId + @" AND th.ConfigurationId=" + cId + @"
+INNER JOIN Teacher t ON t.TeacherId=" + teacherId + @" AND t.ConfigurationId=" + cId + @"
 WHERE sh.ConfigurationId=" + cId + @" AND (sh.IsOnlyShehya=0 OR sh.IsOnlyShehya IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM TeacherHours th WHERE th.HourId=sh.HourId AND th.TeacherId=" + teacherId + @" AND th.ConfigurationId=" + cId + @")
+  AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
   AND NOT EXISTS (SELECT 1 FROM TeacherAssignment ta WHERE ta.ConfigurationId=" + cId + @" AND ta.HourId=sh.HourId AND ta.ClassId=" + classId + @" AND ta.HourTypeId=1)
   AND NOT EXISTS (SELECT 1 FROM TeacherAssignment ta2 WHERE ta2.ConfigurationId=" + cId + @" AND ta2.TeacherId=" + teacherId + @" AND ta2.HourId=sh.HourId AND ta2.HourTypeId=1)
 ORDER BY sh.HourId";
@@ -3132,16 +3444,16 @@ ORDER BY sh.HourId";
 
                     if (remainingToFill <= 0) continue;
 
-                    // Stage 2: displace another teacher from a conflicting slot
-                    // Find slots (classId, hourId) where: teacher X works at that hour,
-                    // the slot is filled by a different teacher Y, and teacher Y has
-                    // alternatives.
+                    // Stage 2: displace another teacher from a conflicting slot.
+                    // NEW SEMANTIC: שעה זמינה למורה X = אין TeacherHours לו בשעה זו ולא ביום חופשי.
                     string sqlConflict = @"
 SELECT sh.HourId, ta.TeacherId AS BusyTeacher, ta.AssignmentId
 FROM SchoolHours sh
-INNER JOIN TeacherHours th ON th.HourId=sh.HourId AND th.TeacherId=" + teacherId + @" AND th.ConfigurationId=" + cId + @"
+INNER JOIN Teacher t ON t.TeacherId=" + teacherId + @" AND t.ConfigurationId=" + cId + @"
 INNER JOIN TeacherAssignment ta ON ta.HourId=sh.HourId AND ta.ClassId=" + classId + @" AND ta.ConfigurationId=" + cId + @" AND ta.HourTypeId=1
 WHERE sh.ConfigurationId=" + cId + @"
+  AND NOT EXISTS (SELECT 1 FROM TeacherHours th WHERE th.HourId=sh.HourId AND th.TeacherId=" + teacherId + @" AND th.ConfigurationId=" + cId + @")
+  AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
   AND ta.TeacherId <> " + teacherId + @"
   AND NOT EXISTS (SELECT 1 FROM TeacherAssignment ta2 WHERE ta2.ConfigurationId=" + cId + @" AND ta2.TeacherId=" + teacherId + @" AND ta2.HourId=sh.HourId AND ta2.HourTypeId=1)
 ORDER BY sh.HourId";
@@ -3221,13 +3533,15 @@ WHERE ct.ConfigurationId=" + cId + @"
                     int teacherId = Helper.ConvertToInt(dtMissing.Rows[i]["TeacherId"].ToString());
                     int missing = Helper.ConvertToInt(dtMissing.Rows[i]["Missing"].ToString());
 
-                    // Find hours this teacher works AND class has a slot, and class is not already assigned
+                    // NEW SEMANTIC: שעה זמינה למורה = לא ב-TeacherHours, לא ביום חופשי.
                     string sqlSlots = @"
 SELECT TOP " + missing + @" sh.HourId
 FROM SchoolHours sh
-INNER JOIN TeacherHours th ON th.HourId = sh.HourId AND th.TeacherId = " + teacherId + @" AND th.ConfigurationId = " + cId + @"
+INNER JOIN Teacher t ON t.TeacherId = " + teacherId + @" AND t.ConfigurationId = " + cId + @"
 WHERE sh.ConfigurationId = " + cId + @"
   AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM TeacherHours th WHERE th.HourId = sh.HourId AND th.TeacherId = " + teacherId + @" AND th.ConfigurationId = " + cId + @")
+  AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
   AND NOT EXISTS (
     SELECT 1 FROM TeacherAssignment ta
     WHERE ta.ConfigurationId = " + cId + @"
@@ -3330,21 +3644,49 @@ ORDER BY c.ClassId, sh.HourId";
                     int hourId = Helper.ConvertToInt(dtEmpty.Rows[i]["HourId"].ToString());
                     int homeroomId = Helper.ConvertToInt(dtEmpty.Rows[i]["HomeroomTeacherId"].ToString());
 
-                    // 2) Pick a teacher: homeroom first if available, else least-loaded teacher.
+                    // 2) Pick a teacher who:
+                    //    - HAS a ClassTeacher contract for this class with Hour > 0
+                    //    - Has not yet been assigned more than that contract's Hour
+                    //    - Is not unavailable at this hour (TeacherHours marker)
+                    //    - Is not on their FreeDay
+                    //    - Is not already assigned somewhere else at this hour
+                    // Refusing to use a teacher outside the contract is the
+                    // whole point of this fill-pass: we used to pick "any
+                    // available teacher," which produced legitimate-looking
+                    // 100% schedules that violated ClassTeacher quotas. With
+                    // this guard, the cell stays empty rather than being
+                    // filled with a wrong teacher — surfacing real failure.
                     string sqlPick = @"
 SELECT TOP 1 t.TeacherId, t.ProfessionalId,
   CASE WHEN t.ManageClassId = " + classId + @" THEN 0 ELSE 1 END AS HomeroomRank,
   ISNULL((SELECT COUNT(*) FROM TeacherAssignment ta2
-          WHERE ta2.TeacherId = t.TeacherId AND ta2.ConfigurationId = " + cId + @"), 0) AS LoadCount
+          WHERE ta2.TeacherId = t.TeacherId AND ta2.ConfigurationId = " + cId + @"), 0) AS LoadCount,
+  ct.Hour AS Contracted,
+  ISNULL((SELECT COUNT(*) FROM TeacherAssignment taC
+          WHERE taC.ConfigurationId = " + cId + @"
+            AND taC.TeacherId = t.TeacherId
+            AND taC.ClassId = " + classId + @"
+            AND taC.HourTypeId = 1), 0) AS PlacedInClass
 FROM Teacher t
-INNER JOIN TeacherHours th ON th.TeacherId = t.TeacherId AND th.HourId = " + hourId + @" AND th.ConfigurationId = " + cId + @"
+INNER JOIN ClassTeacher ct
+  ON ct.TeacherId = t.TeacherId
+  AND ct.ClassId = " + classId + @"
+  AND ct.ConfigurationId = " + cId + @"
+  AND ct.Hour > 0
 WHERE t.ConfigurationId = " + cId + @"
+  AND NOT EXISTS (SELECT 1 FROM TeacherHours th WHERE th.TeacherId = t.TeacherId AND th.HourId = " + hourId + @" AND th.ConfigurationId = " + cId + @")
+  AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (" + hourId + @" / 10) <> t.FreeDay)
   AND NOT EXISTS (
     SELECT 1 FROM TeacherAssignment tb
     WHERE tb.ConfigurationId = " + cId + @"
       AND tb.HourId = " + hourId + @"
       AND tb.TeacherId = t.TeacherId
   )
+  AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taQ
+              WHERE taQ.ConfigurationId = " + cId + @"
+                AND taQ.TeacherId = t.TeacherId
+                AND taQ.ClassId = " + classId + @"
+                AND taQ.HourTypeId = 1), 0) < ct.Hour
 ORDER BY HomeroomRank ASC, LoadCount ASC, t.TeacherId ASC";
                     DataTable dtPick = Dal.GetDataTable(con, tx, sqlPick);
                     if (dtPick.Rows.Count == 0)
@@ -3361,6 +3703,367 @@ ORDER BY HomeroomRank ASC, LoadCount ASC, t.TeacherId ASC";
                     // unused homeroomId - prefix-compiler hint
                     if (homeroomId == 0) { /* class without homeroom - covered by HomeroomRank ordering */ }
                 }
+
+                // ====================================================
+                // SWAP PASS — for each remaining empty (classA, hourA)
+                // try a 1-swap chain:
+                //   1. teacher T contracted to classA, currently at
+                //      (fromClass, hourA), with remaining quota in classA
+                //   2. replacement R contracted to fromClass, free at
+                //      hourA, with remaining quota in fromClass
+                // Move T from fromClass→classA, plug R into fromClass.
+                // Net: +1 filled cell (classA was empty, fromClass stays
+                // filled via R).
+                // ====================================================
+                if (stillEmpty > 0)
+                {
+                    DataTable dtRemaining = Dal.GetDataTable(con, tx, sqlEmpty);
+                    int swapped = 0;
+                    for (int i = 0; i < dtRemaining.Rows.Count; i++)
+                    {
+                        int classA = Helper.ConvertToInt(dtRemaining.Rows[i]["ClassId"].ToString());
+                        int hourA = Helper.ConvertToInt(dtRemaining.Rows[i]["HourId"].ToString());
+
+                        string sqlSwap = @"
+SELECT TOP 1
+  tb.AssignmentId AS MoveAssignmentId,
+  tb.TeacherId    AS MoveTeacherId,
+  tb.ClassId      AS FromClassId,
+  R.TeacherId     AS ReplaceTeacherId,
+  R.ProfessionalId AS ReplaceProfessionalId
+FROM ClassTeacher ctA
+INNER JOIN Teacher t  ON t.TeacherId = ctA.TeacherId
+INNER JOIN TeacherAssignment tb
+  ON tb.TeacherId = ctA.TeacherId
+  AND tb.HourId = " + hourA + @"
+  AND tb.ConfigurationId = " + cId + @"
+  AND tb.HourTypeId = 1
+  AND tb.ClassId <> " + classA + @"
+CROSS APPLY (
+  SELECT TOP 1 t2.TeacherId, t2.ProfessionalId
+  FROM ClassTeacher ct2
+  INNER JOIN Teacher t2 ON t2.TeacherId = ct2.TeacherId
+  WHERE ct2.ClassId = tb.ClassId
+    AND ct2.ConfigurationId = " + cId + @"
+    AND ct2.Hour > 0
+    AND ct2.TeacherId <> tb.TeacherId
+    AND (t2.FreeDay IS NULL OR t2.FreeDay = 0 OR (" + hourA + @" / 10) <> t2.FreeDay)
+    AND NOT EXISTS (SELECT 1 FROM TeacherHours th
+                    WHERE th.TeacherId = ct2.TeacherId
+                      AND th.HourId = " + hourA + @"
+                      AND th.ConfigurationId = " + cId + @")
+    AND NOT EXISTS (SELECT 1 FROM TeacherAssignment tax
+                    WHERE tax.TeacherId = ct2.TeacherId
+                      AND tax.HourId = " + hourA + @"
+                      AND tax.ConfigurationId = " + cId + @")
+    AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taR
+                WHERE taR.ConfigurationId = " + cId + @"
+                  AND taR.TeacherId = ct2.TeacherId
+                  AND taR.ClassId = tb.ClassId
+                  AND taR.HourTypeId = 1), 0) < ct2.Hour
+  ORDER BY ct2.TeacherId
+) R
+WHERE ctA.ClassId = " + classA + @"
+  AND ctA.ConfigurationId = " + cId + @"
+  AND ctA.Hour > 0
+  AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (" + hourA + @" / 10) <> t.FreeDay)
+  AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taA
+              WHERE taA.ConfigurationId = " + cId + @"
+                AND taA.TeacherId = ctA.TeacherId
+                AND taA.ClassId = " + classA + @"
+                AND taA.HourTypeId = 1), 0) < ctA.Hour
+ORDER BY ctA.TeacherId";
+
+                        DataTable dtSwap = Dal.GetDataTable(con, tx, sqlSwap);
+                        if (dtSwap.Rows.Count == 0) continue;
+
+                        int moveAsgnId = Helper.ConvertToInt(dtSwap.Rows[0]["MoveAssignmentId"].ToString());
+                        int replaceTid = Helper.ConvertToInt(dtSwap.Rows[0]["ReplaceTeacherId"].ToString());
+                        int fromClass = Helper.ConvertToInt(dtSwap.Rows[0]["FromClassId"].ToString());
+                        int replaceProf = Helper.ConvertToInt(dtSwap.Rows[0]["ReplaceProfessionalId"].ToString());
+
+                        // 1) Re-target the existing assignment to classA
+                        SqlCommand updCmd = new SqlCommand(
+                            "UPDATE TeacherAssignment SET ClassId = " + classA +
+                            " WHERE AssignmentId = " + moveAsgnId,
+                            con, tx);
+                        updCmd.ExecuteNonQuery();
+
+                        // 2) Insert replacement into fromClass
+                        Dal.ExeSpBigNonQuery(con, tx, "Assign_SetAssignAuto",
+                            cId, replaceTid, hourA, 1, fromClass, replaceProf, 0, 0);
+
+                        filled++;
+                        stillEmpty--;
+                        swapped++;
+                    }
+                    System.Diagnostics.Debug.WriteLine("FillEmptySlots swap pass: " + swapped + " resolved");
+                }
+
+                // ====================================================
+                // 2-SWAP CHAIN — for cells still empty after the 1-swap
+                // pass. Strategy: for each remaining empty (classA, hourA),
+                // pick teacher T contracted to classA, currently busy in
+                // (fromClass, hourA). Then try to free fromClass at hourA
+                // by recursively running a 1-swap on it: find R2 contracted
+                // to fromClass, currently in (thirdClass, hourA), and R3
+                // contracted to thirdClass, free at hourA with quota left.
+                //
+                // Chain: thirdClass ← R3 (new), fromClass ← R2 (was at
+                // thirdClass), classA ← T (was at fromClass).
+                //
+                // Net: +1 filled cell. classA was empty, fromClass and
+                // thirdClass stay filled via R2/R3 respectively.
+                // ====================================================
+                if (stillEmpty > 0)
+                {
+                    DataTable dtRemaining2 = Dal.GetDataTable(con, tx, sqlEmpty);
+                    int swapped2 = 0;
+                    for (int i = 0; i < dtRemaining2.Rows.Count; i++)
+                    {
+                        int classA = Helper.ConvertToInt(dtRemaining2.Rows[i]["ClassId"].ToString());
+                        int hourA = Helper.ConvertToInt(dtRemaining2.Rows[i]["HourId"].ToString());
+
+                        string sql2Swap = @"
+SELECT TOP 1
+  tbT.AssignmentId  AS MoveT_AsgnId,
+  tbT.TeacherId     AS MoveT_TeacherId,
+  tbT.ClassId       AS FromClassId,
+  tbR2.AssignmentId AS MoveR2_AsgnId,
+  tbR2.TeacherId    AS MoveR2_TeacherId,
+  tbR2.ClassId      AS ThirdClassId,
+  R3.TeacherId      AS R3_TeacherId,
+  R3.ProfessionalId AS R3_ProfessionalId
+FROM ClassTeacher ctA
+INNER JOIN Teacher tT ON tT.TeacherId = ctA.TeacherId
+INNER JOIN TeacherAssignment tbT
+  ON tbT.TeacherId = ctA.TeacherId
+  AND tbT.HourId = " + hourA + @"
+  AND tbT.ConfigurationId = " + cId + @"
+  AND tbT.HourTypeId = 1
+  AND tbT.ClassId <> " + classA + @"
+-- R2: a teacher with a contract in fromClass, currently busy elsewhere at hourA
+INNER JOIN ClassTeacher ctR2
+  ON ctR2.ClassId = tbT.ClassId
+  AND ctR2.ConfigurationId = " + cId + @"
+  AND ctR2.Hour > 0
+  AND ctR2.TeacherId <> tbT.TeacherId
+INNER JOIN Teacher tR2 ON tR2.TeacherId = ctR2.TeacherId
+INNER JOIN TeacherAssignment tbR2
+  ON tbR2.TeacherId = ctR2.TeacherId
+  AND tbR2.HourId = " + hourA + @"
+  AND tbR2.ConfigurationId = " + cId + @"
+  AND tbR2.HourTypeId = 1
+  AND tbR2.ClassId <> tbT.ClassId
+  AND tbR2.ClassId <> " + classA + @"
+-- R3: a free teacher with contract in thirdClass, quota not full
+CROSS APPLY (
+  SELECT TOP 1 t3.TeacherId, t3.ProfessionalId
+  FROM ClassTeacher ct3
+  INNER JOIN Teacher t3 ON t3.TeacherId = ct3.TeacherId
+  WHERE ct3.ClassId = tbR2.ClassId
+    AND ct3.ConfigurationId = " + cId + @"
+    AND ct3.Hour > 0
+    AND ct3.TeacherId <> tbR2.TeacherId
+    AND ct3.TeacherId <> tbT.TeacherId
+    AND (t3.FreeDay IS NULL OR t3.FreeDay = 0 OR (" + hourA + @" / 10) <> t3.FreeDay)
+    AND NOT EXISTS (SELECT 1 FROM TeacherHours th3
+                    WHERE th3.TeacherId = ct3.TeacherId
+                      AND th3.HourId = " + hourA + @"
+                      AND th3.ConfigurationId = " + cId + @")
+    AND NOT EXISTS (SELECT 1 FROM TeacherAssignment tax3
+                    WHERE tax3.TeacherId = ct3.TeacherId
+                      AND tax3.HourId = " + hourA + @"
+                      AND tax3.ConfigurationId = " + cId + @")
+    AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment ta3
+                WHERE ta3.ConfigurationId = " + cId + @"
+                  AND ta3.TeacherId = ct3.TeacherId
+                  AND ta3.ClassId = tbR2.ClassId
+                  AND ta3.HourTypeId = 1), 0) < ct3.Hour
+  ORDER BY ct3.TeacherId
+) R3
+WHERE ctA.ClassId = " + classA + @"
+  AND ctA.ConfigurationId = " + cId + @"
+  AND ctA.Hour > 0
+  AND (tT.FreeDay IS NULL OR tT.FreeDay = 0 OR (" + hourA + @" / 10) <> tT.FreeDay)
+  AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taA
+              WHERE taA.ConfigurationId = " + cId + @"
+                AND taA.TeacherId = ctA.TeacherId
+                AND taA.ClassId = " + classA + @"
+                AND taA.HourTypeId = 1), 0) < ctA.Hour
+  AND (tR2.FreeDay IS NULL OR tR2.FreeDay = 0 OR (" + hourA + @" / 10) <> tR2.FreeDay)
+  AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taR2c
+              WHERE taR2c.ConfigurationId = " + cId + @"
+                AND taR2c.TeacherId = ctR2.TeacherId
+                AND taR2c.ClassId = tbT.ClassId
+                AND taR2c.HourTypeId = 1), 0) < ctR2.Hour
+ORDER BY ctA.TeacherId, ctR2.TeacherId";
+
+                        DataTable dt2Swap = Dal.GetDataTable(con, tx, sql2Swap);
+                        if (dt2Swap.Rows.Count == 0) continue;
+
+                        int moveT_AsgnId = Helper.ConvertToInt(dt2Swap.Rows[0]["MoveT_AsgnId"].ToString());
+                        int fromClass = Helper.ConvertToInt(dt2Swap.Rows[0]["FromClassId"].ToString());
+                        int moveR2_AsgnId = Helper.ConvertToInt(dt2Swap.Rows[0]["MoveR2_AsgnId"].ToString());
+                        int thirdClass = Helper.ConvertToInt(dt2Swap.Rows[0]["ThirdClassId"].ToString());
+                        int r3Tid = Helper.ConvertToInt(dt2Swap.Rows[0]["R3_TeacherId"].ToString());
+                        int r3Prof = Helper.ConvertToInt(dt2Swap.Rows[0]["R3_ProfessionalId"].ToString());
+
+                        // 1) Re-target T from fromClass → classA
+                        SqlCommand updT = new SqlCommand(
+                            "UPDATE TeacherAssignment SET ClassId = " + classA +
+                            " WHERE AssignmentId = " + moveT_AsgnId,
+                            con, tx);
+                        updT.ExecuteNonQuery();
+
+                        // 2) Re-target R2 from thirdClass → fromClass
+                        SqlCommand updR2 = new SqlCommand(
+                            "UPDATE TeacherAssignment SET ClassId = " + fromClass +
+                            " WHERE AssignmentId = " + moveR2_AsgnId,
+                            con, tx);
+                        updR2.ExecuteNonQuery();
+
+                        // 3) Insert R3 into thirdClass
+                        Dal.ExeSpBigNonQuery(con, tx, "Assign_SetAssignAuto",
+                            cId, r3Tid, hourA, 1, thirdClass, r3Prof, 0, 0);
+
+                        filled++;
+                        stillEmpty--;
+                        swapped2++;
+                    }
+                    System.Diagnostics.Debug.WriteLine("FillEmptySlots 2-swap pass: " + swapped2 + " resolved");
+                }
+
+                // ====================================================
+                // 3-SWAP CHAIN — depth 4. For each cell still empty after
+                // 1-swap and 2-swap, try a longer chain:
+                //   classA ← T (was at fromClass)
+                //   fromClass ← R2 (was at thirdClass)
+                //   thirdClass ← R3 (was at fourthClass)
+                //   fourthClass ← R4 (new placement)
+                // Each link requires a teacher with a contract in the
+                // destination class, FreeDay-compatible, with quota left.
+                // ====================================================
+                if (stillEmpty > 0)
+                {
+                    DataTable dtRemaining3 = Dal.GetDataTable(con, tx, sqlEmpty);
+                    int swapped3 = 0;
+                    for (int i = 0; i < dtRemaining3.Rows.Count; i++)
+                    {
+                        int classA = Helper.ConvertToInt(dtRemaining3.Rows[i]["ClassId"].ToString());
+                        int hourA = Helper.ConvertToInt(dtRemaining3.Rows[i]["HourId"].ToString());
+
+                        string sql3Swap = @"
+SELECT TOP 1
+  tbT.AssignmentId  AS MoveT_AsgnId,
+  tbT.ClassId       AS FromClassId,
+  tbR2.AssignmentId AS MoveR2_AsgnId,
+  tbR2.ClassId      AS ThirdClassId,
+  tbR3.AssignmentId AS MoveR3_AsgnId,
+  tbR3.ClassId      AS FourthClassId,
+  R4.TeacherId      AS R4_TeacherId,
+  R4.ProfessionalId AS R4_ProfessionalId
+FROM ClassTeacher ctA
+INNER JOIN Teacher tT ON tT.TeacherId = ctA.TeacherId
+INNER JOIN TeacherAssignment tbT
+  ON tbT.TeacherId = ctA.TeacherId AND tbT.HourId = " + hourA + @"
+  AND tbT.ConfigurationId = " + cId + @" AND tbT.HourTypeId = 1
+  AND tbT.ClassId <> " + classA + @"
+INNER JOIN ClassTeacher ctR2
+  ON ctR2.ClassId = tbT.ClassId AND ctR2.ConfigurationId = " + cId + @"
+  AND ctR2.Hour > 0 AND ctR2.TeacherId <> tbT.TeacherId
+INNER JOIN Teacher tR2 ON tR2.TeacherId = ctR2.TeacherId
+INNER JOIN TeacherAssignment tbR2
+  ON tbR2.TeacherId = ctR2.TeacherId AND tbR2.HourId = " + hourA + @"
+  AND tbR2.ConfigurationId = " + cId + @" AND tbR2.HourTypeId = 1
+  AND tbR2.ClassId NOT IN (tbT.ClassId, " + classA + @")
+INNER JOIN ClassTeacher ctR3
+  ON ctR3.ClassId = tbR2.ClassId AND ctR3.ConfigurationId = " + cId + @"
+  AND ctR3.Hour > 0 AND ctR3.TeacherId NOT IN (tbT.TeacherId, tbR2.TeacherId)
+INNER JOIN Teacher tR3 ON tR3.TeacherId = ctR3.TeacherId
+INNER JOIN TeacherAssignment tbR3
+  ON tbR3.TeacherId = ctR3.TeacherId AND tbR3.HourId = " + hourA + @"
+  AND tbR3.ConfigurationId = " + cId + @" AND tbR3.HourTypeId = 1
+  AND tbR3.ClassId NOT IN (tbT.ClassId, tbR2.ClassId, " + classA + @")
+CROSS APPLY (
+  SELECT TOP 1 t4.TeacherId, t4.ProfessionalId
+  FROM ClassTeacher ct4
+  INNER JOIN Teacher t4 ON t4.TeacherId = ct4.TeacherId
+  WHERE ct4.ClassId = tbR3.ClassId
+    AND ct4.ConfigurationId = " + cId + @" AND ct4.Hour > 0
+    AND ct4.TeacherId NOT IN (tbT.TeacherId, tbR2.TeacherId, tbR3.TeacherId)
+    AND (t4.FreeDay IS NULL OR t4.FreeDay = 0 OR (" + hourA + @" / 10) <> t4.FreeDay)
+    AND NOT EXISTS (SELECT 1 FROM TeacherHours th4
+                    WHERE th4.TeacherId = ct4.TeacherId
+                      AND th4.HourId = " + hourA + @"
+                      AND th4.ConfigurationId = " + cId + @")
+    AND NOT EXISTS (SELECT 1 FROM TeacherAssignment tax4
+                    WHERE tax4.TeacherId = ct4.TeacherId
+                      AND tax4.HourId = " + hourA + @"
+                      AND tax4.ConfigurationId = " + cId + @")
+    AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment ta4
+                WHERE ta4.ConfigurationId = " + cId + @"
+                  AND ta4.TeacherId = ct4.TeacherId
+                  AND ta4.ClassId = tbR3.ClassId
+                  AND ta4.HourTypeId = 1), 0) < ct4.Hour
+  ORDER BY ct4.TeacherId
+) R4
+WHERE ctA.ClassId = " + classA + @" AND ctA.ConfigurationId = " + cId + @"
+  AND ctA.Hour > 0
+  AND (tT.FreeDay IS NULL OR tT.FreeDay = 0 OR (" + hourA + @" / 10) <> tT.FreeDay)
+  AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taA
+              WHERE taA.ConfigurationId = " + cId + @"
+                AND taA.TeacherId = ctA.TeacherId AND taA.ClassId = " + classA + @"
+                AND taA.HourTypeId = 1), 0) < ctA.Hour
+  AND (tR2.FreeDay IS NULL OR tR2.FreeDay = 0 OR (" + hourA + @" / 10) <> tR2.FreeDay)
+  AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taR2c
+              WHERE taR2c.ConfigurationId = " + cId + @"
+                AND taR2c.TeacherId = ctR2.TeacherId AND taR2c.ClassId = tbT.ClassId
+                AND taR2c.HourTypeId = 1), 0) < ctR2.Hour
+  AND (tR3.FreeDay IS NULL OR tR3.FreeDay = 0 OR (" + hourA + @" / 10) <> tR3.FreeDay)
+  AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taR3c
+              WHERE taR3c.ConfigurationId = " + cId + @"
+                AND taR3c.TeacherId = ctR3.TeacherId AND taR3c.ClassId = tbR2.ClassId
+                AND taR3c.HourTypeId = 1), 0) < ctR3.Hour
+ORDER BY ctA.TeacherId, ctR2.TeacherId, ctR3.TeacherId";
+
+                        DataTable dt3Swap = Dal.GetDataTable(con, tx, sql3Swap);
+                        if (dt3Swap.Rows.Count == 0) continue;
+
+                        int moveT_AsgnId = Helper.ConvertToInt(dt3Swap.Rows[0]["MoveT_AsgnId"].ToString());
+                        int fromClass = Helper.ConvertToInt(dt3Swap.Rows[0]["FromClassId"].ToString());
+                        int moveR2_AsgnId = Helper.ConvertToInt(dt3Swap.Rows[0]["MoveR2_AsgnId"].ToString());
+                        int thirdClass = Helper.ConvertToInt(dt3Swap.Rows[0]["ThirdClassId"].ToString());
+                        int moveR3_AsgnId = Helper.ConvertToInt(dt3Swap.Rows[0]["MoveR3_AsgnId"].ToString());
+                        int fourthClass = Helper.ConvertToInt(dt3Swap.Rows[0]["FourthClassId"].ToString());
+                        int r4Tid = Helper.ConvertToInt(dt3Swap.Rows[0]["R4_TeacherId"].ToString());
+                        int r4Prof = Helper.ConvertToInt(dt3Swap.Rows[0]["R4_ProfessionalId"].ToString());
+
+                        new SqlCommand("UPDATE TeacherAssignment SET ClassId = " + classA +
+                            " WHERE AssignmentId = " + moveT_AsgnId, con, tx).ExecuteNonQuery();
+                        new SqlCommand("UPDATE TeacherAssignment SET ClassId = " + fromClass +
+                            " WHERE AssignmentId = " + moveR2_AsgnId, con, tx).ExecuteNonQuery();
+                        new SqlCommand("UPDATE TeacherAssignment SET ClassId = " + thirdClass +
+                            " WHERE AssignmentId = " + moveR3_AsgnId, con, tx).ExecuteNonQuery();
+                        Dal.ExeSpBigNonQuery(con, tx, "Assign_SetAssignAuto",
+                            cId, r4Tid, hourA, 1, fourthClass, r4Prof, 0, 0);
+
+                        filled++;
+                        stillEmpty--;
+                        swapped3++;
+                    }
+                    System.Diagnostics.Debug.WriteLine("FillEmptySlots 3-swap pass: " + swapped3 + " resolved");
+                }
+
+                // FINAL FALLBACK was REMOVED. It used to over-assign a
+                // contracted teacher (Hour count exceeding ct.Hour) just to
+                // close a stubborn empty cell — producing a "fake 100%"
+                // when the real situation was infeasible. The user caught
+                // this explicitly: if SUM(ClassTeacher.Hour for class) >
+                // SchoolHours capacity, there is no honest way to fill
+                // every cell. Empties must remain visible so the diagnostic
+                // popup can guide the user to fix data instead of hiding
+                // the over-demand. (See verify-negative test in skill.)
 
                 tx.Commit();
                 tx = null;
@@ -3478,9 +4181,15 @@ ORDER BY HomeroomRank ASC, LoadCount ASC, t.TeacherId ASC";
         }
         string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
         int cfgId = Helper.ConvertToInt(cId);
+        // LayerId אופציונלי: '0' או חסר = כל השכבות. אחרת רק מורים
+        // שיש להם ClassTeacher בכיתה ששייכת לשכבה הנבחרת.
+        string layerParam = GetParams("LayerId");
+        int layerId = Helper.ConvertToInt(string.IsNullOrEmpty(layerParam) ? "0" : layerParam);
 
-        // Pre-aggregated set approach avoids O(teachers × classes × hours)
-        // nested NOT EXISTS — the previous version timed out.
+        // NEW SEMANTIC (אפריל 2026): TeacherHours = שעות *חסומות* (לא יכול
+        // ללמד). מורה פנוי בשעה X של כיתה Y = X קיים ב-SchoolHours (לא
+        // IsOnlyShehya), לא ב-TeacherHours, לא ביום חופשי, לא תפוס בשיבוץ
+        // קיים, וגם הכיתה Y לא תפוסה באותה שעה.
         string sql = @"
 ;WITH filled AS (
   SELECT DISTINCT ClassId, HourId FROM TeacherAssignment
@@ -3498,20 +4207,26 @@ FROM Teacher t
 INNER JOIN ClassTeacher ct
   ON ct.TeacherId = t.TeacherId
  AND ct.ConfigurationId = t.ConfigurationId
-INNER JOIN TeacherHours th
-  ON th.TeacherId = t.TeacherId
- AND th.ConfigurationId = t.ConfigurationId
+INNER JOIN Class cls
+  ON cls.ClassId = ct.ClassId
+ AND cls.ConfigurationId = t.ConfigurationId
 INNER JOIN SchoolHours sh
-  ON sh.HourId = th.HourId
- AND sh.ConfigurationId = t.ConfigurationId
+  ON sh.ConfigurationId = t.ConfigurationId
  AND (sh.IsOnlyShehya = 0 OR sh.IsOnlyShehya IS NULL)
+LEFT JOIN TeacherHours blocked
+  ON blocked.TeacherId = t.TeacherId
+ AND blocked.HourId   = sh.HourId
+ AND blocked.ConfigurationId = t.ConfigurationId
 LEFT JOIN filled f
-  ON f.ClassId = ct.ClassId AND f.HourId = th.HourId
+  ON f.ClassId = ct.ClassId AND f.HourId = sh.HourId
 LEFT JOIN busyTeacher bt
-  ON bt.TeacherId = t.TeacherId AND bt.HourId = th.HourId
+  ON bt.TeacherId = t.TeacherId AND bt.HourId = sh.HourId
 WHERE t.ConfigurationId = " + cfgId + @"
-  AND f.ClassId IS NULL    -- (class, hour) slot is empty
-  AND bt.TeacherId IS NULL -- teacher isn't busy elsewhere at that hour
+  AND blocked.HourId IS NULL    -- המורה אינו חסום בשעה זו
+  AND f.ClassId IS NULL          -- המשבצת בכיתה ריקה
+  AND bt.TeacherId IS NULL       -- המורה אינו תפוס במקום אחר
+  AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (sh.HourId / 10) <> t.FreeDay)
+  AND (" + layerId + @" = 0 OR cls.LayerId = " + layerId + @")
 ORDER BY TeacherName";
         DataTable dt = Dal.GetDataTable(sql);
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));

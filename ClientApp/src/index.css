@@ -2379,6 +2379,91 @@ input[type='radio'] {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 0.6rem;
 }
+/* Wrap container with floating nav buttons when scroll is needed. */
+.tc-page__classes .tc-grid-4-wrap {
+  position: relative;
+}
+.tc-page__classes .tc-grid-4-wrap__nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #7c3aed, #6366f1);
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  z-index: 5;
+  box-shadow: 0 6px 14px -4px rgba(124, 58, 237, 0.55), 0 2px 4px rgba(0, 0, 0, 0.12);
+  transition: transform 140ms, box-shadow 140ms;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tc-page__classes .tc-grid-4-wrap__nav:hover {
+  transform: translateY(-50%) scale(1.08);
+  box-shadow: 0 10px 18px -4px rgba(124, 58, 237, 0.7), 0 3px 6px rgba(0, 0, 0, 0.18);
+}
+.tc-page__classes .tc-grid-4-wrap__nav:active {
+  transform: translateY(-50%) scale(0.96);
+}
+.tc-page__classes .tc-grid-4-wrap__nav--right {
+  inset-inline-end: -10px;
+}
+.tc-page__classes .tc-grid-4-wrap__nav--left {
+  inset-inline-start: -10px;
+}
+
+/* Wider variant for Hakbatza/Ihud cards — every card in the same layer
+   stays on a single row. If there are more cards than fit, the row scrolls
+   horizontally. Visual scroll affordance: gradient fade at the right edge
+   + a styled scrollbar so the user knows there's more. */
+.tc-page__classes .tc-grid-4--wide {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: visible;
+  gap: 0.9rem;
+  grid-template-columns: none;
+  padding-bottom: 10px;
+  scroll-snap-type: x proximity;
+  scroll-behavior: smooth;
+  /* gradient fade on the right edge to hint at more content */
+  background:
+    linear-gradient(to left, rgba(124, 58, 237, 0.12), transparent 40px) right center / 40px 100% no-repeat,
+    linear-gradient(to right, rgba(124, 58, 237, 0.12), transparent 40px) left center / 40px 100% no-repeat;
+}
+.tc-page__classes .tc-grid-4--wide::-webkit-scrollbar {
+  height: 16px;
+}
+.tc-page__classes .tc-grid-4--wide::-webkit-scrollbar-track {
+  background: rgba(124, 58, 237, 0.12);
+  border-radius: 12px;
+  border: 1px solid rgba(124, 58, 237, 0.18);
+}
+.tc-page__classes .tc-grid-4--wide::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, #7c3aed, #6366f1);
+  border-radius: 12px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  min-width: 60px;
+  box-shadow: 0 2px 4px rgba(124, 58, 237, 0.3);
+}
+.tc-page__classes .tc-grid-4--wide::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(90deg, #6d28d9, #4f46e5);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+/* כל cell תופסת בסיס של 1/3 מהרוחב, נמתחת אם יש מעט (grow=1),
+   אבל לא מצטמצמת (shrink=0) כך שכש-4+ קלפים ההצטברות עוברת 100%
+   ומפעילה גלילה אופקית. */
+.tc-page__classes .tc-grid-4--wide > .tc-grid-4__cell {
+  flex: 1 0 calc((100% - 1.8rem) / 3);
+  min-width: 320px;
+  scroll-snap-align: start;
+}
 .tc-page__classes .tc-grid-4 > .tc-grid-4__cell {
   width: 100%;
   max-width: 100%;
@@ -2710,6 +2795,80 @@ input[type='radio'] {
 .assign-auto__warning i {
   color: #fde68a;
   font-size: 0.95rem;
+}
+
+.assign-auto__pre-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: rgba(254, 215, 170, 0.95);
+  border: 1px solid #fb923c;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #7c2d12;
+  margin-top: 8px;
+}
+.assign-auto__pre-check i {
+  color: #ea580c;
+  font-size: 14px;
+}
+.assign-auto__pre-check-btn {
+  background: #ea580c;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.assign-auto__pre-check-btn:hover {
+  background: #c2410c;
+}
+
+/* Free-day conflict banner — louder than pre-check because this is a
+   *blocker* for full assignment, not just a warning. */
+.assign-auto__free-day-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #fee2e2;
+  border: 1px solid #f87171;
+  border-inline-start: 4px solid #b91c1c;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #7f1d1d;
+  margin-top: 8px;
+  margin-inline-start: 8px;
+  animation: assign-auto__free-day-pulse 2.4s ease-in-out infinite;
+}
+@keyframes assign-auto__free-day-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.0); }
+  50% { box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.18); }
+}
+.assign-auto__free-day-warn i {
+  color: #dc2626;
+  font-size: 14px;
+}
+.assign-auto__free-day-btn {
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 120ms, transform 120ms;
+}
+.assign-auto__free-day-btn:hover {
+  background: #991b1b;
+  transform: translateY(-1px);
 }
 
 .assign-auto__actions {
@@ -3527,22 +3686,91 @@ input[type='radio'] {
   color: var(--ink-faint);
 }
 
-/* Teacher sidebar chips (left panel) */
+/* Teachers grid — uniform width, neat columns. Replaces the old float-based
+   layout that produced ragged rows. */
+.tc-teachers-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* Group section: a quiet header + the chips below it, with breathing room
+   between roles so the eye can rest between sections. */
+.tc-teachers-group { margin-bottom: 14px; }
+.tc-teachers-group:last-child { margin-bottom: 0; }
+.tc-teachers-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #475569;
+  padding: 4px 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #e2e8f0;
+  text-transform: none;
+}
+.tc-teachers-group__title { display: inline-flex; align-items: center; gap: 6px; }
+.tc-teachers-group__dot {
+  width: 8px; height: 8px; border-radius: 999px; display: inline-block;
+}
+.tc-teachers-group__count {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 1px 7px;
+  border-radius: 999px;
+  min-width: 22px;
+  text-align: center;
+}
+
+/* Teacher sidebar chips — uniform-width pure-white tags. The role is
+   conveyed by a thin inline-start strip (no fill tint) plus the section
+   header. Single role color per chip, single line, ellipsised if long. */
 .tc-teachers-panel .panel-body .draggable.btn,
 .tc-teachers-panel .panel-body .btn.draggable {
-  margin: 0.2rem !important;
-  padding: 0.45rem 0.85rem !important;
-  font-size: 0.82rem !important;
-  font-weight: 600 !important;
-  border-radius: 999px !important;
-  box-shadow: 0 2px 6px -2px rgba(12, 14, 21, 0.18) !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0.4rem 0.55rem 0.4rem 0.55rem !important;
+  font-size: 0.78rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #1e293b !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.03) !important;
   cursor: grab;
-  transition: transform 0.15s var(--spring), box-shadow 0.15s;
+  transition: transform 0.12s ease,
+              box-shadow 0.18s,
+              border-color 0.18s;
   min-height: 30px;
+  position: relative;
+  text-shadow: none !important;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  float: none !important;
 }
 .tc-teachers-panel .panel-body .draggable.btn:hover,
 .tc-teachers-panel .panel-body .btn.draggable:hover {
-  transform: translateY(-2px) scale(1.03);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.14),
+              0 1px 2px -1px rgba(15, 23, 42, 0.05) !important;
+  background: #f8fafc !important;
+}
+.tc-teachers-panel .panel-body .draggable.btn:active,
+.tc-teachers-panel .panel-body .btn.draggable:active {
+  cursor: grabbing;
+  transform: translateY(0);
 }
 
 /* Better "total hours - NN" line above each class card */
@@ -3598,21 +3826,42 @@ input[type='radio'] {
   max-height: calc(100vh - 200px) !important;
 }
 
-/* Distinct visual styles per teacher role in the sidebar.
-   tafkid 1 = homeroom (blue), 2 = professional (green), 3 = admin (red).
-   We lean on the existing tafkidTheme() classes and add a bolder gradient +
-   a thick inline-end border so the category is readable at a glance. */
+/* Role accent: 4px strip on the inline-start of each chip — in RTL that's
+   the visual right edge, so the eye reads color → name in the correct flow.
+   Pure white background, no tint, single color cue per chip. */
 .tc-teachers-panel .panel-body .btn.btn-primary.draggable {
-  border-inline-end: 4px solid #1d4ed8 !important;
-  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
+  background: #ffffff !important;
+  border-inline-start: 4px solid #4f46e5 !important;
+  padding-inline-end: calc(0.55rem + 4px) !important;
+}
+.tc-teachers-panel .panel-body .btn.btn-primary.draggable:hover {
+  border-inline-start-color: #4338ca !important;
+  border-color: #c7d2fe;
+  border-inline-start-color: #4338ca !important;
+  box-shadow: 0 4px 10px -4px rgba(79, 70, 229, 0.20),
+              0 1px 2px -1px rgba(15, 23, 42, 0.05) !important;
 }
 .tc-teachers-panel .panel-body .btn.btn-success.draggable {
-  border-inline-end: 4px solid #047857 !important;
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+  background: #ffffff !important;
+  border-inline-start: 4px solid #0d9488 !important;
+  padding-inline-end: calc(0.55rem + 4px) !important;
+}
+.tc-teachers-panel .panel-body .btn.btn-success.draggable:hover {
+  border-color: #99f6e4;
+  border-inline-start-color: #0f766e !important;
+  box-shadow: 0 4px 10px -4px rgba(13, 148, 136, 0.20),
+              0 1px 2px -1px rgba(15, 23, 42, 0.05) !important;
 }
 .tc-teachers-panel .panel-body .btn.btn-danger.draggable {
-  border-inline-end: 4px solid #b91c1c !important;
-  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+  background: #ffffff !important;
+  border-inline-start: 4px solid #be123c !important;
+  padding-inline-end: calc(0.55rem + 4px) !important;
+}
+.tc-teachers-panel .panel-body .btn.btn-danger.draggable:hover {
+  border-color: #fecdd3;
+  border-inline-start-color: #9f1239 !important;
+  box-shadow: 0 4px 10px -4px rgba(190, 18, 60, 0.20),
+              0 1px 2px -1px rgba(15, 23, 42, 0.05) !important;
 }
 /* Legend above the teacher list so the user recognizes the color coding */
 .tc-teachers-panel .panel-body .tc-role-legend {
@@ -3630,30 +3879,198 @@ input[type='radio'] {
   padding: 0.85rem 1rem !important;
   background: linear-gradient(135deg, var(--teal) 0%, #0e7490 100%) !important;
   border-bottom: none;
+  /* Make the heading itself a flex row so the inherited ::before bar lines
+     up with the title cluster instead of stacking on its own line above. */
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
 }
-.tc-teachers-panel .panel-heading::before { background: rgba(255, 255, 255, 0.5); }
+.tc-teachers-panel .panel-heading::before {
+  background: rgba(255, 255, 255, 0.55) !important;
+  margin-inline-end: 0 !important;
+  align-self: center;
+  flex: 0 0 auto;
+}
 .tc-teachers-panel__heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
   font-family: var(--font-display);
-  font-size: 1rem;
-  font-weight: 700;
   color: white;
+  flex: 1 1 auto;
+  min-width: 0;
 }
-.tc-teachers-panel__heading > .btn {
-  background: rgba(255, 255, 255, 0.25) !important;
-  color: white !important;
-  border: 1px solid rgba(255, 255, 255, 0.3) !important;
-  box-shadow: none !important;
-  padding: 0.3rem 0.7rem !important;
-  font-size: 0.78rem !important;
-  border-radius: var(--r) !important;
+
+/* Header: title cluster (icon + label + count pill) on the inline-start, a
+   compact "add teacher" pill on the inline-end. Same visual weight on both
+   sides so the eye doesn't lock on either one. */
+.tc-teachers-panel__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
 }
-.tc-teachers-panel__heading > .btn:hover {
-  background: rgba(255, 255, 255, 0.4) !important;
+.tc-teachers-panel__title-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  color: #ffffff;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.tc-teachers-panel__title-text {
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #ffffff;
+}
+.tc-teachers-panel__title-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  letter-spacing: 0;
+}
+
+.tc-teachers-panel__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.7rem;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #ffffff;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: var(--font-body, inherit);
+  cursor: pointer;
+  transition: background-color 0.15s ease,
+              transform 0.15s ease,
+              box-shadow 0.15s ease,
+              border-color 0.15s ease;
+}
+.tc-teachers-panel__add:hover {
+  background: rgba(255, 255, 255, 0.32);
+  border-color: rgba(255, 255, 255, 0.45);
   transform: translateY(-1px);
+  box-shadow: 0 4px 10px -4px rgba(0, 0, 0, 0.18);
+}
+.tc-teachers-panel__add:active { transform: translateY(0); }
+.tc-teachers-panel__add > i { font-size: 0.72rem; }
+
+/* Search row sits at the top of the panel-body (below the header), on the
+   light canvas. Default is a compact pill aligned to the inline-start (right
+   in RTL); on focus it expands to fill the row. */
+.tc-teachers-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 36px;
+  height: 32px;
+  margin: 0 0 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  cursor: text;
+  overflow: hidden;
+  transition:
+    width 0.34s var(--spring),
+    background-color 0.22s ease,
+    box-shadow 0.22s ease,
+    border-color 0.22s ease;
+}
+.tc-teachers-search:hover {
+  border-color: #cbd5e1;
+}
+.tc-teachers-search:focus-within,
+.tc-teachers-search.is-filled {
+  width: 100%;
+  background: #ffffff;
+  border-color: #0d9488;
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.18),
+              0 4px 12px -6px rgba(13, 148, 136, 0.25);
+}
+.tc-teachers-search__icon {
+  position: absolute;
+  inset-inline-start: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  color: #94a3b8;
+  pointer-events: none;
+  transition: color 0.22s ease;
+}
+.tc-teachers-search:focus-within .tc-teachers-search__icon,
+.tc-teachers-search.is-filled .tc-teachers-search__icon {
+  color: #0d9488;
+}
+.tc-teachers-search__input {
+  flex: 1 1 auto;
+  width: 100%;
+  background: transparent !important;
+  border: 0 !important;
+  outline: 0 !important;
+  padding: 0 32px !important;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-body, inherit);
+  color: #0f172a;
+  caret-color: #0d9488;
+  text-align: start;
+  height: 100%;
+  box-shadow: none !important;
+}
+.tc-teachers-search__input::placeholder {
+  color: #94a3b8;
+  opacity: 0;
+  transition: opacity 0.18s ease 0.08s;
+}
+.tc-teachers-search:focus-within .tc-teachers-search__input::placeholder,
+.tc-teachers-search.is-filled .tc-teachers-search__input::placeholder {
+  opacity: 1;
+}
+.tc-teachers-search__input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.tc-teachers-search__clear {
+  position: absolute;
+  inset-inline-end: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  border: 0;
+  color: #475569;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.tc-teachers-search__clear:hover {
+  background: #cbd5e1;
+  color: #1e293b;
 }
 .tc-teachers-panel > .panel-body {
   background: var(--canvas-soft) !important;
@@ -3669,6 +4086,271 @@ input[type='radio'] {
   .tc-page__classes .panel-info > .panel-body > .droppable {
     grid-template-columns: 1fr;
   }
+}
+
+/* ============================================================
+   TEACHER MODAL — replaces the old Bootstrap dialog. Sectioned form
+   with proper grid, calm header, and a sticky footer.
+   ============================================================ */
+.tm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: tmModalFadeIn 0.18s ease;
+}
+@keyframes tmModalFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.tm-modal__card {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 48px);
+  background: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 24px 60px -12px rgba(15, 23, 42, 0.32),
+              0 0 0 1px rgba(15, 23, 42, 0.04);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  direction: rtl;
+  animation: tmModalCardIn 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes tmModalCardIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Header — refined, minimal. Subtle accent strip on top, dark text on
+   white instead of a bold gradient block. Looks like a focused business
+   dialog rather than a marketing card. */
+.tm-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 22px 16px;
+  background: #ffffff;
+  color: #0f172a;
+  border-bottom: 1px solid #e2e8f0;
+  position: relative;
+}
+.tm-modal__header::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  inset-inline-start: 0;
+  width: 100%;
+  height: 3px;
+  background: linear-gradient(90deg, #4f46e5 0%, #6366f1 60%, #818cf8 100%);
+}
+.tm-modal__header-side {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.tm-modal__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  color: #4f46e5;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.tm-modal__title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 700;
+  font-family: var(--font-display, inherit);
+  letter-spacing: 0;
+  color: #0f172a;
+  line-height: 1.25;
+}
+.tm-modal__subtitle {
+  margin-top: 1px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #64748b;
+}
+.tm-modal__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+.tm-modal__close:hover {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #0f172a;
+}
+
+.tm-modal__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px 22px;
+  background: #f8fafc;
+}
+
+.tm-section { margin-bottom: 18px; }
+.tm-section:last-child { margin-bottom: 0; }
+.tm-section__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #475569;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  border-bottom: none;
+}
+.tm-section__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #eef2ff;
+  color: #4f46e5;
+  font-size: 11px;
+}
+
+.tm-grid {
+  display: grid;
+  gap: 12px;
+}
+.tm-grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tm-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.tm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+.tm-field__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #334155;
+  letter-spacing: 0;
+}
+.tm-field__required { color: #be123c; margin-inline-start: 2px; }
+.tm-field__input {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.88rem;
+  font-family: var(--font-body, inherit);
+  color: #0f172a;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+  height: 38px;
+  appearance: none;
+}
+.tm-field__input::placeholder { color: #94a3b8; }
+.tm-field__input:hover { border-color: #cbd5e1; }
+.tm-field__input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+}
+select.tm-field__input {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%2364748b' d='M0 0l5 6 5-6z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: left 12px center;
+  padding-inline-end: 0.7rem;
+  padding-inline-start: 28px;
+  cursor: pointer;
+}
+.tm-field__input--num { font-variant-numeric: tabular-nums; text-align: center; font-weight: 600; }
+
+.tm-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 20px;
+  background: #ffffff;
+  border-top: 1px solid #e2e8f0;
+}
+.tm-modal__footer-primary { display: inline-flex; gap: 8px; }
+.tm-modal__footer-secondary { display: inline-flex; gap: 8px; }
+
+.tm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: var(--font-body, inherit);
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.12s, box-shadow 0.15s;
+}
+.tm-btn:active { transform: translateY(1px); }
+.tm-btn > i { font-size: 0.78rem; }
+
+.tm-btn--primary {
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: #ffffff;
+  box-shadow: 0 6px 14px -6px rgba(79, 70, 229, 0.45);
+}
+.tm-btn--primary:hover {
+  background: linear-gradient(135deg, #4338ca, #4f46e5);
+  box-shadow: 0 8px 18px -6px rgba(79, 70, 229, 0.55);
+}
+
+.tm-btn--ghost {
+  background: #ffffff;
+  color: #475569;
+  border-color: #cbd5e1;
+}
+.tm-btn--ghost:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #1e293b;
+}
+
+.tm-btn--ghost-danger {
+  background: transparent;
+  color: #be123c;
+  border-color: transparent;
+}
+.tm-btn--ghost-danger:hover {
+  background: #fff1f2;
+  color: #9f1239;
+}
+
+@media (max-width: 600px) {
+  .tm-grid--2, .tm-grid--3 { grid-template-columns: 1fr; }
+  .tm-modal__footer { flex-direction: column-reverse; align-items: stretch; }
+  .tm-modal__footer-primary,
+  .tm-modal__footer-secondary { justify-content: stretch; }
+  .tm-btn { flex: 1 1 auto; justify-content: center; }
 }
 
 /* ============================================================
@@ -4732,7 +5414,9 @@ input[type='radio'] {
    with overflow:hidden/auto (the dockbar panel) can't clip it.
    The component passes inline style={left, top, transform}.
    ============================================================ */
-.free-teacher-pill { position: relative; }
+.free-teacher-pill {
+  position: relative;
+}
 .ft-tip.ft-tip--portal {
   min-width: 220px;
   max-width: 280px;
@@ -4884,146 +5568,424 @@ input[type='radio'] {
 }
 
 /* ============================================================
-   PROFESSIONAL PAGE — compact, centered
+   PROFESSIONAL PAGE — Subjects (school-wide list)
+   Card with header (title + count + search + add) and a clean
+   grid table below, plus an icon toggle inside the modal.
    ============================================================ */
 .pro-page {
-  max-width: 780px;
+  max-width: 880px;
   margin: 0 auto;
-}
-.pro-page .panel-info { margin: 0 0 1rem !important; }
-.pro-page .panel-info > .panel-heading .glyphicon-th-list {
-  color: var(--primary);
-  margin-inline-end: 0.5rem;
-}
-.pro-page .panel-body { padding: 0 !important; }
-.pro-page .panel-body > br { display: none; }
-
-/* Header row: 3 columns = Name | 2-hours | Actions */
-.pro-page .panel-body > div:has(> .dvRequireTitle) {
-  display: grid !important;
-  grid-template-columns: 1fr 170px 180px;
-}
-.pro-page .panel-body > div:has(> .dvRequireTitle) > .dvRequireTitle {
-  width: auto !important;
-  max-width: none !important;
-  padding: 0.7rem 1rem !important;
-  text-align: start;
-  font-size: 0.82rem !important;
-  letter-spacing: 0.01em;
-  background: linear-gradient(180deg, var(--surface) 0%, var(--canvas-soft) 100%);
-  border-bottom: 2px solid var(--line);
-}
-.pro-page .panel-body > div:has(> .dvRequireTitle) > .dvRequireTitle:last-of-type {
-  text-align: end;
-}
-.pro-page .panel-body > div:has(> .dvRequireTitle) > .clear {
-  grid-column: 1 / -1;
-  height: auto !important;
-  max-height: 480px;
-  overflow-y: auto !important;
-  border-radius: 0 0 var(--r-md) var(--r-md);
+  padding: 0.5rem 0;
 }
 
-/* Each row inside clear — same 3-col grid */
-.pro-page .clear > div {
-  display: grid !important;
-  grid-template-columns: 1fr 170px 180px;
-  align-items: center;
-  border-bottom: 1px solid var(--line-soft);
-  background: var(--surface);
-  transition: background 0.12s;
+.pro-card {
+  background: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04),
+              0 12px 28px -16px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
 }
-.pro-page .clear > div:nth-child(even) { background: var(--line-soft); }
-.pro-page .clear > div:hover { background: var(--primary-50) !important; }
-.pro-page .clear > div:last-child { border-bottom: 0; }
-.pro-page .clear > div > .dvRequireDetails {
-  width: auto !important;
-  max-width: none !important;
-  padding: 0.5rem 1rem !important;
-  min-height: 44px !important;
-  height: auto !important;
-  border-bottom: 0 !important;
-  background: transparent !important;
+
+/* Light card header — no gradient, no white-on-color popup feel. The card
+   reads as a quiet content surface rather than competing with the modal
+   when one is open. */
+.pro-card__header {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  color: #0f172a;
+  flex-wrap: wrap;
 }
-.pro-page .clear > div > .dvRequireDetails:first-child {
-  font-weight: 600;
-  color: var(--ink);
-  font-size: 0.92rem;
+.pro-card__title-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
-
-/* IsTwo column: convert text "כן"/"לא" to colored chip */
-.pro-page .clear > div > .dvRequireDetails:nth-child(2) {
+.pro-card__title-icon {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  padding: 0.5rem !important;
-}
-.pro-page .clear > div > .dvRequireDetails:nth-child(2)::before {
-  content: '';
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  margin-inline-end: 0.35rem;
-  background: var(--ink-faint);
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  color: #4f46e5;
+  font-size: 13px;
   flex-shrink: 0;
 }
-.pro-page .clear > div > .dvRequireDetails:nth-child(2):has-text("כן") { /* can't :has-text */ }
-/* Use content:has pattern - since we can't match text in CSS, always render chip
-   and color it via JS... but let me use a different trick: style the text itself */
-.pro-page .clear > div > .dvRequireDetails:nth-child(2) {
-  font-weight: 600;
-  color: var(--ink-soft);
-  font-size: 0.85rem;
+.pro-card__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: var(--font-display, inherit);
+  color: #0f172a;
+  letter-spacing: 0;
+}
+.pro-card__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-family: var(--font-display, inherit);
+  border: 1px solid #e2e8f0;
+}
+.pro-card__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
-/* Actions column */
-.pro-page .clear > div > .dvRequireDetails:nth-child(3) {
-  justify-content: flex-end;
-  gap: 0.35rem;
-  padding: 0.35rem 0.85rem !important;
-}
-.pro-page .clear > div > .dvRequireDetails:nth-child(3) > .btn {
-  padding: 0.35rem 0.85rem !important;
-  font-size: 0.78rem !important;
-  min-width: 58px !important;
-  margin: 0 !important;
-  border-radius: var(--r) !important;
-  line-height: 1.1 !important;
-  cursor: pointer;
-}
-
-/* "הוסף מקצוע חדש" row */
-.pro-page > .col-md-12 + .col-md-12 > .row[style*="padding: 4"] {
-  padding: 0 !important;
-  margin-top: 1rem !important;
+/* Search input — collapsed icon-pill that expands on focus, light theme. */
+.pro-search {
+  position: relative;
   display: flex;
+  align-items: center;
+  width: 34px;
+  height: 32px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  cursor: text;
+  overflow: hidden;
+  transition:
+    width 0.32s var(--spring),
+    background-color 0.22s ease,
+    box-shadow 0.22s ease,
+    border-color 0.22s ease;
+}
+.pro-search:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+.pro-search:focus-within,
+.pro-search.is-filled {
+  width: 220px;
+  background: #ffffff;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+.pro-search__icon {
+  position: absolute;
+  inset-inline-start: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  color: #94a3b8;
+  pointer-events: none;
+  transition: color 0.22s ease;
+}
+.pro-search:focus-within .pro-search__icon,
+.pro-search.is-filled .pro-search__icon {
+  color: #4f46e5;
+}
+.pro-search__input {
+  flex: 1 1 auto;
+  width: 100%;
+  background: transparent !important;
+  border: 0 !important;
+  outline: 0 !important;
+  padding: 0 32px !important;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-body, inherit);
+  color: #0f172a;
+  caret-color: #4f46e5;
+  text-align: start;
+  height: 100%;
+  box-shadow: none !important;
+}
+.pro-search__input::placeholder {
+  color: #94a3b8;
+  opacity: 0;
+  transition: opacity 0.18s ease 0.08s;
+}
+.pro-search:focus-within .pro-search__input::placeholder,
+.pro-search.is-filled .pro-search__input::placeholder {
+  opacity: 1;
+}
+.pro-search__input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.pro-search__clear {
+  position: absolute;
+  inset-inline-end: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: #e2e8f0;
+  border: 0;
+  color: #475569;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.pro-search__clear:hover {
+  background: #cbd5e1;
+  color: #1e293b;
+}
+
+.pro-card__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.9rem;
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  border: 0;
+  color: #ffffff;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: var(--font-body, inherit);
+  cursor: pointer;
+  box-shadow: 0 4px 10px -4px rgba(79, 70, 229, 0.45);
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.pro-card__add:hover {
+  background: linear-gradient(135deg, #4338ca, #4f46e5);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px -4px rgba(79, 70, 229, 0.55);
+}
+.pro-card__add:active { transform: translateY(0); }
+.pro-card__add > i { font-size: 0.74rem; }
+
+/* Grid-table — strict 3-col layout, sticky header, hoverable rows. */
+.pro-table {
+  display: block;
+  background: #ffffff;
+}
+.pro-table__head,
+.pro-row {
+  display: grid;
+  grid-template-columns: 1fr 160px 92px;
+  align-items: center;
+  gap: 0;
+}
+.pro-table__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #475569;
+  text-transform: none;
+}
+.pro-table__head > [role="columnheader"] {
+  padding: 10px 16px;
+}
+.pro-table__head > [role="columnheader"]:nth-child(2) { text-align: center; }
+
+.pro-table__body {
+  max-height: 540px;
+  overflow-y: auto;
+}
+
+.pro-row {
+  border-bottom: 1px solid #f1f5f9;
+  transition: background-color 0.12s;
+  cursor: default;
+}
+.pro-row:last-child { border-bottom: 0; }
+.pro-row:hover { background: #f8fafc; }
+
+.pro-row__name {
+  padding: 12px 16px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pro-row__badge {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
   justify-content: center;
 }
-.pro-page > .col-md-12 + .col-md-12 > .row[style*="padding: 4"] > .btn {
-  padding: 0.6rem 1.4rem !important;
-  font-size: 0.92rem !important;
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-hover) 100%) !important;
-  color: white !important;
-  border: 0 !important;
-  border-radius: var(--r) !important;
-  box-shadow: 0 4px 12px -2px rgba(138, 89, 216, 0.4) !important;
-  height: auto !important;
-  cursor: pointer;
-  font-weight: 600;
+.pro-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
-.pro-page > .col-md-12 + .col-md-12 > .row[style*="padding: 4"] > .btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 20px -4px rgba(138, 89, 216, 0.55) !important;
+.pro-badge--yes {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+.pro-badge--yes > i { font-size: 0.7rem; }
+.pro-badge--no {
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+.pro-row__actions {
+  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
-/* Mobile */
+.pro-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s, transform 0.12s;
+}
+.pro-icon-btn:hover { transform: translateY(-1px); }
+.pro-icon-btn:active { transform: translateY(0); }
+.pro-icon-btn--edit:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4f46e5;
+}
+.pro-icon-btn--delete:hover {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #be123c;
+}
+
+.pro-empty {
+  padding: 60px 20px;
+  text-align: center;
+  color: #64748b;
+  grid-column: 1 / -1;
+}
+.pro-empty__icon {
+  display: block;
+  font-size: 36px;
+  color: #cbd5e1;
+  margin-bottom: 10px;
+}
+.pro-empty__title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 4px;
+}
+.pro-empty__hint {
+  font-size: 0.82rem;
+  color: #64748b;
+}
+
+/* iOS-style toggle switch used inside the Professional modal */
+.pro-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.pro-toggle:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+.pro-toggle__input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+}
+.pro-toggle__track {
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background-color 0.18s ease;
+}
+.pro-toggle__thumb {
+  position: absolute;
+  top: 2px;
+  inset-inline-start: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  transition: transform 0.2s var(--spring), background-color 0.15s;
+}
+.pro-toggle__input:checked + .pro-toggle__track {
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+}
+.pro-toggle__input:checked + .pro-toggle__track .pro-toggle__thumb {
+  /* In RTL the track's start is the right edge, so a positive translate
+     pushes the thumb to the left edge — i.e. towards the inline-end. */
+  transform: translateX(-18px);
+}
+[dir="ltr"] .pro-toggle__input:checked + .pro-toggle__track .pro-toggle__thumb {
+  transform: translateX(18px);
+}
+.pro-toggle__input:focus-visible + .pro-toggle__track {
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+.pro-toggle__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pro-toggle__title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+.pro-toggle__hint {
+  font-size: 0.76rem;
+  color: #64748b;
+}
+
 @media (max-width: 640px) {
-  .pro-page .panel-body > div:has(> .dvRequireTitle),
-  .pro-page .clear > div {
-    grid-template-columns: 1fr 100px 130px;
+  .pro-table__head,
+  .pro-row {
+    grid-template-columns: 1fr 110px 80px;
   }
+  .pro-search:focus-within,
+  .pro-search.is-filled { width: 160px; }
 }
 
 /* ============================================================
@@ -5595,6 +6557,1670 @@ input[type='radio'] {
   color: white;
 }
 
+/* Blocked: teacher CANNOT teach in this hour. Red gradient = "off-limits". */
+.th-cell--blocked {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+  color: #fff;
+  border-color: #991b1b;
+  box-shadow: 0 2px 6px -2px rgba(220, 38, 38, 0.45);
+  position: relative;
+}
+.th-cell--blocked::after {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border-radius: 6px;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.08) 0,
+    rgba(255, 255, 255, 0.08) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  pointer-events: none;
+}
+.th-cell--blocked:hover {
+  background: linear-gradient(135deg, #b91c1c 0%, #991b1b 100%);
+  box-shadow: 0 4px 10px -2px rgba(220, 38, 38, 0.55);
+}
+.th-cell--blocked .th-cell__seq {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+.th-cell--blocked .th-cell__time {
+  color: rgba(255, 255, 255, 0.85);
+}
+.th-cell--blocked .th-cell__label {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.th-legend__item--blocked i {
+  background: linear-gradient(135deg, #dc2626, #b91c1c);
+}
+
+/* תאי "לא זמין" שמופיעים אוטומטית ביום חופשי — גוון מעט שונה כדי
+   להבדיל מסימון ידני ע"י המשתמש. */
+.th-cell--free-day {
+  cursor: default;
+  opacity: 0.92;
+}
+.th-cell--free-day:hover {
+  opacity: 1;
+}
+
+/* ============================================================
+   Hakbatza card — modernised pill-style group card
+   ============================================================ */
+.hak-card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+.hak-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, 0.18), 0 2px 4px rgba(0, 0, 0, 0.06);
+}
+.hak-card__header {
+  position: relative;
+  padding: 14px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.15);
+}
+.hak-card__close {
+  position: absolute;
+  top: 6px;
+  inset-inline-end: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 11px;
+  transition: background 120ms;
+}
+.hak-card__close:hover {
+  background: rgba(220, 38, 38, 0.85);
+}
+.hak-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-inline-end: 28px;
+}
+.hak-card__title-main {
+  flex: 1;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+.hak-card__title-main i {
+  opacity: 0.85;
+  font-size: 16px;
+  background: rgba(255, 255, 255, 0.22);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.hak-card__title-sub {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex: 0 0 auto;
+  opacity: 0.92;
+}
+.hak-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.hak-card__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  line-height: 1.4;
+  transition: background 120ms;
+}
+.hak-card__chip i {
+  opacity: 0.92;
+  font-size: 12px;
+}
+.hak-card__chip--hours {
+  cursor: text;
+  background: rgba(0, 0, 0, 0.22);
+  border-color: rgba(255, 255, 255, 0.22);
+  padding: 4px 8px 4px 12px;
+}
+.hak-card__chip--hours:hover {
+  background: rgba(0, 0, 0, 0.28);
+}
+.hak-card__chip--hours input {
+  width: 38px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 6px;
+  font-weight: 800;
+  text-align: center;
+  font-size: 14px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #111827;
+  -moz-appearance: textfield;
+}
+.hak-card__chip--hours input::-webkit-outer-spin-button,
+.hak-card__chip--hours input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.hak-card__chip--hours input:focus {
+  outline: none;
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.45);
+}
+.hak-card__chip--hours span {
+  opacity: 0.85;
+  font-size: 11px;
+  font-weight: 700;
+}
+.hak-card__chip--count {
+  background: rgba(255, 255, 255, 0.95);
+  color: #111827;
+  border-color: rgba(255, 255, 255, 0.95);
+  font-weight: 800;
+  padding: 4px 11px;
+}
+.hak-card__chip--count i {
+  color: #6b7280;
+}
+.hak-card__classes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-top: 4px;
+  margin-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  padding-top: 8px;
+}
+.hak-card__class-pill {
+  background: rgba(255, 255, 255, 0.95);
+  color: #111827;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.hak-card__empty-classes {
+  font-size: 11px;
+  opacity: 0.7;
+  padding: 2px 4px;
+}
+.hak-card__body {
+  padding: 10px 12px;
+  background: #fafafa;
+  min-height: 110px;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+.hak-card__body--hover {
+  background: #fff7ed;
+  box-shadow: inset 0 0 0 2px #d97706;
+}
+.hak-card__body-label {
+  font-size: 10.5px;
+  color: #6b7280;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.hak-card__body-label i {
+  color: var(--primary);
+}
+.hak-card__dropzone {
+  border: 2px dashed #d1d5db;
+  border-radius: 10px;
+  padding: 18px 8px;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 12px;
+  font-weight: 500;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.hak-card__dropzone i {
+  font-size: 18px;
+  opacity: 0.4;
+}
+.hak-card__teacher-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.hak-card__teacher-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+.hak-card__teacher-pill {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: grab;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
+  transition: transform 100ms, box-shadow 100ms;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+}
+.hak-card__teacher-pill:hover {
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18);
+}
+.hak-card__teacher-pill:hover {
+  transform: translateX(-2px);
+}
+.hak-card__teacher-pill:active {
+  cursor: grabbing;
+}
+.hak-card__teacher-pill i {
+  opacity: 0.85;
+  font-size: 14px;
+}
+.hak-card__teacher-remove {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 10px;
+  flex: 0 0 auto;
+  transition: background 120ms, transform 100ms;
+}
+.hak-card__teacher-remove:hover {
+  background: #fee2e2;
+  transform: scale(1.05);
+}
+
+/* ============================================================
+   DnD Drag Overlay — קל ומהיר (בלי animations שגוזלות frames)
+   ============================================================ */
+.dnd-overlay {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  cursor: grabbing;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  box-shadow: 0 8px 16px -6px rgba(0, 0, 0, 0.35);
+  /* No animation, no rotate, no scale — keeps drag at 60fps */
+}
+.dnd-overlay i { font-size: 14px; opacity: 0.9; }
+.dnd-overlay--teacher { background: #16a34a; }
+.dnd-overlay--pro { background: #7c3aed; }
+.dnd-overlay--assign { background: #2563eb; }
+
+/* ============================================================
+   Assign success modal — מרכז המסך, חגיגי
+   ============================================================ */
+.assign-success-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: assign-success-fade 200ms ease-out;
+}
+@keyframes assign-success-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.assign-success-modal__card {
+  background: #fff;
+  border-radius: 24px;
+  padding: 40px 56px 32px;
+  text-align: center;
+  box-shadow: 0 30px 60px -15px rgba(0, 0, 0, 0.45);
+  max-width: 440px;
+  width: 92vw;
+  animation: assign-success-pop 360ms cubic-bezier(0.18, 0.89, 0.32, 1.28);
+  position: relative;
+  overflow: hidden;
+}
+.assign-success-modal__card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(16, 185, 129, 0.15), transparent 40%),
+    radial-gradient(circle at 90% 100%, rgba(34, 197, 94, 0.18), transparent 50%);
+  pointer-events: none;
+}
+@keyframes assign-success-pop {
+  from { opacity: 0; transform: scale(0.7) translateY(20px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.assign-success-modal__icon {
+  width: 88px;
+  height: 88px;
+  margin: 0 auto 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #10b981, #059669);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 44px;
+  box-shadow: 0 14px 30px -8px rgba(16, 185, 129, 0.55);
+  animation: assign-success-icon 600ms cubic-bezier(0.18, 0.89, 0.32, 1.28) 100ms both;
+  position: relative;
+  z-index: 1;
+}
+@keyframes assign-success-icon {
+  from { transform: scale(0) rotate(-180deg); }
+  to   { transform: scale(1) rotate(0); }
+}
+.assign-success-modal__title {
+  font-size: 26px;
+  font-weight: 800;
+  color: #064e3b;
+  margin-bottom: 6px;
+  position: relative;
+  z-index: 1;
+}
+.assign-success-modal__pct {
+  font-size: 56px;
+  font-weight: 900;
+  background: linear-gradient(135deg, #10b981, #059669);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: -0.02em;
+  margin: 6px 0 8px;
+  position: relative;
+  z-index: 1;
+}
+.assign-success-modal__sub {
+  color: #4b5563;
+  font-size: 14px;
+  margin-bottom: 24px;
+  position: relative;
+  z-index: 1;
+}
+.assign-success-modal__close {
+  position: relative;
+  z-index: 1;
+  padding: 10px 28px !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, #10b981, #059669) !important;
+  border: none !important;
+  box-shadow: 0 8px 18px -4px rgba(16, 185, 129, 0.5) !important;
+}
+.assign-success-modal__close:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px -4px rgba(16, 185, 129, 0.6) !important;
+}
+
+/* Conflict resolver modal — לטיפול בהתנגשויות יום חופשי */
+.assign-conflicts-modal__card {
+  background: #fff;
+  border-radius: 16px;
+  max-width: 640px;
+  width: 92vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 26px 50px -12px rgba(0, 0, 0, 0.4);
+  animation: assign-success-pop 280ms cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+.assign-conflicts-modal__header {
+  padding: 18px 22px;
+  font-size: 16px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  overflow: hidden;
+  transition: background 320ms ease, color 320ms ease, border-color 320ms ease, opacity 320ms ease, filter 320ms ease;
+}
+.assign-conflicts-modal__header::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at top right, rgba(255,255,255,0.45), transparent 60%);
+  opacity: 0.6;
+  transition: opacity 320ms ease;
+}
+.assign-conflicts-modal__header-icon {
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 18px;
+  flex-shrink: 0;
+  transition: background 320ms ease, color 320ms ease, transform 320ms ease;
+}
+.assign-conflicts-modal__header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.3;
+}
+.assign-conflicts-modal__header-title {
+  font-size: 16px;
+  font-weight: 800;
+}
+.assign-conflicts-modal__header-sub {
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+.assign-conflicts-modal__header-badge {
+  margin-inline-start: auto;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 320ms ease, color 320ms ease;
+}
+.assign-conflicts-modal__header-action {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: #1f2937;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 200ms ease, transform 120ms ease, box-shadow 200ms ease;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+}
+.assign-conflicts-modal__header-action:hover:not(:disabled) {
+  background: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.14);
+}
+.assign-conflicts-modal__header-action:active:not(:disabled) {
+  transform: translateY(0);
+}
+.assign-conflicts-modal__header-action:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+.assign-conflicts-modal__header-action i.fa-magic {
+  color: #7c3aed;
+}
+
+/* Pre-check feasibility modal — shows BEFORE clicking "שבץ" if the data
+   has issues that will likely prevent 100%. Sections grouped by kind with
+   distinct accent colors so the deputy principal can scan the categories
+   and know which ones to fix first. Refined card layout, no garish reds. */
+.precheck-modal {
+  background: #ffffff;
+  border-radius: 16px;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  max-height: 86vh;
+  box-shadow: 0 26px 50px -12px rgba(0, 0, 0, 0.4);
+  animation: assign-success-pop 280ms cubic-bezier(0.18, 0.89, 0.32, 1.28);
+  overflow: hidden;
+}
+.precheck-modal__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 22px;
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  color: #78350f;
+  border-bottom: 1px solid #fcd34d;
+}
+.precheck-modal__icon {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #d97706;
+  font-size: 20px;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(217, 119, 6, 0.2);
+}
+.precheck-modal__head-text { flex: 1; min-width: 0; }
+.precheck-modal__title {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+}
+.precheck-modal__sub {
+  font-size: 13px;
+  margin-top: 4px;
+  opacity: 0.85;
+  line-height: 1.4;
+}
+.precheck-modal__close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: rgba(255, 255, 255, 0.7);
+  color: #78350f;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 160ms ease;
+  flex-shrink: 0;
+}
+.precheck-modal__close:hover { background: #ffffff; }
+.precheck-modal__body {
+  padding: 18px 22px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.precheck-section {
+  border-radius: 14px;
+  border: 1.5px solid;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 6px 18px -10px rgba(15, 23, 42, 0.08);
+}
+.precheck-section--class { border-color: #c7d2fe; }
+.precheck-section--teacher { border-color: #fbcfe8; }
+.precheck-section--freeday { border-color: #99f6e4; }
+.precheck-section__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  font-size: 14.5px;
+  font-weight: 800;
+  border-bottom: 1.5px solid;
+  position: relative;
+  overflow: hidden;
+}
+.precheck-section__head::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 0% 50%, rgba(255,255,255,0), transparent 60%);
+  pointer-events: none;
+}
+.precheck-section--class .precheck-section__head {
+  color: #3730a3;
+  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+  border-bottom-color: #c7d2fe;
+}
+.precheck-section--teacher .precheck-section__head {
+  color: #9d174d;
+  background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 100%);
+  border-bottom-color: #fbcfe8;
+}
+.precheck-section--freeday .precheck-section__head {
+  color: #0f766e;
+  background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+  border-bottom-color: #99f6e4;
+}
+.precheck-section__icon {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  font-size: 16px;
+  color: #ffffff;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.precheck-section--class .precheck-section__icon { background: linear-gradient(135deg, #6366f1, #4f46e5); }
+.precheck-section--teacher .precheck-section__icon { background: linear-gradient(135deg, #ec4899, #db2777); }
+.precheck-section--freeday .precheck-section__icon { background: linear-gradient(135deg, #14b8a6, #0d9488); }
+.precheck-section__title { flex: 1; line-height: 1.35; }
+.precheck-section__count {
+  background: #ffffff;
+  border: 1.5px solid currentColor;
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  min-width: 32px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.precheck-section__list {
+  margin: 0;
+  padding: 12px 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.precheck-section__item {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-inline-start: 4px solid;
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: grid;
+  grid-template-columns: minmax(80px, auto) 1fr;
+  gap: 4px 14px;
+  align-items: center;
+  transition: border-color 160ms ease, transform 120ms ease, box-shadow 160ms ease;
+}
+.precheck-section--class .precheck-section__item { border-inline-start-color: #6366f1; }
+.precheck-section--teacher .precheck-section__item { border-inline-start-color: #ec4899; }
+.precheck-section--freeday .precheck-section__item { border-inline-start-color: #14b8a6; }
+.precheck-section__item:hover {
+  border-color: #cbd5e1;
+  transform: translateX(-2px);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+.precheck-section__label {
+  font-weight: 800;
+  font-size: 14px;
+  color: #0f172a;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.precheck-section--class .precheck-section__label { color: #3730a3; }
+.precheck-section--teacher .precheck-section__label { color: #9d174d; }
+.precheck-section--freeday .precheck-section__label { color: #0f766e; }
+.precheck-section__detail {
+  font-size: 12.5px;
+  color: #475569;
+  line-height: 1.45;
+  font-weight: 600;
+}
+.precheck-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 22px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  flex-wrap: wrap;
+}
+.precheck-modal__hint {
+  flex: 1;
+  font-size: 12px;
+  color: #64748b;
+  min-width: 150px;
+}
+.precheck-modal__close-btn {
+  height: 36px;
+  padding: 0 22px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+  border-radius: 9px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.precheck-modal__close-btn:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+/* Missing-classes list — replaces the long teacher×class diagnostic table.
+   Each card shows one class with at least one unfilled slot. The class
+   name is the visual hero (large gradient pill); the count is a quiet
+   secondary chip; the action area uses a calm slate-on-white look so the
+   inline form feels like a tool, not an alarm. */
+.missing-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+/* batch-apply spans both columns */
+.missing-list .missing-list__batch { grid-column: 1 / -1; }
+
+/* Bulk hint — surfaced above the missing-list grid when 3+ classes need
+   attention. Sky-blue gradient (informational, not alarming) with a CTA
+   that takes the deputy principal to the bulk-edit screen. */
+.missing-list__bulk-hint {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  margin-bottom: 14px;
+  background: linear-gradient(135deg, #ecfeff 0%, #cffafe 100%);
+  border: 2px solid #67e8f9;
+  border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(8, 145, 178, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  position: relative;
+  overflow: hidden;
+}
+.missing-list__bulk-hint::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 100% 0%, rgba(8, 145, 178, 0.14), transparent 55%);
+  pointer-events: none;
+}
+.missing-list__bulk-hint-icon {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #06b6d4, #0891b2);
+  color: #ffffff;
+  border-radius: 12px;
+  font-size: 22px;
+  flex-shrink: 0;
+  box-shadow: 0 4px 10px rgba(8, 145, 178, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  position: relative;
+  z-index: 1;
+}
+.missing-list__bulk-hint-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+.missing-list__bulk-hint-text strong {
+  font-size: 14px;
+  font-weight: 800;
+  color: #155e75;
+}
+.missing-list__bulk-hint-text span {
+  font-size: 12.5px;
+  color: #0e7490;
+  line-height: 1.4;
+}
+.missing-list__bulk-hint-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 4px 10px rgba(8, 145, 178, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  transition: transform 120ms ease, box-shadow 200ms ease;
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+}
+.missing-list__bulk-hint-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(8, 145, 178, 0.42);
+}
+.missing-list__bulk-hint-btn:active { transform: translateY(0); }
+@media (max-width: 720px) {
+  .missing-list__bulk-hint { flex-direction: column; align-items: stretch; text-align: center; }
+  .missing-list__bulk-hint-btn { width: 100%; justify-content: center; }
+}
+.missing-list__card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.08);
+  transition: box-shadow 220ms ease, transform 160ms ease, border-color 160ms ease;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.missing-list__card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.05), 0 12px 32px -14px rgba(15, 23, 42, 0.12);
+}
+/* Card header — gradient banner spans the full card width so each block
+   has a visually distinct top. Icon on the right (RTL inline-start),
+   class name + sub-text in the middle, hour count chip pinned to end. */
+.missing-list__card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -12px -14px 0 -14px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #fff7ed 0%, #fed7aa 100%);
+  border-bottom: 2px solid #fb923c;
+  border-radius: 13px 13px 0 0;
+  position: relative;
+  overflow: hidden;
+}
+.missing-list__card-header::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 0% 50%, rgba(249, 115, 22, 0.18), transparent 60%);
+  pointer-events: none;
+}
+.missing-list__card-header-icon {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #f97316, #ea580c);
+  color: #ffffff;
+  border-radius: 10px;
+  font-size: 16px;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(234, 88, 12, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  position: relative;
+  z-index: 1;
+}
+.missing-list__card-header-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+.missing-list__card-header-class {
+  font-size: 16px;
+  font-weight: 800;
+  color: #7c2d12;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.missing-list__card-header-sub {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9a3412;
+  opacity: 0.85;
+}
+.missing-list__card-header-count {
+  background: #ffffff;
+  color: #c2410c;
+  border: 1.5px solid #fb923c;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-weight: 800;
+  font-size: 14px;
+  min-width: 36px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(234, 88, 12, 0.18);
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+}
+.missing-list__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.missing-list__title {
+  flex: 1;
+  font-size: 14px;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 200px;
+  font-weight: 600;
+}
+.missing-list__title-prefix {
+  color: #64748b;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+/* Class name as the hero — a prominent gradient pill that draws the eye
+   first, since "which class" is the primary thing the deputy principal is
+   scanning for. */
+.missing-list__class-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #ffffff;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  white-space: nowrap;
+}
+.missing-list__class-tag::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18);
+}
+.missing-list__count {
+  background: #fff1f2;
+  color: #be123c;
+  border: 1px solid #fecdd3;
+  border-radius: 999px;
+  padding: 3px 11px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+.missing-list__teachers {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.missing-list__teacher-chip {
+  background: #f1f5f9;
+  color: #475569;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid #e2e8f0;
+}
+.missing-list__teacher-chip span { opacity: 0.6; font-size: 10px; margin-inline-start: 2px; }
+
+/* Mini schedule grid inside each missing-class card. Shows the full week
+   layout (days × hours) so the deputy principal can see exactly where the
+   empty slot sits relative to the rest of the class's schedule. Empty
+   cells get a soft red highlight. */
+.missing-list__mini-grid {
+  margin-top: 6px;
+  padding: 6px 8px 6px 32px; /* extra padding-end (visual left in RTL) for the side arrow */
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  max-width: 100%;
+  position: relative;
+}
+.missing-list__mini-grid--inline {
+  margin-top: 4px;
+  padding: 4px 6px 4px 26px;
+}
+.missing-list__mini-grid-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.missing-list__mini-grid-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 1px;
+  font-size: 8px;
+  table-layout: fixed;
+}
+.missing-list__mini-grid-corner {
+  width: 12px;
+  background: transparent;
+}
+.missing-list__mini-grid-dayhead {
+  font-size: 7.5px;
+  font-weight: 700;
+  color: #475569;
+  background: #ffffff;
+  padding: 1px 0;
+  border-radius: 2px;
+  text-align: center;
+  letter-spacing: 0;
+}
+.missing-list__mini-grid-rowhead {
+  font-size: 7.5px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-align: center;
+  background: transparent;
+  width: 12px;
+}
+.missing-list__mini-grid-cell {
+  padding: 1px 0;
+  border-radius: 2px;
+  text-align: center;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  color: #1e293b;
+  font-weight: 600;
+  white-space: nowrap;
+  height: 14px;
+  line-height: 1;
+  transition: background 160ms ease, border-color 160ms ease;
+  position: relative;
+  overflow: visible;
+  font-size: 7.5px;
+}
+.missing-list__mini-grid-cell:not(.missing-list__mini-grid-cell--empty) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.missing-list__mini-grid-cell--na {
+  background: transparent;
+  border: 1px dashed #e2e8f0;
+  color: #cbd5e1;
+}
+.missing-list__mini-grid-cell--empty {
+  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  border: 1.5px solid #ef4444;
+  color: #991b1b;
+  font-weight: 900;
+  font-size: 11px;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25);
+  animation: missing-cell-pulse 2s ease-in-out infinite;
+  z-index: 2;
+}
+/* Side-arrow pointing at the empty cell — sits to the left of the cell
+   (visual side in RTL = inline-end) and bobs horizontally. The "כאן" pill
+   is slightly offset from the arrow tip. */
+.missing-list__mini-grid-cell--empty::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  inset-inline-end: calc(100% + 4px);
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-inline-start: 8px solid #dc2626;
+  filter: drop-shadow(0 1px 2px rgba(220, 38, 38, 0.4));
+  animation: missing-arrow-bob 1.2s ease-in-out infinite;
+}
+.missing-list__mini-grid-cell--empty::after {
+  content: 'כאן';
+  position: absolute;
+  top: 50%;
+  inset-inline-end: calc(100% + 14px);
+  transform: translateY(-50%);
+  background: #dc2626;
+  color: #ffffff;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.35);
+  animation: missing-arrow-bob 1.2s ease-in-out infinite;
+}
+@keyframes missing-cell-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25); }
+  50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.4); }
+}
+@keyframes missing-arrow-bob {
+  0%, 100% { transform: translateY(-50%) translateX(0); }
+  50% { transform: translateY(-50%) translateX(3px); }
+}
+
+/* Contextual info shown after a teacher is picked — current frontal load
+   + the new total after adding fillable hours. Soft indigo callout, sits
+   below the form so it doesn't compete with the action button. */
+.missing-list__teacher-context {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+  border: 1px solid #c7d2fe;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #3730a3;
+  line-height: 1.45;
+}
+.missing-list__teacher-context .fa { color: #6366f1; flex-shrink: 0; font-size: 14px; }
+.missing-list__teacher-context strong { color: #1e1b4b; font-weight: 800; }
+
+/* Inline form — clean and tool-like, not alarmist. Teal/emerald button for
+   the apply action keeps the visual hierarchy: class name = primary,
+   form = secondary, button = action accent. */
+.missing-list__form {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid #f1f5f9;
+  display: grid;
+  grid-template-columns: 1.7fr 1fr;
+  gap: 10px;
+  align-items: end;
+}
+.missing-list__field { display: flex; flex-direction: column; gap: 4px; }
+.missing-list__label {
+  font-size: 11px;
+  font-weight: 800;
+  color: #4338ca;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.missing-list__label::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  background: #6366f1;
+  border-radius: 50%;
+}
+.missing-list__select {
+  height: 38px;
+  padding: 0 14px;
+  padding-inline-start: 32px; /* room for the chevron */
+  border-radius: 10px;
+  border: 2px solid #c7d2fe;
+  background-color: #ffffff;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: left 10px center;
+  background-size: 14px;
+  font-size: 13.5px;
+  font-weight: 700;
+  font-family: inherit;
+  color: #1e1b4b;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+  max-width: 100%;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  box-shadow: 0 1px 2px rgba(99, 102, 241, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+.missing-list__select:hover {
+  border-color: #818cf8;
+  background-color: #fafaff;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.18);
+}
+.missing-list__select:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.18), 0 2px 8px rgba(99, 102, 241, 0.22);
+  background-color: #ffffff;
+}
+/* Native <option> styling support is partial across browsers (Firefox &
+   Chromium honor most of these; Safari ignores). Color-code each group:
+   homeroom/contracted teachers in calm indigo, the "see more" sentinel as
+   a soft amber CTA, the rest of the staff in subtle slate. optgroup
+   labels become tinted dividers. */
+.missing-list__select optgroup {
+  font-weight: 700;
+  font-style: normal;
+  color: #475569;
+  background: #f1f5f9;
+  letter-spacing: 0.02em;
+  font-size: 11px;
+}
+.missing-list__option { padding: 4px 8px; font-weight: 600; }
+.missing-list__option--assigned {
+  background: #eef2ff;
+  color: #3730a3;
+}
+.missing-list__option--more {
+  background: linear-gradient(90deg, #fef3c7, #fde68a);
+  color: #92400e;
+  font-weight: 800;
+  font-style: italic;
+}
+.missing-list__option--other {
+  background: #ffffff;
+  color: #475569;
+}
+.missing-list__readout {
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  border: 2px solid #86efac;
+  font-size: 12px;
+  font-weight: 700;
+  color: #166534;
+}
+.missing-list__hours {
+  font-size: 20px;
+  font-weight: 900;
+  color: #15803d;
+  line-height: 1;
+}
+.missing-list__hours-note { color: #64748b; font-size: 9.5px; }
+.missing-list__hours-zero {
+  color: #94a3b8;
+  font-size: 10px;
+  font-style: italic;
+}
+.missing-list__apply {
+  height: 38px;
+  padding: 0 20px;
+  border: none;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%);
+  color: #ffffff;
+  font-weight: 800;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(13, 148, 136, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition: transform 120ms ease, box-shadow 200ms ease, opacity 160ms ease;
+  letter-spacing: 0.01em;
+}
+.missing-list__apply:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(13, 148, 136, 0.36);
+}
+.missing-list__apply:active:not(:disabled) { transform: translateY(0); }
+.missing-list__apply:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+  background: linear-gradient(135deg, #94a3b8, #cbd5e1);
+}
+@media (max-width: 720px) {
+  .missing-list { grid-template-columns: 1fr; }
+  .missing-list__form { grid-template-columns: 1fr; }
+  .missing-list__apply { width: 100%; justify-content: center; }
+}
+
+/* Batch apply — one button at the bottom, enabled only after every card
+   has a valid teacher selection. Sticks the action together so the deputy
+   principal commits all the contract changes in one click instead of
+   chasing per-card buttons. */
+.missing-list__batch {
+  margin-top: 16px;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, #f0fdfa 0%, #ecfeff 100%);
+  border: 1px solid #99f6e4;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.missing-list__batch-info {
+  flex: 1;
+  font-size: 13px;
+  color: #0f766e;
+  font-weight: 600;
+  line-height: 1.4;
+  min-width: 200px;
+}
+.missing-list__batch-apply {
+  height: 42px;
+  padding: 0 28px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #0d9488 0%, #14b8a6 100%);
+  color: #ffffff;
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  box-shadow: 0 3px 10px rgba(13, 148, 136, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transition: transform 120ms ease, box-shadow 200ms ease, opacity 160ms ease, background 200ms ease;
+}
+.missing-list__batch-apply:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(13, 148, 136, 0.4);
+}
+.missing-list__batch-apply:active:not(:disabled) { transform: translateY(0); }
+.missing-list__batch-apply:disabled {
+  background: linear-gradient(135deg, #cbd5e1 0%, #e2e8f0 100%);
+  color: #64748b;
+  cursor: not-allowed;
+  box-shadow: none;
+  opacity: 0.85;
+}
+@media (max-width: 720px) {
+  .missing-list__batch { flex-direction: column; align-items: stretch; }
+  .missing-list__batch-apply { width: 100%; justify-content: center; }
+}
+
+/* Recommendation widget — inside the diagnostic modal. Lets the deputy
+   principal pick a teacher + class, sees the auto-computed hours, and
+   applies the contract bump in one click. Designed to feel like a
+   first-class action card: bright gradient header, large dropdowns,
+   prominent CTA. */
+.rec-widget {
+  background: linear-gradient(135deg, #eff6ff 0%, #faf5ff 100%);
+  border: 1px solid #c7d2fe;
+  border-radius: 14px;
+  margin-bottom: 18px;
+  overflow: hidden;
+  box-shadow: 0 8px 20px -8px rgba(99, 102, 241, 0.25);
+}
+.rec-widget__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+}
+.rec-widget__icon {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 22px;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+.rec-widget__icon .fa { color: #fef9c3; }
+.rec-widget__title {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.rec-widget__sub {
+  font-size: 13px;
+  margin-top: 3px;
+  opacity: 0.92;
+  line-height: 1.4;
+}
+.rec-widget__body {
+  display: grid;
+  grid-template-columns: 1.4fr 1.4fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+  padding: 16px 18px 12px;
+}
+.rec-widget__field { display: flex; flex-direction: column; gap: 5px; }
+.rec-widget__label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #4338ca;
+  letter-spacing: 0.02em;
+}
+.rec-widget__select {
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid #c7d2fe;
+  background: #fff;
+  font-size: 13px;
+  font-family: inherit;
+  color: #1e293b;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.rec-widget__select:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+}
+.rec-widget__readout {
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  font-size: 13px;
+}
+.rec-widget__hours {
+  font-size: 22px;
+  font-weight: 900;
+  color: #6d28d9;
+  line-height: 1;
+}
+.rec-widget__hours-detail { color: #6b7280; font-size: 11px; }
+.rec-widget__hours-zero {
+  color: #94a3b8;
+  font-size: 12px;
+  font-style: italic;
+}
+.rec-widget__apply {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: none;
+  background: linear-gradient(135deg, #7c3aed, #6366f1);
+  color: white;
+  font-weight: 800;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  box-shadow: 0 4px 10px rgba(124, 58, 237, 0.3);
+  transition: transform 120ms ease, box-shadow 200ms ease, opacity 160ms ease;
+}
+.rec-widget__apply:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(124, 58, 237, 0.4);
+}
+.rec-widget__apply:active:not(:disabled) { transform: translateY(0); }
+.rec-widget__apply:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.rec-widget__preview {
+  padding: 10px 18px 14px;
+  font-size: 12.5px;
+  color: #4338ca;
+  background: rgba(255, 255, 255, 0.5);
+  border-top: 1px dashed #c7d2fe;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rec-widget__preview .fa { color: #6366f1; }
+@media (max-width: 720px) {
+  .rec-widget__body {
+    grid-template-columns: 1fr;
+  }
+  .rec-widget__apply { width: 100%; justify-content: center; }
+}
+
+/* "Pending" — muted/transparent: an unresolved conflict (no teacher chosen
+   yet). The header is intentionally low-key so it doesn't compete with the
+   live form below it. */
+.assign-conflicts-modal__header--pending {
+  background: linear-gradient(135deg, #f3f4f6, #e5e7eb);
+  color: #6b7280;
+  border-bottom: 1px solid #e5e7eb;
+  filter: saturate(0.6);
+}
+.assign-conflicts-modal__header--pending .assign-conflicts-modal__header-icon {
+  background: rgba(107, 114, 128, 0.15);
+  color: #6b7280;
+}
+.assign-conflicts-modal__header--pending .assign-conflicts-modal__header-badge {
+  background: rgba(107, 114, 128, 0.2);
+  color: #4b5563;
+}
+
+/* "Fail" — red: the current selection still leaves a 3+ wall standing
+   somewhere, so auto-scheduling will not reach 100%. */
+.assign-conflicts-modal__header--fail {
+  background: linear-gradient(135deg, #fecaca, #f87171);
+  color: #7f1d1d;
+  border-bottom: 1px solid #dc2626;
+  box-shadow: inset 0 -1px 0 rgba(220, 38, 38, 0.4);
+}
+.assign-conflicts-modal__header--fail .assign-conflicts-modal__header-icon {
+  background: rgba(255, 255, 255, 0.55);
+  color: #b91c1c;
+  animation: assign-conflict-pulse 1.6s ease-in-out infinite;
+}
+.assign-conflicts-modal__header--fail .assign-conflicts-modal__header-badge {
+  background: rgba(255, 255, 255, 0.75);
+  color: #991b1b;
+}
+@keyframes assign-conflict-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.07); }
+}
+
+/* "Ok" — colored/dominant: every conflict has a safe resolution and
+   auto-scheduling is expected to complete. */
+.assign-conflicts-modal__header--ok {
+  background: linear-gradient(135deg, #bbf7d0, #4ade80);
+  color: #064e3b;
+  border-bottom: 1px solid #16a34a;
+  box-shadow: inset 0 -1px 0 rgba(22, 163, 74, 0.4);
+}
+.assign-conflicts-modal__header--ok .assign-conflicts-modal__header-icon {
+  background: rgba(255, 255, 255, 0.6);
+  color: #16a34a;
+  transform: scale(1.05);
+}
+.assign-conflicts-modal__header--ok .assign-conflicts-modal__header-badge {
+  background: rgba(255, 255, 255, 0.7);
+  color: #166534;
+}
+.assign-conflicts-modal__body {
+  padding: 18px 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+.assign-conflict-row {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.assign-conflict-row__title {
+  font-size: 14px;
+  color: #7c2d12;
+  margin-bottom: 10px;
+  line-height: 1.6;
+}
+.assign-conflict-row__form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: #4b5563;
+}
+.assign-conflict-row__form select {
+  flex: 1;
+  min-width: 130px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+}
+.assign-conflicts-modal__footer {
+  background: #fafafa;
+  border-top: 1px solid #e5e7eb;
+  padding: 14px 22px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-start;
+}
+
 @media (max-width: 900px) {
   .th-grid { grid-template-columns: repeat(2, 1fr); }
   .th-modal__shell { height: 96vh; }
@@ -5735,6 +8361,52 @@ input[type='radio'] {
 }
 .col-md-12 > .row > .panel-body > div > div:nth-child(even) .dvRequireDetails:hover {
   background: var(--primary-50);
+}
+
+/* Custom tooltip for class tags in TeacherHours table.
+   Shows on hover with a small arrow, styled darker than browser default. */
+.class-tag-tip {
+  position: relative;
+  cursor: default;
+}
+.class-tag-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.92);
+  background: rgba(17, 24, 39, 0.96);
+  color: #fff;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+.class-tag-tip::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 1px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: rgba(17, 24, 39, 0.96);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 1000;
+}
+.class-tag-tip:hover::after,
+.class-tag-tip:hover::before {
+  opacity: 1;
+}
+.class-tag-tip:hover::after {
+  transform: translateX(-50%) scale(1);
 }
 
 /* BetKneset viewer */

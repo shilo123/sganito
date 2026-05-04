@@ -91,6 +91,8 @@ export default function TeacherClass() {
   const [teachers, setTeachers] = useState<TeacherRow[]>([]);
   const [classes, setClasses] = useState<ClassRow[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
+  // Sidebar quick-filter — narrows the teacher panel without removing groups
+  const [teacherSearch, setTeacherSearch] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<{ classId: number; className: string } | null>(null);
   const [confirmDeleteTeacher, setConfirmDeleteTeacher] = useState(false);
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState<{
@@ -194,6 +196,8 @@ export default function TeacherClass() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardSelectedClasses, setWizardSelectedClasses] = useState<Set<number>>(new Set());
   const [wizardName, setWizardName] = useState<string>('');
+  // ProfessionalId חובה לכל הקבצה — קובע את המקצוע שמלמדים בה.
+  const [wizardProfessional, setWizardProfessional] = useState<string>('');
   const [wizardBusy, setWizardBusy] = useState(false);
 
   // Ihud wizard: similar to Hakbatza wizard but also requires picking
@@ -209,6 +213,7 @@ export default function TeacherClass() {
     setWizardOpen(true);
     setWizardSelectedClasses(new Set());
     setWizardName('');
+    setWizardProfessional('');
   }
   function closeWizard() {
     if (wizardBusy) return;
@@ -302,6 +307,10 @@ export default function TeacherClass() {
       toast.warning('צריך לבחור לפחות 2 כיתות בהקבצה');
       return;
     }
+    if (!wizardProfessional || wizardProfessional === '0') {
+      toast.warning('צריך לבחור מקצוע להקבצה', { title: 'חסר שדה חובה' });
+      return;
+    }
 
     setWizardBusy(true);
     try {
@@ -309,6 +318,7 @@ export default function TeacherClass() {
         LayerId: String(layerId),
         ClassIds: selected.join(','),
         Name: wizardName.trim(),
+        ProfessionalId: wizardProfessional,
       });
       if (res?.Error) {
         toast.error('יצירת ההקבצה נכשלה: ' + res.Error);
@@ -337,6 +347,8 @@ export default function TeacherClass() {
     TeacherId: number;
     TeacherName: string;
     Name?: string;
+    ProfessionalId?: number;
+    ProfessionalName?: string;
   }
   interface IhudRow {
     ClassTeacherId: number;
@@ -352,6 +364,9 @@ export default function TeacherClass() {
   const [hakbatzaRows, setHakbatzaRows] = useState<HakbatzaRow[]>([]);
   const [ihudRows, setIhudRows] = useState<IhudRow[]>([]);
   const [maxHours, setMaxHours] = useState<number>(0);
+  // סטטוס שיבוץ לכל שכבה: כמה כיתות בכל שכבה ומהן כמה מלאות (Hour == Capacity).
+  interface LayerStatus { LayerId: number; ClassCount: number; FullyBookedCount: number; Capacity: number }
+  const [layerStatus, setLayerStatus] = useState<LayerStatus[]>([]);
   const loadHakbatzaList = useCallback(async () => {
     try {
       const data = await ajax<HakbatzaRow[]>('Hakbatza_GetAll');
@@ -368,6 +383,14 @@ export default function TeacherClass() {
       console.error('Ihud_GetAll failed', err);
     }
   }, []);
+  const loadLayerStatus = useCallback(async () => {
+    try {
+      const data = await ajax<LayerStatus[]>('Class_GetLayersStatus');
+      setLayerStatus(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Class_GetLayersStatus failed', err);
+    }
+  }, []);
   const loadMaxHours = useCallback(async () => {
     try {
       const data = await ajax<{ MaxHours: number }>('Class_GetMaxHours');
@@ -380,7 +403,12 @@ export default function TeacherClass() {
     loadHakbatzaList();
     loadIhudList();
     loadMaxHours();
-  }, [loadHakbatzaList, loadIhudList, loadMaxHours]);
+    loadLayerStatus();
+  }, [loadHakbatzaList, loadIhudList, loadMaxHours, loadLayerStatus]);
+  // רענון סטטוס שכבה אחרי שינוי כיתות (הוספת שעה, הקבצה וכו')
+  useEffect(() => {
+    loadLayerStatus();
+  }, [classes, loadLayerStatus]);
 
   // Tracks which (layer, number) pair is the active drop target so we can
   // highlight it during a drag.
@@ -840,6 +868,41 @@ export default function TeacherClass() {
       type = 2;
     }
 
+    // אם מצרפים מורה לכיתה רגילה (לא הקבצה/איחוד) שכבר נמצא בה כשורה רגילה
+    // (לא הקבצה ולא איחוד) — במקום לשגיאה, פשוט מגדילים ל-Hour ב-1.
+    // תרחיש זה מאפשר גם תמיכה במורה שכבר בהקבצה: אם הוא נגרר לאותה כיתה כשורה
+    // רגילה, ייווצר עבורו רשומה רגילה נוספת ב-ClassTeacher (לא בהקבצה).
+    if (type === 1 && info.sourceType === 'teacher') {
+      const existingRegular = classes.find((r) =>
+        Number(r.ClassId) === Number(targetClassId)
+        && Number(r.TeacherId ?? 0) === Number(sourceTeacherId)
+        && Number(r.Hakbatza ?? 0) === 0
+        && Number(r.Ihud ?? 0) === 0
+      );
+      if (existingRegular && existingRegular.ClassTeacherId != null) {
+        const newHour = Number(existingRegular.Hour ?? 0) + 1;
+        try {
+          await ajax<DmlResult[]>('Class_SetTeacherToClass', {
+            ClassId: targetClassId,
+            TeacherId: sourceTeacherId,
+            Hour: String(newHour),
+            TargetHakbatza: '',
+            SourceHakbatza: '',
+            TargetIhud: '',
+            SourceIhud: '',
+            TargetClassTeacherId: '',
+            SourceClassTeacherId: String(existingRegular.ClassTeacherId),
+            Type: 4,
+          });
+          toast.success(`שעה נוספה — סה"כ ${newHour} שעות בכיתה זו`);
+          loadClasses(layerId);
+        } catch (err) {
+          console.error('Class_SetTeacherToClass (hour increment) failed', err);
+        }
+        return;
+      }
+    }
+
     try {
       const res = await ajax<DmlResult[]>('Class_SetTeacherToClass', {
         ClassId: targetClassId,
@@ -896,11 +959,31 @@ export default function TeacherClass() {
   // associates "green = Hakbatza 4" rather than having to read the number.
   function groupColor(kind: 'H' | 'I', n: number): { bg: string; fg: string } {
     if (!n) return { bg: 'transparent', fg: '#6b7280' };
-    const hPalette = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#fed7aa', '#ddd6fe', '#a7f3d0', '#fecaca'];
-    const iPalette = ['#c4b5fd', '#67e8f9', '#fcd34d', '#f9a8d4', '#86efac', '#fca5a5', '#93c5fd', '#fdba74'];
+    // צבעים מודרניים-saturated עם ניגודיות גבוהה (טקסט לבן). מבטיחים מראה
+    // מקצועי וקריא במקום הפסטל החיוור הקודם.
+    const hPalette = [
+      '#7c3aed', // violet
+      '#0891b2', // cyan
+      '#059669', // emerald
+      '#db2777', // pink
+      '#ea580c', // orange
+      '#4f46e5', // indigo
+      '#0d9488', // teal
+      '#dc2626', // red
+    ];
+    const iPalette = [
+      '#6366f1', // indigo-500
+      '#06b6d4', // cyan-500
+      '#f59e0b', // amber-500
+      '#ec4899', // pink-500
+      '#10b981', // emerald-500
+      '#ef4444', // red-500
+      '#3b82f6', // blue-500
+      '#f97316', // orange-500
+    ];
     const palette = kind === 'H' ? hPalette : iPalette;
     const color = palette[(n - 1) % palette.length];
-    return { bg: color, fg: '#1f2937' };
+    return { bg: color, fg: '#ffffff' };
   }
 
   function openGroupModal(
@@ -1311,8 +1394,21 @@ export default function TeacherClass() {
   // group teachers by tafkid for row breaks (aspx inserts clear:both between tafkid groups)
   const teacherGroups: Array<{ tafkidId: number | string; teachers: TeacherRow[] }> = [];
   {
+    const q = teacherSearch.trim().toLowerCase();
+    const matches = (t: TeacherRow) => {
+      if (!q) return true;
+      const hay = [
+        t.FullText,
+        t.FirstName,
+        t.LastName,
+      ]
+        .map((s) => String(s ?? '').toLowerCase())
+        .join(' ');
+      return hay.includes(q);
+    };
     let cur: { tafkidId: number | string; teachers: TeacherRow[] } | null = null;
     for (const t of teachers) {
+      if (!matches(t)) continue;
       if (!cur || cur.tafkidId !== t.TafkidId) {
         cur = { tafkidId: t.TafkidId, teachers: [] };
         teacherGroups.push(cur);
@@ -1340,21 +1436,46 @@ export default function TeacherClass() {
           <div className="panel panel-info">
             <div className="panel-heading tc-layer-bar">
               <div className="tc-layer-tabs" role="tablist" aria-label="בחירת שכבה">
-                {LAYERS.map((layer) => (
-                  <label
-                    className={`tc-layer-tab${layerId === layer.id ? ' is-active' : ''}`}
-                    key={layer.id}
-                  >
-                    <input
-                      type="radio"
-                      name="layer"
-                      value={layer.id}
-                      checked={layerId === layer.id}
-                      onChange={() => setLayerId(layer.id)}
-                    />
-                    <span>{layer.label}</span>
-                  </label>
-                ))}
+                {LAYERS.map((layer) => {
+                  const ls = layerStatus.find((s) => s.LayerId === layer.id);
+                  const isFull = ls && ls.ClassCount > 0 && ls.FullyBookedCount === ls.ClassCount;
+                  const hasGap = ls && ls.ClassCount > 0 && ls.FullyBookedCount < ls.ClassCount;
+                  const statusIcon = isFull ? 'check-circle' : hasGap ? 'exclamation-triangle' : null;
+                  const statusColor = isFull ? '#10b981' : hasGap ? '#f59e0b' : '#9ca3af';
+                  const statusTitle = ls
+                    ? `${ls.FullyBookedCount}/${ls.ClassCount} כיתות משובצות במלואן (${ls.Capacity} שעות לכיתה)`
+                    : '';
+                  return (
+                    <label
+                      className={`tc-layer-tab${layerId === layer.id ? ' is-active' : ''}`}
+                      key={layer.id}
+                      title={statusTitle}
+                    >
+                      <input
+                        type="radio"
+                        name="layer"
+                        value={layer.id}
+                        checked={layerId === layer.id}
+                        onChange={() => setLayerId(layer.id)}
+                      />
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        {layer.label}
+                        {statusIcon && (
+                          <i
+                            className={`fa fa-${statusIcon}`}
+                            style={{ color: statusColor, fontSize: 12 }}
+                            aria-hidden="true"
+                          />
+                        )}
+                        {ls && (
+                          <span style={{ fontSize: 10, fontWeight: 700, color: statusColor, opacity: 0.9 }}>
+                            {ls.FullyBookedCount}/{ls.ClassCount}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
               <button
                 type="button"
@@ -1433,6 +1554,8 @@ export default function TeacherClass() {
                   classes: Map<number, string>;
                   teachers: Map<number, string>;
                   hour: number;
+                  professionalId: number;
+                  professionalName: string;
                 };
                 const hakBuckets = new Map<string, HakBucket>();
                 for (const r of hakbatzaRows) {
@@ -1440,10 +1563,23 @@ export default function TeacherClass() {
                   const key = r.LayerId + '_' + r.Hakbatza;
                   let b = hakBuckets.get(key);
                   if (!b) {
-                    b = { layerId: r.LayerId, number: r.Hakbatza, name: r.Name ?? '', classes: new Map(), teachers: new Map(), hour: 0 };
+                    b = {
+                      layerId: r.LayerId,
+                      number: r.Hakbatza,
+                      name: r.Name ?? '',
+                      classes: new Map(),
+                      teachers: new Map(),
+                      hour: 0,
+                      professionalId: Number(r.ProfessionalId ?? 0),
+                      professionalName: r.ProfessionalName ?? '',
+                    };
                     hakBuckets.set(key, b);
-                  } else if (!b.name && r.Name) {
-                    b.name = r.Name;
+                  } else {
+                    if (!b.name && r.Name) b.name = r.Name;
+                    if (!b.professionalId && r.ProfessionalId) {
+                      b.professionalId = Number(r.ProfessionalId);
+                      b.professionalName = r.ProfessionalName ?? '';
+                    }
                   }
                   b.classes.set(r.ClassId, r.ClassName);
                   if (r.TeacherId > 0) b.teachers.set(r.TeacherId, r.TeacherName);
@@ -1500,162 +1636,160 @@ export default function TeacherClass() {
                   <div className="droppable" onDragOver={allowDrop}>
                     {hasGroups && (
                       <div style={{ marginBottom: 14 }}>
-                        <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 700, marginBottom: 6, paddingInlineStart: 4 }}>
-                          <i className="fa fa-object-group" style={{ marginInlineEnd: 4 }} /> הקבצות ואיחודים
+                        <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 700, marginBottom: 6, paddingInlineStart: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span><i className="fa fa-object-group" style={{ marginInlineEnd: 4 }} /> הקבצות ואיחודים</span>
+                          {(hakList.length + ihudList.length) > 3 && (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: '#fff', background: 'linear-gradient(90deg, #7c3aed, #6366f1)', padding: '4px 12px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', gap: 6, boxShadow: '0 2px 6px -2px rgba(124,58,237,0.5)' }}>
+                              <i className="fa fa-hand-o-left" />
+                              גלול אופקית — {hakList.length + ihudList.length} הקבצות סה"כ
+                              <i className="fa fa-arrow-left" />
+                            </span>
+                          )}
                         </div>
-                        <div className="tc-grid-4">
+                        <div className="tc-grid-4-wrap">
+                          {(hakList.length + ihudList.length) > 3 && (
+                            <>
+                              <button
+                                type="button"
+                                className="tc-grid-4-wrap__nav tc-grid-4-wrap__nav--right"
+                                aria-label="גלול ימינה"
+                                onClick={(e) => {
+                                  const grid = e.currentTarget.parentElement?.querySelector('.tc-grid-4--wide') as HTMLElement | null;
+                                  if (grid) grid.scrollBy({ left: 340, behavior: 'smooth' });
+                                }}
+                              >
+                                <i className="fa fa-chevron-right" />
+                              </button>
+                              <button
+                                type="button"
+                                className="tc-grid-4-wrap__nav tc-grid-4-wrap__nav--left"
+                                aria-label="גלול שמאלה"
+                                onClick={(e) => {
+                                  const grid = e.currentTarget.parentElement?.querySelector('.tc-grid-4--wide') as HTMLElement | null;
+                                  if (grid) grid.scrollBy({ left: -340, behavior: 'smooth' });
+                                }}
+                              >
+                                <i className="fa fa-chevron-left" />
+                              </button>
+                            </>
+                          )}
+                        <div className="tc-grid-4 tc-grid-4--wide">
                           {/* Hakbatza cards — same panel shape as class cards */}
                           {hakList.map((b) => {
                             const col = groupColor('H', b.number);
                             const isHover = dragHoverHak === (b.layerId + '_' + b.number);
                             const classList = Array.from(b.classes.values());
+                            const teacherCount = b.teachers.size;
                             return (
                               <div className="tc-grid-4__cell" key={'hak_' + b.layerId + '_' + b.number}>
-                          <div style={{ fontSize: 12, color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, marginBottom: 2 }}>
-                            <span>
-                              <i className="fa fa-object-group" style={{ color: '#d97706', marginInlineEnd: 4 }} />
-                              שעות שבועיות
-                            </span>
-                            <input
-                              type="number"
-                              min={0}
-                              defaultValue={b.hour}
-                              onBlur={(e) => {
-                                const v = Math.max(0, Math.floor(Number(e.currentTarget.value) || 0));
-                                if (v !== b.hour) setHakbatzaHour(b.layerId, b.number, v);
-                              }}
-                              style={{ width: 48, padding: '1px 4px', fontWeight: 700, textAlign: 'center', border: '1px solid #d97706', borderRadius: 3, background: '#fff' }}
-                            />
-                          </div>
-                          <div className="row dvWeek" style={{ width: '100%' }}>
-                            <div className="panel" style={{ borderColor: col.bg, borderTopWidth: 4 }}>
-                              <div className="panel-heading" style={{ background: col.bg, color: col.fg, borderColor: col.bg, padding: '0.45rem 0.6rem' }}>
-                                <button
-                                  type="button"
-                                  className="tc-class-close"
-                                  onClick={() => setConfirmDeleteGroup({
-                                    kind: 'H',
-                                    layerId: b.layerId,
-                                    number: b.number,
-                                    label: b.name || `הקבצה ${b.number}`,
-                                  })}
-                                  title="מחק הקבצה"
-                                  aria-label="מחק הקבצה"
-                                >
-                                  <i className="fa fa-times" />
-                                </button>
-                                <h3 className="panel-title" style={{ color: col.fg, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <span className="tc-class-name" style={{ flex: '0 0 auto', whiteSpace: 'nowrap' }}>{b.name || `הקבצה ${b.number}`}</span>
-                                  <input
-                                    type="text"
-                                    placeholder={`הקבצה ${b.number} — תן שם`}
-                                    defaultValue={b.name || ''}
-                                    onBlur={(e) => {
-                                      const v = e.currentTarget.value.trim();
-                                      if (v !== (b.name || '')) setGroupName('H', b.layerId, b.number, v);
-                                    }}
-                                    title="לחץ לשינוי שם ההקבצה"
-                                    style={{
-                                      flex: 1,
-                                      minWidth: 0,
-                                      background: 'rgba(255,255,255,0.55)',
-                                      border: '1px solid rgba(0,0,0,0.08)',
-                                      borderRadius: 4,
-                                      padding: '1px 6px',
-                                      fontSize: 12,
-                                      fontWeight: 600,
-                                      color: '#1f2937',
-                                    }}
-                                  />
-                                </h3>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
-                                  {classList.length === 0 ? (
-                                    <span style={{ fontSize: 11, opacity: 0.7 }}>—</span>
-                                  ) : (
-                                    classList.map((cn) => (
-                                      <span
-                                        key={cn}
-                                        style={{
-                                          background: 'rgba(255,255,255,0.65)',
-                                          color: '#1f2937',
-                                          padding: '1px 7px',
-                                          borderRadius: 10,
-                                          fontSize: 11,
-                                          fontWeight: 700,
-                                          lineHeight: 1.5,
-                                          border: '1px solid rgba(0,0,0,0.05)',
-                                        }}
-                                      >
-                                        {cn}
+                                <div className="hak-card" style={{ borderTop: `4px solid ${col.bg}` }}>
+                                  <div className="hak-card__header" style={{ background: `linear-gradient(135deg, ${col.bg} 0%, ${col.bg}dd 100%)`, color: col.fg }}>
+                                    <button
+                                      type="button"
+                                      className="hak-card__close"
+                                      onClick={() => setConfirmDeleteGroup({
+                                        kind: 'H',
+                                        layerId: b.layerId,
+                                        number: b.number,
+                                        label: b.name || `הקבצה ${b.number}`,
+                                      })}
+                                      title="מחק הקבצה"
+                                      aria-label="מחק הקבצה"
+                                    >
+                                      <i className="fa fa-times" />
+                                    </button>
+                                    <div className="hak-card__title-row">
+                                      <span className="hak-card__title-main">
+                                        <i className="fa fa-object-group" />{' '}
+                                        {b.professionalName || `הקבצה ${b.number}`}
                                       </span>
-                                    ))
-                                  )}
+                                      <span className="hak-card__title-sub">#{b.number}</span>
+                                    </div>
+                                    <div className="hak-card__meta">
+                                      <label className="hak-card__chip hak-card__chip--hours" title="שעות שבועיות שכל מורה ילמד בהקבצה">
+                                        <i className="fa fa-clock-o" />
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          defaultValue={b.hour}
+                                          onBlur={(e) => {
+                                            const v = Math.max(0, Math.floor(Number(e.currentTarget.value) || 0));
+                                            if (v !== b.hour) setHakbatzaHour(b.layerId, b.number, v);
+                                          }}
+                                        />
+                                        <span>ש"ש</span>
+                                      </label>
+                                      <span className="hak-card__chip hak-card__chip--count" title="מספר מורים בהקבצה">
+                                        <i className="fa fa-users" /> {teacherCount}
+                                      </span>
+                                    </div>
+                                    <div className="hak-card__classes">
+                                      {classList.length === 0 ? (
+                                        <span className="hak-card__empty-classes">—</span>
+                                      ) : (
+                                        classList.map((cn) => (
+                                          <span key={cn} className="hak-card__class-pill">{cn}</span>
+                                        ))
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div
+                                    className={`hak-card__body droppable${isHover ? ' hak-card__body--hover' : ''}`}
+                                    onDragOver={(e) => {
+                                      allowDrop(e);
+                                      const key = b.layerId + '_' + b.number;
+                                      if (dragHoverHak !== key) setDragHoverHak(key);
+                                    }}
+                                    onDragLeave={() => setDragHoverHak(null)}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setDragHoverHak(null);
+                                      const info = dragInfo.current;
+                                      if (!info) return;
+                                      dragInfo.current = null;
+                                      const tid = info.teacherId;
+                                      if (b.teachers.has(tid)) {
+                                        toast.warning('המורה כבר בהקבצה');
+                                        return;
+                                      }
+                                      addTeacherToHakbatza(b.layerId, b.number, tid);
+                                    }}
+                                  >
+                                    <div className="hak-card__body-label">
+                                      <i className="fa fa-graduation-cap" /> מורים מלמדים
+                                    </div>
+                                    {b.teachers.size === 0 ? (
+                                      <div className="hak-card__dropzone">
+                                        <i className="fa fa-hand-pointer-o" />
+                                        <span>גרור מורים לכאן</span>
+                                      </div>
+                                    ) : (
+                                      <div className="hak-card__teacher-list">
+                                        {Array.from(b.teachers.entries()).map(([tid, tname]) => (
+                                          <div key={tid} className="hak-card__teacher-row draggable">
+                                            <div className="hak-card__teacher-pill" style={{ background: col.bg, color: col.fg }}>
+                                              <i className="fa fa-user-circle" />
+                                              <span>{tname}</span>
+                                            </div>
+                                            <button
+                                              type="button"
+                                              className="hak-card__teacher-remove"
+                                              onClick={() => removeTeacherFromHakbatza(b.layerId, b.number, tid)}
+                                              title="הסר מההקבצה"
+                                              aria-label="הסר מההקבצה"
+                                            >
+                                              <i className="fa fa-times" />
+                                            </button>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
-                              <div
-                                className="panel-body droppable"
-                                style={{
-                                  minHeight: 110,
-                                  padding: '0.5rem',
-                                  background: isHover ? '#fff7ed' : undefined,
-                                  border: isHover ? '2px dashed #d97706' : undefined,
-                                  transition: 'background 120ms',
-                                }}
-                                onDragOver={(e) => {
-                                  allowDrop(e);
-                                  const key = b.layerId + '_' + b.number;
-                                  if (dragHoverHak !== key) setDragHoverHak(key);
-                                }}
-                                onDragLeave={() => setDragHoverHak(null)}
-                                onDrop={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  setDragHoverHak(null);
-                                  const info = dragInfo.current;
-                                  if (!info) return;
-                                  dragInfo.current = null;
-                                  const tid = info.teacherId;
-                                  if (b.teachers.has(tid)) {
-                                    toast.warning('המורה כבר בהקבצה');
-                                    return;
-                                  }
-                                  addTeacherToHakbatza(b.layerId, b.number, tid);
-                                }}
-                              >
-                                {b.teachers.size === 0 ? (
-                                  <div style={{ padding: 8, color: '#9ca3af', fontStyle: 'italic', fontSize: 11, textAlign: 'center', border: '1px dashed #d1d5db', borderRadius: 6 }}>
-                                    גרור מורים לכאן
-                                  </div>
-                                ) : (
-                                  Array.from(b.teachers.entries()).map(([tid, tname]) => (
-                                    <div
-                                      key={tid}
-                                      className="draggable"
-                                      style={{ marginBottom: 3, position: 'relative', display: 'flex', alignItems: 'center', gap: 4 }}
-                                    >
-                                      <div
-                                        className="btn btn-primary btn-round"
-                                        style={{ flex: 1, textAlign: 'center', background: col.bg, color: col.fg, borderColor: col.fg + '40', padding: '4px 8px', fontSize: 12 }}
-                                      >
-                                        {tname}
-                                      </div>
-                                      <button
-                                        type="button"
-                                        onClick={() => removeTeacherFromHakbatza(b.layerId, b.number, tid)}
-                                        title="הסר מההקבצה"
-                                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 16, color: '#dc2626', padding: '0 4px' }}
-                                      >
-                                        ×
-                                      </button>
-                                    </div>
-                                  ))
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                            );
+                          })}
 
                     {/* Ihud cards — single responsible teacher */}
                     {ihudList.map((b) => {
@@ -1794,6 +1928,7 @@ export default function TeacherClass() {
                       );
                     })}
                         </div>
+                        </div>
                         <div style={{ borderBottom: '1px dashed #e5e7eb', margin: '14px 0 4px' }} />
                       </div>
                     )}
@@ -1805,8 +1940,15 @@ export default function TeacherClass() {
                       const ratio = need > 0 ? have / need : 0;
                       const overflow = need > 0 && have > need;
                       const exact = need > 0 && have === need;
+                      const mismatch = need > 0 && have !== need;
                       const indicatorColor = overflow ? '#dc2626' : exact ? '#16a34a' : '#374151';
                       const indicatorBg = overflow ? '#fee2e2' : exact ? '#dcfce7' : '#f3f4f6';
+                      // Highlight the total-hours number itself: red whenever
+                      // it doesn't match the school's per-class capacity
+                      // (either overflow or under), black when it matches
+                      // exactly. The indicator strip's background still uses
+                      // the tri-color logic for context.
+                      const totalNumberColor = mismatch ? '#dc2626' : '#0f172a';
                       return (
                   <div className="tc-grid-4__cell" key={panel.ClassId}>
                     <div
@@ -1826,8 +1968,8 @@ export default function TeacherClass() {
                       }}
                     >
                       <span title="שעות פרונטליות בלבד — לא כולל שהייה/פרטני">סה"כ פרונטלי</span>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        {overflow && <i className="fa fa-exclamation-triangle" style={{ fontSize: 11 }} />}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: totalNumberColor, fontWeight: 800 }}>
+                        {overflow && <i className="fa fa-exclamation-triangle" style={{ fontSize: 11, color: '#dc2626' }} />}
                         <span className="spTotal">{have}</span>
                         {need > 0 && (
                           <>
@@ -2042,34 +2184,9 @@ export default function TeacherClass() {
                                     א{ihudNum}
                                   </span>
                                 )}
-                                {hakNum === 0 && ihudNum === 0 && (
-                                  <span
-                                    title="הוסף להקבצה / איחוד"
-                                    onClick={() =>
-                                      openGroupModal(
-                                        panel.ClassId,
-                                        panel.ClassName,
-                                        t.memberClassTeacherIds,
-                                        t.TeacherName.replace(/<br>/g, ' + '),
-                                        0,
-                                        0,
-                                      )
-                                    }
-                                    style={{
-                                      cursor: 'pointer',
-                                      background: '#e5e7eb',
-                                      color: '#6b7280',
-                                      padding: '2px 6px',
-                                      borderRadius: 4,
-                                      fontSize: 11,
-                                      fontWeight: 600,
-                                      lineHeight: 1.2,
-                                      userSelect: 'none',
-                                    }}
-                                  >
-                                    +
-                                  </span>
-                                )}
+                                {/* הכפתור "+" להוספה להקבצה הוסר —
+                                    הקבצות נוצרות דרך אשף "הקבצה חדשה"
+                                    בראש המסך, ומורים מצורפים בגרירה. */}
                               </span>
                               <input
                                 type="text"
@@ -2110,13 +2227,16 @@ export default function TeacherClass() {
           <div className="panel panel-info tc-teachers-panel">
             <div className="panel-heading">
               <div className="tc-teachers-panel__heading">
-                <span><i className="fa fa-users" /> מורים</span>
+                <span className="tc-teachers-panel__title-text">מורים</span>
                 <button
                   type="button"
-                  className="btn btn-success btn-sm"
+                  className="tc-teachers-panel__add"
                   onClick={() => openTeacherModal(2)}
+                  title="הוסף מורה חדש"
+                  aria-label="הוסף מורה"
                 >
-                  <i className="fa fa-plus" /> הוסף מורה
+                  <i className="fa fa-plus" />
+                  <span>הוספה</span>
                 </button>
               </div>
             </div>
@@ -2126,40 +2246,70 @@ export default function TeacherClass() {
               onDragOver={allowDrop}
               onDrop={onDropOnTeacherPanel}
             >
-              <div className="tc-role-legend">
-                <span className="tc-role-legend-item">
-                  <span className="tc-role-legend-dot" style={{ background: '#2563eb' }} />
-                  מחנך/ת
-                </span>
-                <span className="tc-role-legend-item">
-                  <span className="tc-role-legend-dot" style={{ background: '#10b981' }} />
-                  מקצועי/ת
-                </span>
-                <span className="tc-role-legend-item">
-                  <span className="tc-role-legend-dot" style={{ background: '#ef4444' }} />
-                  מנהלה
-                </span>
-              </div>
-              <div style={{ marginTop: 16 }}>
-                {teacherGroups.map((grp, gi) => (
-                  <div key={`grp_${gi}_${grp.tafkidId}`}>
-                    {gi > 0 && <div style={{ clear: 'both' }}></div>}
-                    {grp.teachers.map((t) => (
-                      <div
-                        key={`dvTeacher_${t.TeacherId}`}
-                        className={`btn btn-${tafkidTheme(t.TafkidId)} btn-round draggable selected`}
-                        style={{ float: 'right', margin: 2 }}
-                        draggable
-                        onDragStart={(e) => onDragStartTeacher(e, t.TeacherId)}
-                        onClick={() => openTeacherModal(1, t.TeacherId)}
-                        onContextMenu={(e) => onTeacherContextMenu(e, t.TeacherId)}
-                      >
-                        {t.FullText}
-                      </div>
-                    ))}
+              <label
+                className={`tc-teachers-search${teacherSearch ? ' is-filled' : ''}`}
+                aria-label="חיפוש מורה"
+              >
+                <i className="fa fa-search tc-teachers-search__icon" aria-hidden="true" />
+                <input
+                  type="search"
+                  className="tc-teachers-search__input"
+                  value={teacherSearch}
+                  onChange={(e) => setTeacherSearch(e.target.value)}
+                  placeholder="חיפוש מורה..."
+                />
+                {teacherSearch && (
+                  <button
+                    type="button"
+                    className="tc-teachers-search__clear"
+                    aria-label="נקה חיפוש"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => setTeacherSearch('')}
+                  >
+                    <i className="fa fa-times" />
+                  </button>
+                )}
+              </label>
+              {teacherGroups.map((grp, gi) => {
+                const tafkidName =
+                  tafkidOpts.find((t) => String(t.TafkidId) === String(grp.tafkidId))?.Name
+                  ?? `תפקיד ${grp.tafkidId}`;
+                const dotColor =
+                  String(grp.tafkidId) === '2' ? '#0d9488'
+                  : String(grp.tafkidId) === '3' ? '#be123c'
+                  : '#4f46e5';
+                return (
+                  <div key={`grp_${gi}_${grp.tafkidId}`} className="tc-teachers-group">
+                    <div className="tc-teachers-group__header">
+                      <span className="tc-teachers-group__title">
+                        <span
+                          className="tc-teachers-group__dot"
+                          style={{ background: dotColor }}
+                        />
+                        {tafkidName}
+                      </span>
+                      <span className="tc-teachers-group__count">
+                        {grp.teachers.length}
+                      </span>
+                    </div>
+                    <div className="tc-teachers-grid">
+                      {grp.teachers.map((t) => (
+                        <div
+                          key={`dvTeacher_${t.TeacherId}`}
+                          className={`btn btn-${tafkidTheme(t.TafkidId)} draggable`}
+                          draggable
+                          title={t.FullText}
+                          onDragStart={(e) => onDragStartTeacher(e, t.TeacherId)}
+                          onClick={() => openTeacherModal(1, t.TeacherId)}
+                          onContextMenu={(e) => onTeacherContextMenu(e, t.TeacherId)}
+                        >
+                          {t.FullText}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
-              </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -2411,18 +2561,27 @@ export default function TeacherClass() {
                     </div>
                   ) : (
                     <>
-                      <label style={{ fontWeight: 600, marginBottom: 4, display: 'block' }}>
-                        שם ההקבצה (אופציונלי):
-                      </label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        placeholder="למשל: מתמטיקה / אנגלית / קבוצת רמה א'"
-                        value={wizardName}
-                        onChange={(e) => setWizardName(e.target.value)}
-                        disabled={wizardBusy}
-                        style={{ marginBottom: 14 }}
-                      />
+                      <div style={{ marginBottom: 14 }}>
+                        <label style={{ fontWeight: 600, marginBottom: 4, display: 'block', color: '#7c3aed' }}>
+                          <i className="fa fa-book" /> מקצוע ההקבצה <span style={{ color: '#dc2626' }}>*</span>
+                        </label>
+                        <select
+                          className="form-control"
+                          value={wizardProfessional}
+                          onChange={(e) => setWizardProfessional(e.target.value)}
+                          disabled={wizardBusy}
+                          style={{ borderColor: wizardProfessional ? '#c4b5fd' : '#fca5a5' }}
+                          required
+                        >
+                          <option value="">— בחר מקצוע —</option>
+                          {professionalOpts.map((p) => (
+                            <option key={p.ProfessionalId} value={p.ProfessionalId}>{p.Name}</option>
+                          ))}
+                        </select>
+                        <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                          שם ההקבצה יהיה שם המקצוע שתבחר.
+                        </div>
+                      </div>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                         <label style={{ fontWeight: 600 }}>
                           סמן את הכיתות ({selectedCount} נבחרו):
@@ -2699,60 +2858,110 @@ export default function TeacherClass() {
       {/* Teacher modal */}
       {showTeacherModal && (
         <div
-          className="modal fade in"
+          className="tm-modal"
           role="dialog"
-          style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)' }}
-          onClick={(e) => {
+          aria-modal="true"
+          aria-labelledby="tm-modal-title"
+          onMouseDown={(e) => {
             if (e.target === e.currentTarget) setShowTeacherModal(false);
           }}
         >
-          <div className="modal-dialog">
-            <div className="modal-content">
-              <div className="modal-header label-info">
-                <button type="button" className="close" aria-hidden="true" onClick={() => setShowTeacherModal(false)}>
-                  &times;
-                </button>
-                <h4 className="modal-title">{teacherModalTitle}</h4>
-              </div>
-              <div className="modal-body">
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>ת"ז</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={teacherForm.Tz}
-                      onChange={(e) => setTeacherForm({ ...teacherForm, Tz: e.target.value })}
-                    />
-                  </div>
+          <div className="tm-modal__card">
+            <header className="tm-modal__header">
+              <div className="tm-modal__header-side">
+                <span className="tm-modal__avatar" aria-hidden="true">
+                  <i className={`fa ${teacherModalType === 2 ? 'fa-user-plus' : 'fa-user'}`} />
+                </span>
+                <div>
+                  <h2 id="tm-modal-title" className="tm-modal__title">
+                    {teacherModalType === 2 ? 'הוספת מורה חדש/ה' : 'עריכת פרטי מורה'}
+                  </h2>
+                  {teacherModalType === 1 && (teacherForm.FirstName || teacherForm.LastName) && (
+                    <div className="tm-modal__subtitle">
+                      {teacherForm.FirstName} {teacherForm.LastName}
+                    </div>
+                  )}
                 </div>
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>שם פרטי</label>
+              </div>
+              <button
+                type="button"
+                className="tm-modal__close"
+                onClick={() => setShowTeacherModal(false)}
+                aria-label="סגור"
+              >
+                <i className="fa fa-times" />
+              </button>
+            </header>
+
+            <div className="tm-modal__body">
+              <section className="tm-section">
+                <h3 className="tm-section__title">
+                  <i className="fa fa-id-card-o tm-section__icon" />
+                  פרטים אישיים
+                </h3>
+                <div className="tm-grid tm-grid--2">
+                  <label className="tm-field">
+                    <span className="tm-field__label">
+                      שם פרטי <span className="tm-field__required">*</span>
+                    </span>
                     <input
                       type="text"
-                      className="form-control"
+                      className="tm-field__input"
                       value={teacherForm.FirstName}
                       onChange={(e) => setTeacherForm({ ...teacherForm, FirstName: e.target.value })}
+                      autoFocus
+                      placeholder="לדוגמה: דנה"
                     />
-                  </div>
-                </div>
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>שם משפחה</label>
+                  </label>
+                  <label className="tm-field">
+                    <span className="tm-field__label">
+                      שם משפחה <span className="tm-field__required">*</span>
+                    </span>
                     <input
                       type="text"
-                      className="form-control"
+                      className="tm-field__input"
                       value={teacherForm.LastName}
                       onChange={(e) => setTeacherForm({ ...teacherForm, LastName: e.target.value })}
+                      placeholder="לדוגמה: כהן"
                     />
-                  </div>
+                  </label>
+                  <label className="tm-field">
+                    <span className="tm-field__label">ת"ז</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className="tm-field__input"
+                      value={teacherForm.Tz}
+                      onChange={(e) => setTeacherForm({ ...teacherForm, Tz: e.target.value })}
+                      placeholder="9 ספרות"
+                    />
+                  </label>
+                  <label className="tm-field">
+                    <span className="tm-field__label">אימייל</span>
+                    <input
+                      type="email"
+                      className="tm-field__input"
+                      value={teacherForm.Email}
+                      onChange={(e) => setTeacherForm({ ...teacherForm, Email: e.target.value })}
+                      placeholder="name@example.com"
+                      dir="ltr"
+                    />
+                  </label>
                 </div>
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>תפקיד</label>
+              </section>
+
+              <section className="tm-section">
+                <h3 className="tm-section__title">
+                  <i className="fa fa-briefcase tm-section__icon" />
+                  תפקיד ומקצוע
+                </h3>
+                <div className="tm-grid tm-grid--2">
+                  <label className="tm-field">
+                    <span className="tm-field__label">
+                      תפקיד <span className="tm-field__required">*</span>
+                    </span>
                     <select
-                      className="form-control"
+                      className="tm-field__input"
                       value={teacherForm.Tafkid}
                       onChange={(e) => {
                         const newTafkid = e.target.value;
@@ -2775,70 +2984,11 @@ export default function TeacherClass() {
                         </option>
                       ))}
                     </select>
-                  </div>
-                </div>
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>אימייל</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={teacherForm.Email}
-                      onChange={(e) => setTeacherForm({ ...teacherForm, Email: e.target.value })}
-                    />
-                  </div>
-                </div>
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>יום חופשי</label>
+                  </label>
+                  <label className="tm-field">
+                    <span className="tm-field__label">מקצוע ברירת מחדל</span>
                     <select
-                      className="form-control"
-                      value={teacherForm.FreeDay}
-                      onChange={(e) => setTeacherForm({ ...teacherForm, FreeDay: e.target.value })}
-                    >
-                      <option value="0">--בחר יום חופשי --</option>
-                      <option value="1">יום ראשון</option>
-                      <option value="2">יום שני</option>
-                      <option value="3">יום שלישי</option>
-                      <option value="4">יום רביעי</option>
-                      <option value="5">יום חמישי</option>
-                      <option value="6">יום שישי</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="col-md-4">
-                  <label>שעות פרונטלי</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={teacherForm.Frontaly}
-                    onChange={(e) => setTeacherForm({ ...teacherForm, Frontaly: e.target.value })}
-                  />
-                </div>
-                <div className="col-md-4">
-                  <label>שעות שהייה </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={teacherForm.Shehya}
-                    onChange={(e) => setTeacherForm({ ...teacherForm, Shehya: e.target.value })}
-                  />
-                </div>
-                <div className="col-md-4">
-                  <label>שעות פרטני</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={teacherForm.Partani}
-                    onChange={(e) => setTeacherForm({ ...teacherForm, Partani: e.target.value })}
-                  />
-                </div>
-                <div>&nbsp;</div>
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>מקצוע (ברירת מחדל)</label>
-                    <select
-                      className="form-control"
+                      className="tm-field__input"
                       value={teacherForm.ProfessionalId}
                       onChange={(e) => setTeacherForm({ ...teacherForm, ProfessionalId: e.target.value })}
                     >
@@ -2849,29 +2999,114 @@ export default function TeacherClass() {
                         </option>
                       ))}
                     </select>
-                  </div>
+                  </label>
                 </div>
-                <div className="col-md-12" style={{ textAlign: 'left' }}>
-                  <br />
-                  <button
-                    type="button"
-                    className="btn btn-info btn-round"
-                    onClick={() => saveTeacher(teacherModalType)}
-                  >
-                    <i className="glyphicon glyphicon-edit"></i>&nbsp; <span>עדכן פרטי מורה</span>
-                  </button>
-                  <button type="button" className="btn btn-danger btn-round" onClick={deleteTeacher}>
-                    <i className="glyphicon glyphicon-edit"></i>&nbsp; <span>מחק מורה</span>
-                  </button>
+              </section>
+
+              <section className="tm-section">
+                <h3 className="tm-section__title">
+                  <i className="fa fa-clock-o tm-section__icon" />
+                  שעות הוראה
+                </h3>
+                <div className="tm-grid tm-grid--3">
+                  <label className="tm-field">
+                    <span className="tm-field__label">
+                      פרונטלי <span className="tm-field__required">*</span>
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="tm-field__input tm-field__input--num"
+                      value={teacherForm.Frontaly}
+                      onChange={(e) => setTeacherForm({ ...teacherForm, Frontaly: e.target.value })}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="tm-field">
+                    <span className="tm-field__label">שהייה</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="tm-field__input tm-field__input--num"
+                      value={teacherForm.Shehya}
+                      onChange={(e) => setTeacherForm({ ...teacherForm, Shehya: e.target.value })}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="tm-field">
+                    <span className="tm-field__label">פרטני</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="tm-field__input tm-field__input--num"
+                      value={teacherForm.Partani}
+                      onChange={(e) => setTeacherForm({ ...teacherForm, Partani: e.target.value })}
+                      placeholder="0"
+                    />
+                  </label>
                 </div>
-                <div className="clear">&nbsp;</div>
-              </div>
-              <div className="modal-footer">
-                <button type="button" className="btn btn-info btn-xs" onClick={() => setShowTeacherModal(false)}>
-                  סגור
+              </section>
+
+              <section className="tm-section">
+                <h3 className="tm-section__title">
+                  <i className="fa fa-calendar-o tm-section__icon" />
+                  העדפות
+                </h3>
+                <div className="tm-grid tm-grid--2">
+                  <label className="tm-field">
+                    <span className="tm-field__label">יום חופשי</span>
+                    <select
+                      className="tm-field__input"
+                      value={teacherForm.FreeDay}
+                      onChange={(e) => setTeacherForm({ ...teacherForm, FreeDay: e.target.value })}
+                    >
+                      <option value="0">-- ללא --</option>
+                      <option value="1">יום ראשון</option>
+                      <option value="2">יום שני</option>
+                      <option value="3">יום שלישי</option>
+                      <option value="4">יום רביעי</option>
+                      <option value="5">יום חמישי</option>
+                      <option value="6">יום שישי</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+            </div>
+
+            <footer className="tm-modal__footer">
+              {/* Primary cluster first in DOM so it lands on the inline-start
+                  (visual right in RTL) — matches Hebrew dialog conventions
+                  where the affirmative action sits on the right. */}
+              <div className="tm-modal__footer-primary">
+                <button
+                  type="button"
+                  className="tm-btn tm-btn--primary"
+                  onClick={() => saveTeacher(teacherModalType)}
+                >
+                  <i className={`fa ${teacherModalType === 2 ? 'fa-user-plus' : 'fa-check'}`} />
+                  {teacherModalType === 2 ? 'צור מורה' : 'שמור שינויים'}
+                </button>
+                <button
+                  type="button"
+                  className="tm-btn tm-btn--ghost"
+                  onClick={() => setShowTeacherModal(false)}
+                >
+                  ביטול
                 </button>
               </div>
-            </div>
+              <div className="tm-modal__footer-secondary">
+                {teacherModalType === 1 && (
+                  <button
+                    type="button"
+                    className="tm-btn tm-btn--ghost-danger"
+                    onClick={deleteTeacher}
+                  >
+                    <i className="fa fa-trash" />
+                    מחיקת מורה
+                  </button>
+                )}
+              </div>
+            </footer>
           </div>
         </div>
       )}

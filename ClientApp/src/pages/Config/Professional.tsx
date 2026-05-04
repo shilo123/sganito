@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useToast } from '../../lib/toast';
 import PageLoader from '../../lib/PageLoader';
@@ -16,10 +16,11 @@ export default function Professional() {
   const [rows, setRows] = useState<ProfessionalRow[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [modalMode, setModalMode] = useState<'new' | 'edit'>('new');
   const [selectedId, setSelectedId] = useState<number | ''>('');
   const [name, setName] = useState('');
   const [isTwo, setIsTwo] = useState(false);
-  const [modalTitle, setModalTitle] = useState('');
+  const [search, setSearch] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<{ id: number; name: string } | null>(null);
 
   const fillData = useCallback(async () => {
@@ -43,23 +44,29 @@ export default function Professional() {
     fillData();
   }, [fillData]);
 
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => String(r.Name ?? '').toLowerCase().includes(q));
+  }, [rows, search]);
+
   function openEdit(row?: ProfessionalRow) {
     if (row) {
+      setModalMode('edit');
       setSelectedId(row.ProfessionalId);
       setName(row.Name);
       setIsTwo(row.IsTwo === 'כן');
-      setModalTitle(row.Name);
     } else {
+      setModalMode('new');
       setSelectedId('');
       setName('');
       setIsTwo(false);
-      setModalTitle('מקצוע חדש');
     }
     setShowModal(true);
   }
 
   async function saveData() {
-    if (!name) {
+    if (!name.trim()) {
       toast.warning('שם המקצוע הוא שדה חובה', { title: 'חסר שדה' });
       return;
     }
@@ -67,7 +74,7 @@ export default function Professional() {
       await ajax('Professional_DML', {
         Type: 1, // insert/update
         ProfessionalId: selectedId === '' ? '' : selectedId,
-        Name: name,
+        Name: name.trim(),
         isTwoHour: isTwo ? 1 : 0,
       });
       setShowModal(false);
@@ -102,121 +109,219 @@ export default function Professional() {
   return (
     <div className="pro-page">
       {initialLoading && <PageLoader title="טוען מקצועות" subtitle="מאחזר את רשימת המקצועות..." />}
-      <div className="col-md-12">
-        <div className="row">
-          <div className="panel panel-info" style={{ margin: 2 }}>
-            <div className="panel-heading">
-              <h3 className="panel-title">
-                <i className="glyphicon glyphicon-th-list"></i>רשימת מקצועות
-              </h3>
-            </div>
-            <div className="panel-body" style={{ padding: 0 }}>
-              <br />
-              <div>
-                <div className="col-md-3 dvRequireTitle">תאור מקצוע</div>
-                <div className="col-md-2 dvRequireTitle">האם שעתיים ברצף</div>
-                <div className="col-md-7 dvRequireTitle">&nbsp;</div>
-                <div className="clear" style={{ height: 450, overflow: 'auto' }}>
-                  {rows.map((row) => (
-                    <div key={row.ProfessionalId}>
-                      <div className="col-md-3 dvRequireDetails" style={{ height: 40 }}>
-                        {row.Name}
-                      </div>
-                      <div className="col-md-2 dvRequireDetails" style={{ height: 40 }}>
-                        {row.IsTwo}
-                      </div>
-                      <div className="col-md-7 dvRequireDetails" style={{ height: 40 }}>
-                        <div className="btn btn-primary" onClick={() => openEdit(row)}>
-                          ערוך
-                        </div>
-                        <div
-                          className="btn btn-danger"
-                          onClick={() => requestDelete(row.ProfessionalId, row.Name)}
-                          style={{ marginRight: 4 }}
-                        >
-                          מחק
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+
+      <div className="pro-card">
+        <header className="pro-card__header">
+          <div className="pro-card__title-cluster">
+            <span className="pro-card__title-icon" aria-hidden="true">
+              <i className="fa fa-book" />
+            </span>
+            <h2 className="pro-card__title">רשימת מקצועות</h2>
+            <span className="pro-card__count" aria-label={`${filteredRows.length} מקצועות`}>
+              {filteredRows.length}
+            </span>
+          </div>
+          <div className="pro-card__actions">
+            <label
+              className={`pro-search${search ? ' is-filled' : ''}`}
+              aria-label="חיפוש מקצוע"
+            >
+              <i className="fa fa-search pro-search__icon" aria-hidden="true" />
+              <input
+                type="search"
+                className="pro-search__input"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="חיפוש מקצוע..."
+              />
+              {search && (
+                <button
+                  type="button"
+                  className="pro-search__clear"
+                  aria-label="נקה חיפוש"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setSearch('')}
+                >
+                  <i className="fa fa-times" />
+                </button>
+              )}
+            </label>
+            <button
+              type="button"
+              className="pro-card__add"
+              onClick={() => openEdit()}
+              title="הוספת מקצוע חדש"
+            >
+              <i className="fa fa-plus" />
+              <span>מקצוע חדש</span>
+            </button>
+          </div>
+        </header>
+
+        <div className="pro-table" role="table" aria-label="מקצועות">
+          <div className="pro-table__head" role="row">
+            <div role="columnheader">שם המקצוע</div>
+            <div role="columnheader">שעתיים ברצף</div>
+            <div role="columnheader" aria-label="פעולות" />
+          </div>
+
+          <div className="pro-table__body">
+            {filteredRows.length === 0 && !initialLoading && (
+              <div className="pro-empty">
+                <i className="fa fa-inbox pro-empty__icon" />
+                <div className="pro-empty__title">
+                  {search ? 'לא נמצאו מקצועות' : 'אין מקצועות עדיין'}
+                </div>
+                <div className="pro-empty__hint">
+                  {search ? 'נסה חיפוש אחר' : 'לחץ על "מקצוע חדש" כדי להוסיף את הראשון'}
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-      </div>
+            )}
 
-      <div className="col-md-12">
-        <div className="row" style={{ padding: 4 }}>
-          <div className="btn btn-primary" onClick={() => openEdit()}>
-            <i className="fa fa-plus-circle"></i>&nbsp;הוסף מקצוע חדש
+            {filteredRows.map((row) => {
+              const isYes = row.IsTwo === 'כן';
+              return (
+                <div
+                  key={row.ProfessionalId}
+                  className="pro-row"
+                  role="row"
+                  onDoubleClick={() => openEdit(row)}
+                >
+                  <div className="pro-row__name" role="cell">{row.Name}</div>
+                  <div className="pro-row__badge" role="cell">
+                    {isYes ? (
+                      <span className="pro-badge pro-badge--yes">
+                        <i className="fa fa-check" /> כן
+                      </span>
+                    ) : (
+                      <span className="pro-badge pro-badge--no">לא</span>
+                    )}
+                  </div>
+                  <div className="pro-row__actions" role="cell">
+                    <button
+                      type="button"
+                      className="pro-icon-btn pro-icon-btn--edit"
+                      onClick={() => openEdit(row)}
+                      title="עריכה"
+                      aria-label={`עריכת ${row.Name}`}
+                    >
+                      <i className="fa fa-pencil" />
+                    </button>
+                    <button
+                      type="button"
+                      className="pro-icon-btn pro-icon-btn--delete"
+                      onClick={() => requestDelete(row.ProfessionalId, row.Name)}
+                      title="מחיקה"
+                      aria-label={`מחיקת ${row.Name}`}
+                    >
+                      <i className="fa fa-trash" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
 
       {showModal && (
         <div
-          className="modal fade in"
+          className="tm-modal"
           role="dialog"
-          style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)' }}
-          onClick={(e) => {
+          aria-modal="true"
+          aria-labelledby="pro-modal-title"
+          onMouseDown={(e) => {
             if (e.target === e.currentTarget) setShowModal(false);
           }}
         >
-          <div className="modal-dialog">
-            <div className="modal-content">
-              <div className="modal-header label-info">
-                <button
-                  type="button"
-                  className="close"
-                  aria-hidden="true"
-                  onClick={() => setShowModal(false)}
-                >
-                  &times;
-                </button>
-                <h4 className="modal-title">
-                  <span>{modalTitle}</span>
-                </h4>
+          <div className="tm-modal__card" style={{ maxWidth: 480 }}>
+            <header className="tm-modal__header">
+              <div className="tm-modal__header-side">
+                <span className="tm-modal__avatar" aria-hidden="true">
+                  <i className={`fa ${modalMode === 'new' ? 'fa-plus' : 'fa-pencil'}`} />
+                </span>
+                <div>
+                  <h2 id="pro-modal-title" className="tm-modal__title">
+                    {modalMode === 'new' ? 'מקצוע חדש' : 'עריכת מקצוע'}
+                  </h2>
+                  {modalMode === 'edit' && name && (
+                    <div className="tm-modal__subtitle">{name}</div>
+                  )}
+                </div>
               </div>
-              <div className="modal-body">
-                <div className="col-md-3">
-                  <span className="help-block m-b-none">שם מקצוע:</span>
+              <button
+                type="button"
+                className="tm-modal__close"
+                onClick={() => setShowModal(false)}
+                aria-label="סגור"
+              >
+                <i className="fa fa-times" />
+              </button>
+            </header>
+
+            <div className="tm-modal__body">
+              <section className="tm-section">
+                <div className="tm-grid tm-grid--2" style={{ gridTemplateColumns: '1fr' }}>
+                  <label className="tm-field">
+                    <span className="tm-field__label">
+                      שם המקצוע <span className="tm-field__required">*</span>
+                    </span>
+                    <input
+                      type="text"
+                      className="tm-field__input"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="לדוגמה: מתמטיקה"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveData();
+                      }}
+                    />
+                  </label>
                 </div>
-                <div className="col-md-9">
-                  <input
-                    type="text"
-                    className="form-control text-input"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                  />
-                </div>
-                <div className="clear">&nbsp;</div>
-                <div className="col-md-3">
-                  <span className="help-block m-b-none">האם שעתיים ברצף:</span>
-                </div>
-                <div className="col-md-1">
+              </section>
+
+              <section className="tm-section">
+                <label className="pro-toggle">
                   <input
                     type="checkbox"
-                    className="form-control text-input"
-                    style={{ float: 'right' }}
                     checked={isTwo}
                     onChange={(e) => setIsTwo(e.target.checked)}
+                    className="pro-toggle__input"
                   />
-                </div>
-                <div className="clear">&nbsp;</div>
-                <div className="col-md-12" style={{ textAlign: 'left' }}>
-                  <div className="btn btn-info btn-round" onClick={saveData}>
-                    <i className="glyphicon glyphicon-edit"></i>&nbsp; <span>שמור</span>
-                  </div>
-                </div>
-                <div className="clear">&nbsp;</div>
-              </div>
-              <div className="modal-footer">
-                <button type="button" className="btn btn-info btn-xs" onClick={() => setShowModal(false)}>
-                  סגור
+                  <span className="pro-toggle__track">
+                    <span className="pro-toggle__thumb" />
+                  </span>
+                  <span className="pro-toggle__label">
+                    <span className="pro-toggle__title">שעתיים ברצף</span>
+                    <span className="pro-toggle__hint">
+                      המקצוע מועבר תמיד בשתי שעות צמודות
+                    </span>
+                  </span>
+                </label>
+              </section>
+            </div>
+
+            <footer className="tm-modal__footer">
+              <div className="tm-modal__footer-primary">
+                <button
+                  type="button"
+                  className="tm-btn tm-btn--primary"
+                  onClick={saveData}
+                >
+                  <i className={`fa ${modalMode === 'new' ? 'fa-plus' : 'fa-check'}`} />
+                  {modalMode === 'new' ? 'צור מקצוע' : 'שמור שינויים'}
+                </button>
+                <button
+                  type="button"
+                  className="tm-btn tm-btn--ghost"
+                  onClick={() => setShowModal(false)}
+                >
+                  ביטול
                 </button>
               </div>
-            </div>
+              <div className="tm-modal__footer-secondary" />
+            </footer>
           </div>
         </div>
       )}
