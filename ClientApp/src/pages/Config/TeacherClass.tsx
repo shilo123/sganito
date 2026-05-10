@@ -3,6 +3,7 @@ import { ajax } from '../../api/client';
 import { useToast } from '../../lib/toast';
 import ExportButtons from '../../lib/ExportButtons';
 import { buildExportHandlers } from '../../lib/export';
+import ExcelImportModal, { type ExcelColumnSpec, type ParseRowResult } from '../../lib/ExcelImportModal';
 
 // ---------- types returned by backend SPs ----------
 interface TafkidRow {
@@ -26,6 +27,7 @@ interface TeacherRow {
   Shehya: string;
   Partani: string;
   ProfessionalId: number | null;
+  TotalRequired?: number;
 }
 interface ClassRow {
   ClassId: number;
@@ -90,6 +92,7 @@ export default function TeacherClass() {
   const [professionalOpts, setProfessionalOpts] = useState<ProfessionalOption[]>([]);
   const [teachers, setTeachers] = useState<TeacherRow[]>([]);
   const [classes, setClasses] = useState<ClassRow[]>([]);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   // Sidebar quick-filter — narrows the teacher panel without removing groups
   const [teacherSearch, setTeacherSearch] = useState('');
@@ -172,11 +175,12 @@ export default function TeacherClass() {
     teacherId: number;
     classId?: number | null;
     hakbatza?: string | null;
-    ihud?: string | null;
     classTeacherId?: number | null;
   } | null>(null);
+  // איזו כיתה מקבלת hover במהלך גרירה — מציג placeholder ויזואלי בתוך הכיתה
+  const [dragHoverClassId, setDragHoverClassId] = useState<number | null>(null);
 
-  // ---------- group (hakbatza / ihud) edit modal ----------
+  // ---------- group (hakbatza) edit modal ----------
   const [groupModal, setGroupModal] = useState<{
     classId: number;
     className: string;
@@ -184,9 +188,8 @@ export default function TeacherClass() {
     memberClassTeacherIds: number[];
     teacherNames: string; // for display
     currentHakbatza: number;
-    currentIhud: number;
   } | null>(null);
-  const [groupKind, setGroupKind] = useState<'none' | 'hakbatza' | 'ihud'>('none');
+  const [groupKind, setGroupKind] = useState<'none' | 'hakbatza'>('none');
   const [groupNumber, setGroupNumber] = useState<string>('');
   const [groupBusy, setGroupBusy] = useState(false);
 
@@ -199,15 +202,6 @@ export default function TeacherClass() {
   // ProfessionalId חובה לכל הקבצה — קובע את המקצוע שמלמדים בה.
   const [wizardProfessional, setWizardProfessional] = useState<string>('');
   const [wizardBusy, setWizardBusy] = useState(false);
-
-  // Ihud wizard: similar to Hakbatza wizard but also requires picking
-  // a single responsible teacher. The Ihud is materialised with the
-  // teacher already attached.
-  const [ihudWizardOpen, setIhudWizardOpen] = useState(false);
-  const [ihudWizardClasses, setIhudWizardClasses] = useState<Set<number>>(new Set());
-  const [ihudWizardTeacher, setIhudWizardTeacher] = useState<number | null>(null);
-  const [ihudWizardName, setIhudWizardName] = useState<string>('');
-  const [ihudWizardBusy, setIhudWizardBusy] = useState(false);
 
   function openWizard() {
     setWizardOpen(true);
@@ -228,26 +222,7 @@ export default function TeacherClass() {
     });
   }
 
-  function openIhudWizard() {
-    setIhudWizardOpen(true);
-    setIhudWizardClasses(new Set());
-    setIhudWizardTeacher(null);
-    setIhudWizardName('');
-  }
-  function closeIhudWizard() {
-    if (ihudWizardBusy) return;
-    setIhudWizardOpen(false);
-  }
-  function toggleIhudWizardClass(classId: number) {
-    setIhudWizardClasses((prev) => {
-      const next = new Set(prev);
-      if (next.has(classId)) next.delete(classId);
-      else next.add(classId);
-      return next;
-    });
-  }
-
-  async function setGroupName(kind: 'H' | 'I', layerIdArg: number, number: number, name: string) {
+  async function setGroupName(kind: 'H', layerIdArg: number, number: number, name: string) {
     try {
       await ajax('Group_SetName', {
         LayerId: String(layerIdArg),
@@ -256,47 +231,9 @@ export default function TeacherClass() {
         Name: name,
       });
       if (kind === 'H') loadHakbatzaList();
-      else loadIhudList();
     } catch (err) {
       console.error('Group_SetName failed', err);
       toast.error('שמירת שם נכשלה');
-    }
-  }
-
-  async function saveIhudWizard() {
-    if (!ihudWizardOpen || ihudWizardBusy) return;
-    const selected = Array.from(ihudWizardClasses);
-    if (selected.length < 2) {
-      toast.warning('צריך לבחור לפחות 2 כיתות לאיחוד');
-      return;
-    }
-    if (!ihudWizardTeacher) {
-      toast.warning('צריך לבחור מורה אחראי');
-      return;
-    }
-
-    setIhudWizardBusy(true);
-    try {
-      const res = await ajax<{ Number?: number; Error?: string }>('Ihud_Create', {
-        LayerId: String(layerId),
-        ClassIds: selected.join(','),
-        TeacherId: String(ihudWizardTeacher),
-        Name: ihudWizardName.trim(),
-      });
-      if (res?.Error) {
-        toast.error('יצירת האיחוד נכשלה: ' + res.Error);
-        return;
-      }
-      const n = Number(res?.Number ?? 0);
-      toast.success(`איחוד ${n} נוצר עם ${selected.length} כיתות.`);
-      setIhudWizardOpen(false);
-      loadIhudList();
-      loadClasses(layerId);
-    } catch (err) {
-      console.error('Ihud_Create failed', err);
-      toast.error('יצירת האיחוד נכשלה');
-    } finally {
-      setIhudWizardBusy(false);
     }
   }
 
@@ -350,37 +287,63 @@ export default function TeacherClass() {
     ProfessionalId?: number;
     ProfessionalName?: string;
   }
-  interface IhudRow {
-    ClassTeacherId: number;
-    Ihud: number;
-    ClassId: number;
-    ClassName: string;
-    LayerId: number;
-    TeacherId: number;
-    TeacherName: string;
-    Hour: number;
-    Name?: string;
-  }
   const [hakbatzaRows, setHakbatzaRows] = useState<HakbatzaRow[]>([]);
-  const [ihudRows, setIhudRows] = useState<IhudRow[]>([]);
+  // Ihud — לוגיקה הוסרה. השארנו stubs כדי לא להשבית את ה-render הקיים. בכל מקום
+  // שמשתמש בהם — הוא לא יציג כלום ולא יבצע פעולה.
+  const ihudRows: Array<{
+    ClassTeacherId: number; Ihud: number; ClassId: number; ClassName: string;
+    LayerId: number; TeacherId: number; TeacherName: string; Hour: number; Name?: string;
+  }> = [];
+  const ihudWizardOpen = false;
+  const ihudWizardClasses = new Set<number>();
+  const ihudWizardTeacher: number | null = null;
+  const ihudWizardName = '';
+  const ihudWizardBusy = false;
+  const setIhudWizardClasses = (_v: Set<number>) => { void _v; };
+  const setIhudWizardTeacher = (_v: number | null) => { void _v; };
+  const setIhudWizardName = (_v: string) => { void _v; };
+  const closeIhudWizard = () => {};
+  const toggleIhudWizardClass = (_id: number) => { void _id; };
+  const saveIhudWizard = () => {};
+  const setIhudTeacher = (_l: number, _n: number, _t: number) => { void _l; void _n; void _t; };
+  const setIhudHour = (_l: number, _n: number, _h: number) => { void _l; void _n; void _h; };
+  const deleteIhud = (_l: number, _n: number) => { void _l; void _n; };
   const [maxHours, setMaxHours] = useState<number>(0);
   // סטטוס שיבוץ לכל שכבה: כמה כיתות בכל שכבה ומהן כמה מלאות (Hour == Capacity).
   interface LayerStatus { LayerId: number; ClassCount: number; FullyBookedCount: number; Capacity: number }
   const [layerStatus, setLayerStatus] = useState<LayerStatus[]>([]);
+
+  // PreCheck issues — מציג בbanner את אותן בעיות שמופיעות בטאב השיבוץ האוטומטי,
+  // כך שגם בעמוד "הגדרות כיתות ומורים" המשתמש רואה מה לא הגיוני בדטא.
+  interface PreCheckIssue { Kind: string; Id1: number; Id2: number; Label: string; Detail: string }
+  const [preCheckIssues, setPreCheckIssues] = useState<PreCheckIssue[]>([]);
+  const [showPreCheckDetails, setShowPreCheckDetails] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [primary, freeDay] = await Promise.all([
+          ajax<PreCheckIssue[]>('Assign_PreCheck').catch(() => [] as PreCheckIssue[]),
+          ajax<PreCheckIssue[]>('Assign_FreeDayPreCheck').catch(() => [] as PreCheckIssue[]),
+        ]);
+        if (cancelled) return;
+        const merged: PreCheckIssue[] = [
+          ...(Array.isArray(primary) ? primary : []),
+          ...(Array.isArray(freeDay) ? freeDay : []),
+        ];
+        setPreCheckIssues(merged);
+      } catch (err) {
+        console.error('PreCheck failed', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [layerStatus]);
   const loadHakbatzaList = useCallback(async () => {
     try {
       const data = await ajax<HakbatzaRow[]>('Hakbatza_GetAll');
       setHakbatzaRows(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('Hakbatza_GetAll failed', err);
-    }
-  }, []);
-  const loadIhudList = useCallback(async () => {
-    try {
-      const data = await ajax<IhudRow[]>('Ihud_GetAll');
-      setIhudRows(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error('Ihud_GetAll failed', err);
     }
   }, []);
   const loadLayerStatus = useCallback(async () => {
@@ -401,10 +364,9 @@ export default function TeacherClass() {
   }, []);
   useEffect(() => {
     loadHakbatzaList();
-    loadIhudList();
     loadMaxHours();
     loadLayerStatus();
-  }, [loadHakbatzaList, loadIhudList, loadMaxHours, loadLayerStatus]);
+  }, [loadHakbatzaList, loadMaxHours, loadLayerStatus]);
   // רענון סטטוס שכבה אחרי שינוי כיתות (הוספת שעה, הקבצה וכו')
   useEffect(() => {
     loadLayerStatus();
@@ -413,7 +375,6 @@ export default function TeacherClass() {
   // Tracks which (layer, number) pair is the active drop target so we can
   // highlight it during a drag.
   const [dragHoverHak, setDragHoverHak] = useState<string | null>(null);
-  const [dragHoverIhud, setDragHoverIhud] = useState<string | null>(null);
 
   async function addTeacherToHakbatza(layerIdArg: number, number: number, teacherId: number) {
     try {
@@ -481,55 +442,6 @@ export default function TeacherClass() {
     }
   }
 
-  async function setIhudTeacher(layerIdArg: number, number: number, teacherId: number) {
-    try {
-      const res = await ajax<{ res?: number; Error?: string }>('Ihud_SetTeacher', {
-        LayerId: String(layerIdArg),
-        Number: String(number),
-        TeacherId: String(teacherId),
-      });
-      if (res?.Error) {
-        toast.error('עדכון מורה נכשל: ' + res.Error);
-        return;
-      }
-      toast.success('המורה האחראי עודכן');
-      loadIhudList();
-      loadClasses(layerId);
-    } catch (err) {
-      console.error('Ihud_SetTeacher failed', err);
-      toast.error('עדכון מורה אחראי נכשל');
-    }
-  }
-
-  async function setIhudHour(layerIdArg: number, number: number, hour: number) {
-    try {
-      await ajax('Ihud_SetHour', {
-        LayerId: String(layerIdArg),
-        Number: String(number),
-        Hour: String(hour),
-      });
-      loadIhudList();
-      loadClasses(layerId);
-    } catch (err) {
-      console.error('Ihud_SetHour failed', err);
-      toast.error('עדכון שעות איחוד נכשל');
-    }
-  }
-
-  async function deleteIhud(layerIdArg: number, number: number) {
-    try {
-      await ajax('Ihud_Delete', {
-        LayerId: String(layerIdArg),
-        Number: String(number),
-      });
-      toast.success(`איחוד ${number} נמחק`);
-      loadIhudList();
-      loadClasses(layerId);
-    } catch (err) {
-      console.error('Ihud_Delete failed', err);
-      toast.error('מחיקת האיחוד נכשלה');
-    }
-  }
   // Validation issues per group (pulled from Class_ValidateGroups). Key =
   // "H_<classId>_<number>" for hakbatza, "I_<number>" for ihud.
   interface GroupValidation {
@@ -595,6 +507,16 @@ export default function TeacherClass() {
     } catch (err) {
       console.error('Class_GetClassByLayerId failed', err);
       setClasses([]);
+    }
+    // Any operation that reloads `classes` also changed ClassTeacher rows,
+    // so the per-teacher TotalRequired count needs to refresh too.
+    // Without this, the side panel "(N)" pill goes stale after Hakbatza
+    // edits, drag-drops, or hour changes.
+    try {
+      const tdata = await ajax<TeacherRow[]>('Teacher_GetTeacherList', { TeacherId: -99 });
+      setTeachers(Array.isArray(tdata) ? tdata : []);
+    } catch (err) {
+      console.error('Teacher_GetTeacherList (refresh) failed', err);
     }
   }, []);
 
@@ -811,14 +733,13 @@ export default function TeacherClass() {
 
   function onDragStartTeacherInClass(
     e: React.DragEvent,
-    row: { TeacherId: number; ClassId: number; Hakbatza: string | null; Ihud: string | null; ClassTeacherId: number | null }
+    row: { TeacherId: number; ClassId: number; Hakbatza: string | null; ClassTeacherId: number | null }
   ) {
     dragInfo.current = {
       sourceType: 'teacherInClass',
       teacherId: row.TeacherId,
       classId: row.ClassId,
       hakbatza: row.Hakbatza,
-      ihud: row.Ihud,
       classTeacherId: row.ClassTeacherId,
     };
     e.dataTransfer.effectAllowed = 'copyMove';
@@ -831,94 +752,73 @@ export default function TeacherClass() {
     e.stopPropagation();
   }
 
-  // Drop on a class panel (target = class)
-  async function onDropOnClass(
-    e: React.DragEvent,
-    targetClassId: number,
-    targetHakbatza: string = '',
-    targetIhud: string = '',
-    targetClassTeacherId: number | string = ''
-  ) {
+  // Drop on a class panel (target = class). מדיניות: רק להוסיף את המורה לכיתה.
+  // אין הגדלת שעות אוטומטית, אין יצירת איחוד, אין העברה מכיתה אחרת — פשוט insert
+  // של רישום ClassTeacher רגיל עם Hour=1 כברירת מחדל. ניתן לשנות שעות ידנית בכרטיס.
+  async function onDropOnClass(e: React.DragEvent, targetClassId: number) {
     e.preventDefault();
     e.stopPropagation();
+    setDragHoverClassId(null);
     const info = dragInfo.current;
     if (!info) return;
     dragInfo.current = null;
 
-    let type: 1 | 2 | 3 = 1; // 1 insert from empty, 3 to hakbatza, 2 ihud
-    let sourceTeacherId = info.teacherId;
-    let effectiveTargetHakbatza = targetHakbatza;
-    const effectiveSourceHakbatza = info.hakbatza ?? '';
-    const effectiveSourceIhud = info.ihud ?? '';
-    const effectiveSourceClassTeacherId = info.classTeacherId ?? '';
+    const sourceTeacherId = info.teacherId;
 
-    // hakbatza target (drop into an existing dv_CLASSID_TEACHERID slot)
-    if (targetClassTeacherId && String(targetClassTeacherId) !== '') {
-      if (String(sourceTeacherId) === String(targetClassTeacherId)) return;
-      type = 3;
+    // אם המורה כבר רשום ככיתה רגילה (לא בהקבצה) באותה כיתה — לא לעשות שום דבר.
+    const exists = classes.find((r) =>
+      Number(r.ClassId) === Number(targetClassId)
+      && Number(r.TeacherId ?? 0) === Number(sourceTeacherId)
+      && Number(r.Hakbatza ?? 0) === 0
+    );
+    if (exists) {
+      toast.info('המורה כבר משויך/ת לכיתה');
+      return;
     }
 
-    // ihud: moving a teacher-in-class to a different class
-    if (info.sourceType === 'teacherInClass') {
-      // Source already belongs to a class; dragging to another class is an ihud (type 2)
-      if (info.classId === targetClassId && String(effectiveSourceHakbatza) === String(targetHakbatza)) {
-        return;
-      }
-      effectiveTargetHakbatza = String(info.classId ?? '');
-      type = 2;
-    }
-
-    // אם מצרפים מורה לכיתה רגילה (לא הקבצה/איחוד) שכבר נמצא בה כשורה רגילה
-    // (לא הקבצה ולא איחוד) — במקום לשגיאה, פשוט מגדילים ל-Hour ב-1.
-    // תרחיש זה מאפשר גם תמיכה במורה שכבר בהקבצה: אם הוא נגרר לאותה כיתה כשורה
-    // רגילה, ייווצר עבורו רשומה רגילה נוספת ב-ClassTeacher (לא בהקבצה).
-    if (type === 1 && info.sourceType === 'teacher') {
-      const existingRegular = classes.find((r) =>
-        Number(r.ClassId) === Number(targetClassId)
-        && Number(r.TeacherId ?? 0) === Number(sourceTeacherId)
-        && Number(r.Hakbatza ?? 0) === 0
-        && Number(r.Ihud ?? 0) === 0
-      );
-      if (existingRegular && existingRegular.ClassTeacherId != null) {
-        const newHour = Number(existingRegular.Hour ?? 0) + 1;
-        try {
+    try {
+      // Type=1: insert רישום חדש (Hour=NULL כי SP לא מקבל ערך כאן)
+      await ajax<DmlResult[]>('Class_SetTeacherToClass', {
+        ClassId: targetClassId,
+        TeacherId: sourceTeacherId,
+        Hour: '',
+        TargetHakbatza: '',
+        SourceHakbatza: '',
+        TargetIhud: '',
+        SourceIhud: '',
+        TargetClassTeacherId: '',
+        SourceClassTeacherId: '',
+        Type: 1,
+      });
+      // אחרי insert, מצא את הרישום החדש והגדר Hour=1 כברירת-מחדל. בלי זה
+      // ה-SP משאיר Hour=NULL ושורות "רוח" מטעות את ה-UI.
+      try {
+        const fresh = await ajax<ClassRow[]>('Class_GetClassByLayerId', { LayerId: layerId });
+        const list = Array.isArray(fresh) ? fresh : [];
+        const created = list.find((r) =>
+          Number(r.ClassId) === Number(targetClassId)
+          && Number(r.TeacherId ?? 0) === Number(sourceTeacherId)
+          && Number(r.Hakbatza ?? 0) === 0
+          && (r.Hour == null || Number(r.Hour) === 0)
+        );
+        if (created && created.ClassTeacherId != null) {
           await ajax<DmlResult[]>('Class_SetTeacherToClass', {
             ClassId: targetClassId,
             TeacherId: sourceTeacherId,
-            Hour: String(newHour),
+            Hour: '1',
             TargetHakbatza: '',
             SourceHakbatza: '',
             TargetIhud: '',
             SourceIhud: '',
             TargetClassTeacherId: '',
-            SourceClassTeacherId: String(existingRegular.ClassTeacherId),
+            SourceClassTeacherId: String(created.ClassTeacherId),
             Type: 4,
           });
-          toast.success(`שעה נוספה — סה"כ ${newHour} שעות בכיתה זו`);
-          loadClasses(layerId);
-        } catch (err) {
-          console.error('Class_SetTeacherToClass (hour increment) failed', err);
         }
-        return;
+      } catch (err) {
+        console.error('Class_SetTeacherToClass (post-insert hour) failed', err);
       }
-    }
-
-    try {
-      const res = await ajax<DmlResult[]>('Class_SetTeacherToClass', {
-        ClassId: targetClassId,
-        TeacherId: sourceTeacherId,
-        Hour: '',
-        TargetHakbatza: effectiveTargetHakbatza,
-        SourceHakbatza: effectiveSourceHakbatza,
-        TargetIhud: targetIhud,
-        SourceIhud: effectiveSourceIhud,
-        TargetClassTeacherId: targetClassTeacherId,
-        SourceClassTeacherId: effectiveSourceClassTeacherId,
-        Type: type,
-      });
-      if (res && res[0] && res[0].res === 0) {
-        loadClasses(layerId);
-      }
+      loadClasses(layerId);
     } catch (err) {
       console.error('Class_SetTeacherToClass failed', err);
     }
@@ -928,6 +828,7 @@ export default function TeacherClass() {
   async function onDropOnTeacherPanel(e: React.DragEvent) {
     e.preventDefault();
     e.stopPropagation();
+    setDragHoverClassId(null);
     const info = dragInfo.current;
     if (!info) return;
     dragInfo.current = null;
@@ -940,7 +841,7 @@ export default function TeacherClass() {
         TargetHakbatza: '',
         SourceHakbatza: info.hakbatza ?? '',
         TargetIhud: '',
-        SourceIhud: info.ihud ?? '',
+        SourceIhud: '',
         TargetClassTeacherId: '',
         SourceClassTeacherId: info.classTeacherId ?? '',
         Type: 5,
@@ -1126,20 +1027,48 @@ export default function TeacherClass() {
 
     const newHour = Number(hour) || 0;
 
-    // 1) Check class-level overflow (sum of hours for this class > maxHours)
+    // 1) Check class-level overflow against the SAME counting logic the UI
+    //    uses for "סה״כ פרונטלי" (computeRealHours): solo rows sum normally,
+    //    each Hakbatza/Ihud contributes MAX(Hour) once. A naive SUM here
+    //    would falsely flag "overflow" when 2-3 parallel teachers share a
+    //    single timeslot — they take ONE board cell, not N.
     if (maxHours > 0) {
-      let projected = 0;
+      const hakMax = new Map<number, number>();
+      const ihudMax = new Map<number, number>();
+      let solo = 0;
       let foundOldRow = false;
       for (const r of classes) {
         if (r.ClassId !== classId) continue;
-        if (r.ClassTeacherId != null && classTeacherId != null && Number(r.ClassTeacherId) === Number(classTeacherId)) {
-          projected += newHour;
-          foundOldRow = true;
+        const rHak = Number(r.Hakbatza ?? 0);
+        const rIhud = Number(r.Ihud ?? 0);
+        const isOldRow = r.ClassTeacherId != null && classTeacherId != null
+          && Number(r.ClassTeacherId) === Number(classTeacherId);
+        const effectiveHour = isOldRow ? newHour : Number(r.Hour ?? 0);
+        if (isOldRow) foundOldRow = true;
+        if (rHak > 0) {
+          if (effectiveHour > (hakMax.get(rHak) ?? 0)) hakMax.set(rHak, effectiveHour);
+        } else if (rIhud > 0) {
+          if (effectiveHour > (ihudMax.get(rIhud) ?? 0)) ihudMax.set(rIhud, effectiveHour);
         } else {
-          projected += Number(r.Hour ?? 0);
+          solo += effectiveHour;
         }
       }
-      if (!foundOldRow) projected += newHour;
+      // If we're inserting a brand-new row (no existing CT id), add it now —
+      // single-teacher inserts arrive with hak/ihud='', so it's solo.
+      if (!foundOldRow) {
+        const newHak = Number(hakbatza ?? 0);
+        const newIhud = Number(ihud ?? 0);
+        if (newHak > 0) {
+          if (newHour > (hakMax.get(newHak) ?? 0)) hakMax.set(newHak, newHour);
+        } else if (newIhud > 0) {
+          if (newHour > (ihudMax.get(newIhud) ?? 0)) ihudMax.set(newIhud, newHour);
+        } else {
+          solo += newHour;
+        }
+      }
+      let projected = solo;
+      for (const v of hakMax.values()) projected += v;
+      for (const v of ihudMax.values()) projected += v;
       if (projected > maxHours) {
         setConfirmHourOverflow({
           projected,
@@ -1235,10 +1164,15 @@ export default function TeacherClass() {
   // counts N times) and over-counts ihudim (same lesson but split per class
   // row). Hakbatza/Ihud are scheduled in a single time slot so they should
   // contribute their hour value exactly once per class.
+  //
+  // For groups: take MAX(Hour) across all rows of the group (not the first
+  // row's value) — partner rows added through drag-drop sometimes lag
+  // behind on Hour, and picking the first row would silently drop the
+  // group from the total.
   function computeRealHours(classId: number): number {
     let total = 0;
-    const seenHak = new Set<string>();
-    const seenIhud = new Set<string>();
+    const hakMax = new Map<string, number>();
+    const ihudMax = new Map<string, number>();
     for (const r of classes) {
       if (r.ClassId !== classId) continue;
       if (r.ClassTeacherId == null || Number(r.ClassTeacherId) <= 0) continue;
@@ -1247,20 +1181,16 @@ export default function TeacherClass() {
       const hr = Number(r.Hour ?? 0);
       if (hak > 0) {
         const key = classId + '_H_' + hak;
-        if (!seenHak.has(key)) {
-          seenHak.add(key);
-          total += hr;
-        }
+        if (hr > (hakMax.get(key) ?? 0)) hakMax.set(key, hr);
       } else if (ihud > 0) {
         const key = classId + '_I_' + ihud;
-        if (!seenIhud.has(key)) {
-          seenIhud.add(key);
-          total += hr;
-        }
+        if (hr > (ihudMax.get(key) ?? 0)) ihudMax.set(key, hr);
       } else {
         total += hr;
       }
     }
+    for (const v of hakMax.values()) total += v;
+    for (const v of ihudMax.values()) total += v;
     return total;
   }
 
@@ -1283,27 +1213,71 @@ export default function TeacherClass() {
 
     // Collect group bands first so the class panel can render them at
     // the top regardless of where the rows appear in the data.
-    const hakBuckets = new Map<string, { classId: number; number: number; teachers: Map<number, string>; hour: number; name: string }>();
+    //
+    // A Hakbatza is layer-scoped: every teacher with Hakbatza=N inside the
+    // same LayerId belongs to ONE shared group, regardless of which class
+    // they're contracted to. The card for each participating class needs to
+    // show the same roster + the same hour count (MAX across the group), so
+    // teachers who teach the partner class still appear here.
+    //
+    // STRICT: only rows with Hour>0 count as "real members". A row with
+    // Hour=0/NULL means the teacher was tagged but isn't contracted to teach
+    // — surfacing them as a band member misleads the user and feeds over-fill
+    // into the scheduler. They get filtered out here entirely.
+    const hakByLayerNum = new Map<number, { teachers: Map<number, string>; hour: number; name: string; classes: Set<number> }>();
     for (const r of classes) {
       const hak = Number(r.Hakbatza ?? 0);
       if (!hak) continue;
-      const key = r.ClassId + '_H_' + hak;
-      let b = hakBuckets.get(key);
+      const rowHour = Number(r.Hour ?? 0);
+      if (rowHour <= 0) continue; // skip ghost members (no contracted hours)
+      let b = hakByLayerNum.get(hak);
       if (!b) {
-        b = { classId: r.ClassId, number: hak, teachers: new Map(), hour: Number(r.Hour ?? 0), name: '' };
-        hakBuckets.set(key, b);
+        b = { teachers: new Map(), hour: 0, name: '', classes: new Set() };
+        hakByLayerNum.set(hak, b);
       }
+      b.classes.add(r.ClassId);
       if (r.TeacherId != null && Number(r.TeacherId) > 0) {
         b.teachers.set(Number(r.TeacherId), r.TeacherName ?? '');
       }
-      if (Number(r.Hour ?? 0) > b.hour) b.hour = Number(r.Hour);
+      if (rowHour > b.hour) b.hour = rowHour;
     }
-    // Pull friendly names from hakbatzaRows
+    // Hakbatza_GetAll covers every layer; bring in partner-class teachers
+    // (and friendly group names) that the layer-scoped `classes` doesn't see.
+    // Same Hour>0 guard applies — a row with no hours is metadata, not a member.
     for (const r of hakbatzaRows) {
       if (Number(r.LayerId) !== Number(layerId)) continue;
-      const key = r.ClassId + '_H_' + r.Hakbatza;
-      const b = hakBuckets.get(key);
-      if (b && r.Name) b.name = r.Name;
+      const hak = Number(r.Hakbatza);
+      if (!hak) continue;
+      const rowHour = Number((r as { Hour?: number }).Hour ?? 0);
+      let b = hakByLayerNum.get(hak);
+      if (!b) {
+        // Skip creating an empty bucket from a ghost row alone — a Hakbatza
+        // with no real (Hour>0) members shouldn't surface in any class card.
+        if (rowHour <= 0) continue;
+        b = { teachers: new Map(), hour: 0, name: '', classes: new Set() };
+        hakByLayerNum.set(hak, b);
+      }
+      if (r.Name) b.name = r.Name;
+      if (rowHour <= 0) continue; // metadata row only
+      if (rowHour > b.hour) b.hour = rowHour;
+      if (r.TeacherId && Number(r.TeacherId) > 0) {
+        b.teachers.set(Number(r.TeacherId), r.TeacherName ?? '');
+      }
+      if (r.ClassId) b.classes.add(Number(r.ClassId));
+    }
+    // Materialise per-class buckets — same group contents, replicated
+    // across every class that participates.
+    const hakBuckets = new Map<string, { classId: number; number: number; teachers: Map<number, string>; hour: number; name: string }>();
+    for (const [hak, b] of hakByLayerNum) {
+      for (const classId of b.classes) {
+        hakBuckets.set(classId + '_H_' + hak, {
+          classId,
+          number: hak,
+          teachers: b.teachers,
+          hour: b.hour,
+          name: b.name,
+        });
+      }
     }
 
     const ihudBuckets = new Map<string, { classId: number; number: number; teacherName: string; teacherId: number; hour: number; name: string }>();
@@ -1432,6 +1406,42 @@ export default function TeacherClass() {
         </div>
       )}
       <div className="col-md-9 tc-page__classes">
+        {preCheckIssues.length > 0 && (
+          <div style={{ background: '#fef3c7', border: '1px solid #f59e0b', borderRadius: 8, padding: '10px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, fontSize: 14 }}>
+            <i className="fa fa-exclamation-triangle" style={{ color: '#d97706', fontSize: 18 }} />
+            <span style={{ flex: 1, color: '#78350f' }}>
+              ייתכן והשיבוץ האוטומטי לא יצליח במלואו ({preCheckIssues.length} בעיות פוטנציאליות בדטא).
+            </span>
+            <button
+              type="button"
+              style={{ background: '#d97706', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', fontSize: 13 }}
+              onClick={() => setShowPreCheckDetails(true)}
+            >
+              ראה עוד
+            </button>
+          </div>
+        )}
+        {showPreCheckDetails && (
+          <div
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            onClick={(e) => { if (e.target === e.currentTarget) setShowPreCheckDetails(false); }}
+          >
+            <div style={{ background: '#fff', borderRadius: 12, maxWidth: 720, width: '90%', maxHeight: '80vh', overflow: 'auto', padding: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <h3 style={{ margin: 0 }}>בעיות שזוהו בדטא ({preCheckIssues.length})</h3>
+                <button type="button" onClick={() => setShowPreCheckDetails(false)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer' }}>×</button>
+              </div>
+              <ul style={{ paddingRight: 20, margin: 0 }}>
+                {preCheckIssues.map((it, i) => (
+                  <li key={i} style={{ marginBottom: 10, lineHeight: 1.5 }}>
+                    <strong style={{ color: '#92400e' }}>{it.Label}</strong>
+                    <div style={{ color: '#451a03', fontSize: 13 }}>{it.Detail}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
         <div className="row dvWeek">
           <div className="panel panel-info">
             <div className="panel-heading tc-layer-bar">
@@ -1495,12 +1505,13 @@ export default function TeacherClass() {
               </button>
               <button
                 type="button"
-                className="btn btn-success btn-sm tc-add-class"
+                className="excel-import-btn"
                 style={{ marginInlineStart: 6 }}
-                onClick={openIhudWizard}
-                title="צור איחוד — בחר כיתות בשכבה ומורה אחראי שילמד את כולן באותה שעה"
+                onClick={() => setShowImportModal(true)}
+                title="ייבוא הקצאות מורים לכיתות מקובץ Excel"
               >
-                <i className="fa fa-link" /> איחוד חדש
+                <i className="fa fa-file-excel-o" />
+                ייבוא מ-Excel
               </button>
               {/* Export zone — kept in its own pill on the far side so it never
                   gets confused with action controls like "הוסף כיתה". */}
@@ -1562,6 +1573,11 @@ export default function TeacherClass() {
                   if (Number(r.LayerId) !== Number(layerId)) continue;
                   const key = r.LayerId + '_' + r.Hakbatza;
                   let b = hakBuckets.get(key);
+                  // Initialise b.hour from the row itself — Hakbatza_GetAll
+                  // returns ct.Hour for each row, so we don't depend on the
+                  // (sometimes-late) classes load. We then take MAX across
+                  // partner rows to surface the lesson length.
+                  const rowHour = Number((r as { Hour?: number }).Hour ?? 0);
                   if (!b) {
                     b = {
                       layerId: r.LayerId,
@@ -1569,7 +1585,7 @@ export default function TeacherClass() {
                       name: r.Name ?? '',
                       classes: new Map(),
                       teachers: new Map(),
-                      hour: 0,
+                      hour: rowHour,
                       professionalId: Number(r.ProfessionalId ?? 0),
                       professionalName: r.ProfessionalName ?? '',
                     };
@@ -1580,19 +1596,20 @@ export default function TeacherClass() {
                       b.professionalId = Number(r.ProfessionalId);
                       b.professionalName = r.ProfessionalName ?? '';
                     }
+                    if (rowHour > b.hour) b.hour = rowHour;
                   }
                   b.classes.set(r.ClassId, r.ClassName);
                   if (r.TeacherId > 0) b.teachers.set(r.TeacherId, r.TeacherName);
                 }
-                // Hakbatza row hours come from the underlying ClassTeacher.Hour
-                // — we read it back from `classes` (the source of truth that
-                // also drives ClassCountHour).
+                // Defensive: also pick up Hour from `classes` if present —
+                // covers cases where Hakbatza_GetAll didn't populate Hour
+                // (older backend) but classes did.
                 for (const r of classes) {
                   const hak = Number(r.Hakbatza ?? 0);
                   if (!hak) continue;
                   const key = layerId + '_' + hak;
                   const b = hakBuckets.get(key);
-                  if (b && Number(r.Hour ?? 0) > 0) b.hour = Number(r.Hour);
+                  if (b && Number(r.Hour ?? 0) > b.hour) b.hour = Number(r.Hour);
                 }
                 const hakList = Array.from(hakBuckets.values()).sort((a, b) => a.number - b.number);
 
@@ -1706,14 +1723,19 @@ export default function TeacherClass() {
                                       <span className="hak-card__title-sub">#{b.number}</span>
                                     </div>
                                     <div className="hak-card__meta">
-                                      <label className="hak-card__chip hak-card__chip--hours" title="שעות שבועיות שכל מורה ילמד בהקבצה">
+                                      <label className="hak-card__chip hak-card__chip--hours" title="שעות שבועיות שכל מורה ילמד בהקבצה — נקה את השדה כדי להזין ערך חדש">
                                         <i className="fa fa-clock-o" />
                                         <input
+                                          key={`${b.layerId}_${b.number}_${b.hour}`}
                                           type="number"
                                           min={0}
-                                          defaultValue={b.hour}
+                                          placeholder={String(b.hour ?? 0)}
+                                          className="tc-hour-input"
+                                          onFocus={(e) => e.currentTarget.select()}
                                           onBlur={(e) => {
-                                            const v = Math.max(0, Math.floor(Number(e.currentTarget.value) || 0));
+                                            const raw = e.currentTarget.value.trim();
+                                            if (raw === '') return; // empty → keep current value
+                                            const v = Math.max(0, Math.floor(Number(raw) || 0));
                                             if (v !== b.hour) setHakbatzaHour(b.layerId, b.number, v);
                                           }}
                                         />
@@ -1994,35 +2016,73 @@ export default function TeacherClass() {
                     )}
                     <div className="row dvWeek" style={{ width: '100%' }}>
                       <div className="panel panel-primary">
-                        <div className="panel-heading">
-                          <button
-                            type="button"
-                            className="tc-class-close"
-                            onClick={() => requestDeleteClass(panel.ClassId, panel.ClassName)}
-                            title="מחק כיתה"
-                            aria-label="מחק כיתה"
-                          >
-                            <i className="fa fa-times" />
-                          </button>
-                          <h3 className="panel-title">
-                            <span className="tc-class-name">{panel.ClassName}</span>
-                            <button
-                              type="button"
-                              className="btn btn-xs tc-class-edit"
-                              onClick={() =>
-                                openClassWindow(panel.ClassId, panel.ClassFOREdit, panel.Seq, 2)
-                              }
-                            >
-                              <i className="fa fa-pencil" /> ערוך
-                            </button>
-                          </h3>
-                        </div>
+                        {(() => {
+                          const bands = classBandsByClass.get(panel.ClassId) ?? [];
+                          const hakHours = bands
+                            .filter((b) => b.kind === 'H')
+                            .reduce((sum, b) => sum + Number(b.hour ?? 0), 0);
+                          return (
+                            <div className="panel-heading tc-class-heading">
+                              <div className="tc-class-heading__topbar">
+                                <button
+                                  type="button"
+                                  className="btn btn-xs tc-class-edit-pill"
+                                  onClick={() =>
+                                    openClassWindow(panel.ClassId, panel.ClassFOREdit, panel.Seq, 2)
+                                  }
+                                  title="ערוך פרטי כיתה"
+                                >
+                                  <i className="fa fa-pencil" /> ערוך
+                                </button>
+                                <h3 className="tc-class-heading__title">
+                                  <span className="tc-class-name">{panel.ClassName}</span>
+                                </h3>
+                                <button
+                                  type="button"
+                                  className="tc-class-close"
+                                  onClick={() => requestDeleteClass(panel.ClassId, panel.ClassName)}
+                                  title="מחק כיתה"
+                                  aria-label="מחק כיתה"
+                                >
+                                  <i className="fa fa-times" />
+                                </button>
+                              </div>
+                              {hakHours > 0 && (
+                                <div className="tc-class-heading__chips">
+                                  <span
+                                    className="tc-class-hak-total"
+                                    title="סך השעות שמכוסות ע״י הקבצות בכיתה זו"
+                                  >
+                                    <i className="fa fa-object-group" />
+                                    הקבצות: {hakHours}ש
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                         <div
-                          className="panel-body droppable"
+                          className={`panel-body droppable${dragHoverClassId === panel.ClassId ? ' is-drop-target' : ''}`}
                           style={{ height: 700 }}
-                          onDragOver={allowDrop}
+                          onDragOver={(e) => {
+                            allowDrop(e);
+                            if (dragHoverClassId !== panel.ClassId) setDragHoverClassId(panel.ClassId);
+                          }}
+                          onDragLeave={(e) => {
+                            // dragleave יורה גם בעת hover על ילד פנימי. אם היציאה
+                            // לא לרכיב מחוץ ל-panel-body, התעלם.
+                            const rt = e.relatedTarget as Node | null;
+                            if (rt && (e.currentTarget as Node).contains(rt)) return;
+                            if (dragHoverClassId === panel.ClassId) setDragHoverClassId(null);
+                          }}
                           onDrop={(e) => onDropOnClass(e, panel.ClassId)}
                         >
+                          {dragHoverClassId === panel.ClassId && (
+                            <div className="tc-drop-placeholder" aria-hidden="true">
+                              <i className="fa fa-plus-circle" />
+                              <span>שחרר כאן להוספת המורה לכיתה</span>
+                            </div>
+                          )}
                           {(classBandsByClass.get(panel.ClassId) ?? []).map((band) => {
                             const col = groupColor(band.kind, band.number);
                             const label = band.name || (band.kind === 'H' ? `הקבצה ${band.number}` : `איחוד ${band.number}`);
@@ -2103,15 +2163,7 @@ export default function TeacherClass() {
                                 })
                               }
                               onDragOver={allowDrop}
-                              onDrop={(e) =>
-                                onDropOnClass(
-                                  e,
-                                  panel.ClassId,
-                                  t.Hakbatza ?? '',
-                                  t.Ihud ?? '',
-                                  t.ClassTeacherId ?? ''
-                                )
-                              }
+                              onDrop={(e) => onDropOnClass(e, panel.ClassId)}
                             >
                               <div
                                 className={`btn btn-${tafkidTheme(t.TafkidId)} btn-round`}
@@ -2189,20 +2241,25 @@ export default function TeacherClass() {
                                     בראש המסך, ומורים מצורפים בגרירה. */}
                               </span>
                               <input
+                                key={`hr_${t.ClassTeacherId ?? 0}_${t.Hour ?? 0}`}
                                 type="text"
                                 style={{ width: '25%', float: 'left' }}
-                                className="form-control"
-                                defaultValue={t.Hour != null ? String(t.Hour) : ''}
-                                onBlur={(e) =>
+                                className="form-control tc-hour-input"
+                                placeholder={t.Hour != null ? String(t.Hour) : '0'}
+                                title="לחץ כדי לערוך — הערך הנוכחי מוצג כרקע"
+                                onFocus={(e) => e.currentTarget.select()}
+                                onBlur={(e) => {
+                                  const raw = e.currentTarget.value.trim();
+                                  if (raw === '') return; // empty → keep current value
                                   setHourToTeacherInClass(
                                     panel.ClassId,
                                     t.TeacherId,
-                                    e.currentTarget.value,
+                                    raw,
                                     t.Ihud,
                                     t.ClassTeacherId,
                                     t.Hakbatza
-                                  )
-                                }
+                                  );
+                                }}
                               />
                             </div>
                           );
@@ -2293,19 +2350,27 @@ export default function TeacherClass() {
                       </span>
                     </div>
                     <div className="tc-teachers-grid">
-                      {grp.teachers.map((t) => (
-                        <div
-                          key={`dvTeacher_${t.TeacherId}`}
-                          className={`btn btn-${tafkidTheme(t.TafkidId)} draggable`}
-                          draggable
-                          title={t.FullText}
-                          onDragStart={(e) => onDragStartTeacher(e, t.TeacherId)}
-                          onClick={() => openTeacherModal(1, t.TeacherId)}
-                          onContextMenu={(e) => onTeacherContextMenu(e, t.TeacherId)}
-                        >
-                          {t.FullText}
-                        </div>
-                      ))}
+                      {grp.teachers.map((t) => {
+                        const total = Number(t.TotalRequired ?? 0);
+                        return (
+                          <div
+                            key={`dvTeacher_${t.TeacherId}`}
+                            className={`btn btn-${tafkidTheme(t.TafkidId)} draggable`}
+                            draggable
+                            title={`${t.FullText} — סך שעות שבועיות: ${total}`}
+                            onDragStart={(e) => onDragStartTeacher(e, t.TeacherId)}
+                            onClick={() => openTeacherModal(1, t.TeacherId)}
+                            onContextMenu={(e) => onTeacherContextMenu(e, t.TeacherId)}
+                          >
+                            {t.FullText}
+                            {total > 0 && (
+                              <span style={{ marginInlineStart: 4, opacity: 0.85, fontSize: '0.92em' }}>
+                                ({total})
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -3431,6 +3496,164 @@ export default function TeacherClass() {
           </div>
         </div>
       )}
+
+      {showImportModal && (
+        <ExcelImportModal
+          open={showImportModal}
+          onClose={() => setShowImportModal(false)}
+          title="ייבוא הקצאות כיתות-מורים מ-Excel"
+          description="העלה קובץ Excel עם רשימת זוגות (כיתה, מורה) ומספר שעות. תומך גם בסימון מחנכ/ת."
+          schema={CLASSTEACHER_IMPORT_SCHEMA}
+          sampleRows={CLASSTEACHER_IMPORT_SAMPLE}
+          existingCount={0 /* יחושב בזמן הייבוא — מאפשר תמיד את ההעלאה */}
+          parseRow={(raw, rowIdx) => parseClassTeacherRow(raw, rowIdx, classes, teachers, layerId)}
+          performImport={async (rows, onProgress) => importClassTeachers(rows, onProgress)}
+          onCompleted={() => { loadTeachers(); loadClasses(layerId); }}
+        />
+      )}
     </div>
   );
+}
+
+// ============================================================
+// Excel import — ClassTeacher
+// ============================================================
+
+const CLASSTEACHER_IMPORT_SCHEMA: ExcelColumnSpec[] = [
+  { key: 'className', header: 'כיתה', required: true, description: 'שם הכיתה כפי שמופיע במערכת', example: 'רויטל',
+    hint: 'יש להזין רק את השם הקצר (לדוגמה "רויטל"), לא את התיאור המלא ("ג\' 2 רויטל").' },
+  { key: 'teacherName', header: 'מורה', required: true, description: 'שם פרטי + שם משפחה (מופרדים ברווח)', example: 'שרה כהן',
+    hint: 'יש להזין בדיוק כפי שמופיע ברשימת המורים. רגישות לאותיות סופיות.' },
+  { key: 'hour', header: 'שעות', required: true, description: 'מספר שעות שבועי שהמורה מלמד/ת בכיתה', example: '5' },
+  { key: 'isHomeroom', header: 'מחנכ/ת', required: false, description: 'האם המורה מחנכ/ת הכיתה הזו?', example: 'לא',
+    hint: 'כן/לא (השאר ריק = לא). רק מורה אחד יכול להיות מחנכ/ת לכיתה.' },
+];
+
+const CLASSTEACHER_IMPORT_SAMPLE: Array<Record<string, string | number>> = [
+  { className: 'רויטל', teacherName: 'רויטל אוטמזגין', hour: 23, isHomeroom: 'כן' },
+  { className: 'רויטל', teacherName: 'מאור חקלאות', hour: 1, isHomeroom: 'לא' },
+  { className: 'אושרית', teacherName: 'אושרית קבלה', hour: 22, isHomeroom: 'כן' },
+];
+
+interface ClassTeacherImportPayload {
+  classId: number;
+  teacherId: number;
+  hour: number;
+  isHomeroom: boolean;
+  classNameRaw: string;
+  teacherNameRaw: string;
+}
+
+function normalizeName(s: string): string {
+  return String(s ?? '').trim().replace(/\s+/g, ' ').replace(/[֑-ֽֿׁ-ׂׄ-ׇ]/g, '');
+}
+
+function parseClassTeacherRow(
+  raw: Record<string, unknown>,
+  _rowIdx: number,
+  classes: Array<{ ClassId: number | string; ClassName: string; Name?: string | null }>,
+  teachers: Array<{ TeacherId: number | string; FirstName?: string | null; LastName?: string | null; FullText?: string | null }>,
+  _layerId: number,
+): ParseRowResult<ClassTeacherImportPayload> {
+  const errors: string[] = [];
+  const get = (k: string): string => {
+    const v = raw[k];
+    return v == null ? '' : String(v).trim();
+  };
+  const className = get('כיתה');
+  const teacherName = get('מורה');
+  const hourStr = get('שעות');
+  const isHomeroomStr = get('מחנכ/ת');
+
+  if (!className && !teacherName && !hourStr) return { ok: false }; // שורה ריקה
+
+  if (!className) errors.push('חסר שם כיתה');
+  if (!teacherName) errors.push('חסר שם מורה');
+  if (!hourStr || isNaN(Number(hourStr)) || Number(hourStr) <= 0) errors.push('שעות חייב להיות מספר חיובי');
+
+  // מצא כיתה — חיפוש מקל: לפי "Name" (השם הקצר) או ClassName מלא, מנוקה
+  const targetClass = className.toLowerCase();
+  const cls = classes.find((c) => {
+    const short = normalizeName(String(c.Name ?? c.ClassName ?? '')).toLowerCase();
+    const full = normalizeName(String(c.ClassName ?? '')).toLowerCase();
+    return short === targetClass || full === targetClass || full.endsWith(' ' + targetClass);
+  });
+  if (!cls && className) errors.push(`כיתה "${className}" לא נמצאה במערכת`);
+
+  // מצא מורה — לפי FirstName+LastName או FullText
+  const targetTeacher = normalizeName(teacherName).toLowerCase();
+  const t = teachers.find((tt) => {
+    const ft = normalizeName(`${tt.FirstName ?? ''} ${tt.LastName ?? ''}`).toLowerCase();
+    const ftRev = normalizeName(`${tt.LastName ?? ''} ${tt.FirstName ?? ''}`).toLowerCase();
+    const full = normalizeName(String(tt.FullText ?? '')).toLowerCase();
+    return ft === targetTeacher || ftRev === targetTeacher || full === targetTeacher;
+  });
+  if (!t && teacherName) errors.push(`מורה "${teacherName}" לא נמצא/ה במערכת`);
+
+  const isHomeroom = /^(כן|y|yes|true|1)$/i.test(isHomeroomStr);
+
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    payload: {
+      classId: Number(cls!.ClassId),
+      teacherId: Number(t!.TeacherId),
+      hour: Number(hourStr),
+      isHomeroom,
+      classNameRaw: className,
+      teacherNameRaw: teacherName,
+    },
+  };
+}
+
+async function importClassTeachers(
+  rows: ClassTeacherImportPayload[],
+  onProgress: (cur: number, total: number) => void,
+): Promise<{ success: number; failed: number; errors: string[] }> {
+  let success = 0; let failed = 0; const errors: string[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      // Type=1: insert זוג ClassTeacher (Hour=NULL)
+      await ajax('Class_SetTeacherToClass', {
+        ClassId: String(r.classId),
+        TeacherId: String(r.teacherId),
+        Hour: '',
+        TargetHakbatza: '0', SourceHakbatza: '0',
+        TargetIhud: '0', SourceIhud: '0',
+        TargetClassTeacherId: '0', SourceClassTeacherId: '0',
+        Type: '1',
+      });
+      // Type=4: עדכן Hour לערך הנכון
+      await ajax('Class_SetTeacherToClass', {
+        ClassId: String(r.classId),
+        TeacherId: String(r.teacherId),
+        Hour: String(r.hour),
+        TargetHakbatza: '0', SourceHakbatza: '0',
+        TargetIhud: '0', SourceIhud: '0',
+        TargetClassTeacherId: '0', SourceClassTeacherId: '0',
+        Type: '4',
+      });
+      // אם מחנכ/ת — Type=5 (מסמן IsTeacher=true)
+      if (r.isHomeroom) {
+        try {
+          await ajax('Class_SetTeacherToClass', {
+            ClassId: String(r.classId),
+            TeacherId: String(r.teacherId),
+            Hour: String(r.hour),
+            TargetHakbatza: '0', SourceHakbatza: '0',
+            TargetIhud: '0', SourceIhud: '0',
+            TargetClassTeacherId: '0', SourceClassTeacherId: '0',
+            Type: '5',
+          });
+        } catch { /* not critical */ }
+      }
+      success++;
+    } catch (e) {
+      failed++;
+      errors.push(`${r.classNameRaw} / ${r.teacherNameRaw}: ${(e as Error).message}`);
+    }
+    onProgress(i + 1, rows.length);
+  }
+  return { success, failed, errors };
 }

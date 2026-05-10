@@ -172,6 +172,29 @@ public class Shibutz
     // Value = list of (TeacherId, ClassId, ProfessionalId, LastTeacherHoursInClass) in the group
     private readonly Dictionary<string, List<ClassTeacher>> _hakbatzaGroups = new Dictionary<string, List<ClassTeacher>>();
 
+    // Hakbatza meta-data — נטען מהטבלה החדשה Hakbatza ב-BuildModel.
+    // המפתח הוא gkey ("H_layer_number") כמו ב-_hakbatzaGroups.
+    // כל record כולל את הנתונים האטומיים של ההקבצה: HakbatzaId, Hours (משך
+    // אטומי), Mode (simple/bijection/partial), רשימות Classes ו-Teachers.
+    public class HakbatzaMeta
+    {
+        public int HakbatzaId;
+        public int LayerId;
+        public int Number;
+        public int Hours;          // X = כמה שעות ההקבצה רצה
+        public string Mode;        // "simple" / "bijection" / "partial"
+        public List<int> Classes = new List<int>();
+        public List<int> Teachers = new List<int>();
+        public Dictionary<int, int> TeacherHours = new Dictionary<int, int>(); // TeacherId → HoursContribution
+    }
+    private readonly Dictionary<string, HakbatzaMeta> _hakbatzaMeta = new Dictionary<string, HakbatzaMeta>();
+
+    // _soloHours[ClassId_TeacherId] = solo Hour של ה-CT (Hakbatza IS NULL).
+    // משמש את PreScheduleHakbatzas לדעת מה להחזיר ל-_remaining אחרי שהוא
+    // מאפס את ההקבצה — אם יש למורה גם solo + Hak לאותה כיתה, הסולו אמור
+    // להישאר לו פעיל (הקבצה רק "צרכה" Hak shares שלו, לא solo shares).
+    private readonly Dictionary<string, int> _soloHours = new Dictionary<string, int>();
+
     // Extra assignments to write to DB for Hakbatza/Ihud partners
     // Key = "classId_hourId_teacherId" to avoid duplicates
     private readonly Dictionary<string, ExtraAssignment> _extraAssignments = new Dictionary<string, ExtraAssignment>();
@@ -215,6 +238,12 @@ public class Shibutz
         // Extend opening into a 2-3 hour consecutive block per day (home class only)
         ExtendHomeroomOpeningBlock();
         LogStep("מרחיב פתיחת יום של מחנכים לבלוק של 2-3 שעות");
+
+        // Pre-schedule Hakbatzas atomically: לכל הקבצה, נבחר X שעות (=MAX(Hour))
+        // ובכל שעה bijection מורים↔כיתות. כך הקבצות רצות אטומית ולא חצי-לב.
+        // ה-greedy אחר-כך ממלא רק את הסולו (Hak slots כבר תפוסים).
+        PreScheduleHakbatzas();
+        LogStep("הקבצות תוזמנו אטומית לפני המעגל הראשי");
 
         // group by time (Hour, Day) - early hours first
         Dictionary<int, List<HourSlot>> byTime = BuildTimeBuckets();
@@ -290,13 +319,9 @@ public class Shibutz
                 LogStep("שיפור נמוך (פחות מ-5%) — מסיים סבבים");
                 break;
             }
-            // After iteration 1, if reds already below 10% of total, stop.
-            // Remaining holes are structural; expensive cleanup won't close them.
-            if (iteration == 0 && redsAfterIter * 10 < totalSlots)
-            {
-                LogStep("הגענו למתחת ל-10% חוסרים — מדלג על סבבים נוספים");
-                break;
-            }
+            // אין יותר early-stop ב-10% — ממשיכים את כל 3 הסיבובים כדי
+            // לתפוס את כל החוסרים האחרונים (ה-greedy יכול עדיין למצוא
+            // ב-LocalSwap/DeepChain shifts שלא נמצאו ב-iter1).
         }
 
         // Single cross-time swap attempt with a tight time budget (10s).
@@ -319,26 +344,19 @@ public class Shibutz
             LogStep("כל המשבצות שובצו — מסיים את הפייפליין הראשי");
         }
 
-        // Hakbatza/Ihud post-process (fast now that bumping is removed)
-        int redsBeforeHak = CountRedSlots();
-        ExpandHakbatzaIhudAssignments();
-        int redsAfterHak = CountRedSlots();
-        LogStep("הרחבת הקבצות ואיחודים הושלמה");
+        // Hakbatza propagation: כעת מבוצע inline ב-ApplyAssign ע"י
+        // ApplyHakbatzaPropagation, ש-מסנכרן partner-teacher שונה לכל
+        // (C', H) בקבצה. הקריאה הישנה ל-ExpandHakbatzaIhudAssignments
+        // השתמשה ב-busyFromSelf כדי להוסיף את **אותו** מורה לכיתה אחרת
+        // — וזה גרם ל-double-booking (e.g. חיים בעדי+24 וגם בשמרית+24).
+        // לא קוראים לה יותר.
+        LogStep("הקבצות סונכרנו דרך ApplyHakbatzaPropagation");
 
-        // Only do extra fix pass if Hakbatza actually increased reds (a tradeoff happened)
-        // Otherwise the pipeline already converged - no point wasting time.
-        if (redsAfterHak > redsBeforeHak)
-        {
-            for (int i = 0; i < timeKeys.Count; i++)
-            {
-                List<HourSlot> slots = byTime[timeKeys[i]];
-                DirectFill(slots);
-                SmartSwapFill(slots);
-                DeepChainFill(slots, CHAIN_DEPTH);
-            }
-            LogStep("ניקוי אחרי הקבצות/איחודים (חוסרים " + redsAfterHak + " → " + CountRedSlots() + ")");
-            ExpandHakbatzaIhudAssignments();
-        }
+        // Post-pass: תאים ריקים שניתן למלא ע"י מורים גלובליים-חסרי. אם
+        // ה-greedy לא הצליח לתפוס את התא, אך יש מורה ב-Candidates שיש לו
+        // CT.Hour לכיתה והוא לא busy ולא חסום, נשבץ אותו (ויתאזן Got<Req).
+        FillEmptyByGlobalShortage();
+        LogStep("Post-pass: מילוי תאים ריקים ע''י מורים חסרים");
 
         // Build detailed errors for remaining reds
         Errors.Clear();
@@ -869,6 +887,105 @@ public class Shibutz
                the FillEmptySlots SP still has its own filter as a safety net */
         }
 
+        // טעינת solo Hours לכל (T,C) + "extras" של מורים ב-Hak שיש להם
+        // CT.Hour גבוה מ-Hak.Hours האטומי (לדוגמה Hak=3 שCT=6 בנופר אבל
+        // Hours=5 → 1 שעה extra סולו). ה-extras מתווספים ל-_soloHours כדי
+        // שאחרי PreSchedule (שאיפס _remaining ל-soloHours) המורה יוכל
+        // לקבל את העודף שלו דרך ה-greedy.
+        _soloHours.Clear();
+        try
+        {
+            DataTable dtSolo = Dal.GetDataTable(
+                "SELECT TeacherId, ClassId, ISNULL(Hour,0) AS Hour FROM ClassTeacher " +
+                "WHERE ConfigurationId=" + _configurationId + " AND HakbatzaId IS NULL AND Hour > 0");
+            for (int i = 0; i < dtSolo.Rows.Count; i++)
+            {
+                int tid = ToInt(dtSolo.Rows[i]["TeacherId"]);
+                int cid = ToInt(dtSolo.Rows[i]["ClassId"]);
+                int hr = ToInt(dtSolo.Rows[i]["Hour"]);
+                if (tid > 0 && cid > 0)
+                {
+                    string sk = cid + "_" + tid;
+                    if (_soloHours.ContainsKey(sk)) _soloHours[sk] += hr;
+                    else _soloHours[sk] = hr;
+                }
+            }
+            // Extras: CT.Hour - Hak.Hours לכל מורה ב-Hak (אם CT.Hour > Hak.Hours)
+            DataTable dtExtras = Dal.GetDataTable(
+                "SELECT ct.TeacherId, ct.ClassId, (ct.Hour - h.Hours) AS Extra " +
+                "FROM ClassTeacher ct INNER JOIN Hakbatza h ON h.HakbatzaId=ct.HakbatzaId " +
+                "WHERE ct.ConfigurationId=" + _configurationId + " AND ct.Hour > h.Hours");
+            for (int i = 0; i < dtExtras.Rows.Count; i++)
+            {
+                int tid = ToInt(dtExtras.Rows[i]["TeacherId"]);
+                int cid = ToInt(dtExtras.Rows[i]["ClassId"]);
+                int ext = ToInt(dtExtras.Rows[i]["Extra"]);
+                if (tid > 0 && cid > 0 && ext > 0)
+                {
+                    string sk = cid + "_" + tid;
+                    if (_soloHours.ContainsKey(sk)) _soloHours[sk] += ext;
+                    else _soloHours[sk] = ext;
+                }
+            }
+        }
+        catch { /* fallback: empty */ }
+
+        // טעינת Hakbatza meta מהטבלאות החדשות. כל הקבצה היא יחידה אטומית עם
+        // Hours, Mode, רשימות כיתות ומורים. ה-greedy ישתמש ב-meta הזה כדי
+        // לתזמן את ההקבצות נכונות (אטומיות) במקום לנחש מ-MAX-per-Hak.
+        _hakbatzaMeta.Clear();
+        try
+        {
+            DataTable dtHak = Dal.GetDataTable(
+                "SELECT HakbatzaId, LayerId, Number, Hours, Mode FROM Hakbatza WHERE ConfigurationId=" +
+                _configurationId);
+            Dictionary<int, HakbatzaMeta> byId = new Dictionary<int, HakbatzaMeta>();
+            for (int hi = 0; hi < dtHak.Rows.Count; hi++)
+            {
+                DataRow r = dtHak.Rows[hi];
+                HakbatzaMeta m = new HakbatzaMeta();
+                m.HakbatzaId = ToInt(r["HakbatzaId"]);
+                m.LayerId = ToInt(r["LayerId"]);
+                m.Number = ToInt(r["Number"]);
+                m.Hours = ToInt(r["Hours"]);
+                m.Mode = r["Mode"] == null ? "simple" : r["Mode"].ToString();
+                byId[m.HakbatzaId] = m;
+                string gkey = "H_" + m.LayerId + "_" + m.Number;
+                _hakbatzaMeta[gkey] = m;
+            }
+            DataTable dtHakC = Dal.GetDataTable(
+                "SELECT hc.HakbatzaId, hc.ClassId FROM HakbatzaClass hc " +
+                "INNER JOIN Hakbatza h ON h.HakbatzaId=hc.HakbatzaId WHERE h.ConfigurationId=" +
+                _configurationId);
+            for (int i = 0; i < dtHakC.Rows.Count; i++)
+            {
+                int hid = ToInt(dtHakC.Rows[i]["HakbatzaId"]);
+                int cid = ToInt(dtHakC.Rows[i]["ClassId"]);
+                HakbatzaMeta m;
+                if (byId.TryGetValue(hid, out m)) m.Classes.Add(cid);
+            }
+            DataTable dtHakT = Dal.GetDataTable(
+                "SELECT ht.HakbatzaId, ht.TeacherId, ht.HoursContribution FROM HakbatzaTeacher ht " +
+                "INNER JOIN Hakbatza h ON h.HakbatzaId=ht.HakbatzaId WHERE h.ConfigurationId=" +
+                _configurationId);
+            for (int i = 0; i < dtHakT.Rows.Count; i++)
+            {
+                int hid = ToInt(dtHakT.Rows[i]["HakbatzaId"]);
+                int tid = ToInt(dtHakT.Rows[i]["TeacherId"]);
+                int hrs = ToInt(dtHakT.Rows[i]["HoursContribution"]);
+                HakbatzaMeta m;
+                if (byId.TryGetValue(hid, out m))
+                {
+                    m.Teachers.Add(tid);
+                    m.TeacherHours[tid] = hrs;
+                }
+            }
+        }
+        catch
+        {
+            /* fallback: no meta — ה-PreSchedule יחזור להתנהגות הישנה */
+        }
+
         if (ds == null || ds.Tables.Count == 0 || ds.Tables[0] == null)
             return;
 
@@ -918,7 +1035,7 @@ public class Shibutz
         {
             DataRow row = t.Rows[r];
             int classId = ToInt(row["ClassId"]);
-            
+
             // Store class name if available
             if (t.Columns.Contains("Name") && row["Name"] != null)
             {
@@ -929,6 +1046,15 @@ public class Shibutz
                 }
             }
         }
+
+        // Track which (Class, Teacher, Hakbatza, Ihud) combos we've already counted
+        // toward _remaining. The TeachList of every HourSlot of a class repeats the
+        // same candidates, so without de-dup we'd over-count. With de-dup keyed by
+        // the row signature, a (T,C) pair that has both a solo row (Hakbatza=NULL)
+        // and a Hakbatza row gets BOTH added — restoring the SUM behavior the
+        // legacy MIN missed (which capped the teacher at the smaller value and
+        // pushed over-fill onto whoever covered the difference).
+        HashSet<string> seenRowSignatures = new HashSet<string>();
 
         // Second pass: build slots and find homeroom teachers
         for (int r = 0; r < t.Rows.Count; r++)
@@ -976,21 +1102,33 @@ public class Shibutz
                         continue;
                     }
 
+                    // SKIP candidates with ClassTeacher.Hour=0 — even if marked Hakbatza/Ihud.
+                    // Hour=0 means "this teacher is not contracted to teach this class".
+                    // Including them produces over-fill (the Hakbatza expansion code propagates
+                    // them to partner classes, manufacturing assignments out of nothing).
+                    // A real Hakbatza member must have Hour > 0 in their own row.
+                    if (ct.LastTeacherHoursInClass <= 0)
+                    {
+                        continue;
+                    }
+
                     slot.Candidates.Add(ct);
 
                     string rk = Key(classId, ct.TeacherId);
                     int remainingHours = ct.LastTeacherHoursInClass;
                     if (remainingHours <= 0) remainingHours = 1;
-                    if (!_remaining.ContainsKey(rk))
+
+                    // Per-row signature: same TeachList row appears in every HourSlot
+                    // of the class, so we de-dup by (Class,Teacher,Hak,Ihud,Hour).
+                    // First time we see this signature, ADD its hours to remaining.
+                    // Same signature later: skip. Different signature for same (T,C)
+                    // — i.e. a solo row plus a Hakbatza row — adds again, giving SUM.
+                    string rowSig = classId + "_" + ct.TeacherId + "_" + ct.Hakbatza + "_" + ct.Ihud + "_" + remainingHours;
+                    if (seenRowSignatures.Add(rowSig))
                     {
-                        _remaining[rk] = remainingHours;
-                    }
-                    else
-                    {
-                        // CRITICAL: Use MIN - same teacher may appear in multiple rows with different values
-                        // Never allow more than the minimum to prevent over-assignment (e.g. 7 instead of 6)
-                        int current = _remaining[rk];
-                        if (remainingHours < current)
+                        if (_remaining.ContainsKey(rk))
+                            _remaining[rk] += remainingHours;
+                        else
                             _remaining[rk] = remainingHours;
                     }
 
@@ -2900,33 +3038,11 @@ public class Shibutz
             ClassTeacher ct = slot.Candidates[i];
             if (ct == null) continue;
 
-            // Check if can assign (with remaining check)
-            bool canAssign = CanAssign(slot, ct);
-            
-            // If not, check if has remaining anywhere and can create it
-            if (!canAssign)
-            {
-                bool hasRemainingInTarget = HasRemaining(slot.ClassId, ct.TeacherId);
-                bool hasRemainingAnywhere = HasRemainingAnywhere(ct.TeacherId);
-                
-                if (!hasRemainingInTarget && hasRemainingAnywhere)
-                {
-                    // Try to create remaining in target class
-                    string rk = Key(slot.ClassId, ct.TeacherId);
-                    if (!_remaining.ContainsKey(rk))
-                    {
-                        int remFromOther = FindRemainingFromOtherClass(ct.TeacherId);
-                        if (remFromOther > 0)
-                        {
-                            _remaining[rk] = remFromOther;
-                            // Now check again
-                            canAssign = CanAssign(slot, ct);
-                        }
-                    }
-                }
-            }
-
-            if (!canAssign) continue;
+            // STRICT: Only assign if teacher has remaining hours for THIS class.
+            // No fallback to "borrow" hours from another class — that produces over-fill
+            // (a teacher placed in a class they aren't contracted to teach), which the
+            // skill flags as false-100%.
+            if (!CanAssign(slot, ct)) continue;
 
             int score = ScoreCandidate(slot, ct);
             if (best == null || score > bestScore)
@@ -3068,23 +3184,13 @@ public class Shibutz
 
                 if (best != null)
                 {
-                    // If teacher doesn't have remaining in target class, create it
+                    // STRICT: do NOT pull remaining from another class. If this (Class,Teacher)
+                    // doesn't have ClassTeacher.Hour > 0 and is not in a Hakbatza/Ihud, the
+                    // teacher isn't supposed to teach this class — assigning them anyway would
+                    // be over-fill (false-100%). Per skill rules: report the gap, don't hide it.
                     if (!HasRemaining(target.ClassId, best.TeacherId))
                     {
-                        string rk = Key(target.ClassId, best.TeacherId);
-                        if (!_remaining.ContainsKey(rk))
-                        {
-                            // Find remaining from another class
-                            int remFromOther = FindRemainingFromOtherClass(best.TeacherId);
-                            if (remFromOther > 0)
-                            {
-                                _remaining[rk] = remFromOther;
-                            }
-                            else
-                            {
-                                continue; // Can't assign
-                            }
-                        }
+                        continue;
                     }
 
                     ApplyAssign(target, best);
@@ -3772,6 +3878,11 @@ public class Shibutz
         // A teacher cannot be assigned to a class if he is not in that class's TeachList
         if (slot.Candidates == null || slot.Candidates.Count == 0) return false;
 
+        // לאחר PreScheduleHakbatzas, ה-Hak כבר תוזמן ב-X שעות אטומיות. אסור
+        // ל-greedy לבחור CT עם Hakbatza > 0 — זה ירחיב את ה-Hak מעבר ל-Hours
+        // הנדרשים. ה-greedy ישתמש רק ב-CT solo (Hakbatza=0/null).
+        if (ct.Hakbatza > 0 && _hakbatzaMeta.Count > 0) return false;
+
         bool isInCandidates = false;
         for (int i = 0; i < slot.Candidates.Count; i++)
         {
@@ -3803,17 +3914,452 @@ public class Shibutz
             if (remainingHours > 0 && remainingHours < current)
                 _remaining[rk] = remainingHours;
         }
-        
+
         // Now check if teacher has remaining hours
         int rem = _remaining[rk];
         if (rem <= 0) return false;
-        
+
         if (IsBusy(ct.TeacherId, slot.Day, slot.Hour)) return false;
         if (WouldBreakConsecutive(ct.TeacherId, slot.Day, slot.Hour)) return false;
 
         // Strong rule: homeroom stays in home class while home has remaining
         if (IsHomeroomLockedToHome(slot, ct)) return false;
 
+        // Hakbatza atomicity: if ct is part of a Hakbatza, every other class
+        // in the same Hak must accept the same teacher at the same hour. If
+        // any partner class can't be propagated to (slot taken by a different
+        // teacher / no slot exists / partner has 0 remaining for own class /
+        // partner busy elsewhere at this hour), the whole assignment is
+        // rejected — otherwise we end up with split Hakbatza like the case
+        // of חיים אזרד running in different hours in עדי vs שמרית.
+        if (ct.Hakbatza > 0 && !CanPropagateHakbatza(slot, ct)) return false;
+
+        return true;
+    }
+
+    // Post-pass: לכל תא ריק, חפש מורה ב-Candidates שיש לו עוד remaining
+    // **לכיתה הזו** (ולא חרג מהמכסה), לא busy בשעה, לא ב-FreeDay, לא חסום
+    // ב-TeacherHours. אם הדטא לא הגיונית (under-demand גלובלי) — לא נשבץ
+    // (תא יישאר ריק, וה-PreCheck יציג את האזהרה).
+    private void FillEmptyByGlobalShortage()
+    {
+        // חישוב Got_total ו-Req_total לכל מורה
+        Dictionary<int, int> gotTotal = new Dictionary<int, int>();
+        Dictionary<int, int> reqTotal = new Dictionary<int, int>();
+        for (int i = 0; i < _allSlots.Count; i++)
+        {
+            HourSlot s = _allSlots[i];
+            if (s.AssignedTeacherId > 0)
+            {
+                int tid = s.AssignedTeacherId;
+                if (gotTotal.ContainsKey(tid)) gotTotal[tid]++;
+                else gotTotal[tid] = 1;
+            }
+        }
+        // _extraAssignments גם נספרים
+        foreach (var kv in _extraAssignments)
+        {
+            int tid = kv.Value.TeacherId;
+            if (gotTotal.ContainsKey(tid)) gotTotal[tid]++;
+            else gotTotal[tid] = 1;
+        }
+        // Req: solo + Hak.Hours + extras
+        try
+        {
+            DataTable dtReq = Dal.GetDataTable(
+                "SELECT t.TeacherId, " +
+                "ISNULL((SELECT SUM(ct.Hour) FROM ClassTeacher ct WHERE ct.ConfigurationId=" + _configurationId +
+                " AND ct.TeacherId=t.TeacherId AND ct.Hour > 0 AND ct.HakbatzaId IS NULL),0) " +
+                "+ ISNULL((SELECT SUM(ht.HoursContribution) FROM HakbatzaTeacher ht INNER JOIN Hakbatza h ON h.HakbatzaId=ht.HakbatzaId " +
+                "WHERE h.ConfigurationId=" + _configurationId + " AND ht.TeacherId=t.TeacherId),0) " +
+                "+ ISNULL((SELECT SUM(ct.Hour - h.Hours) FROM ClassTeacher ct INNER JOIN Hakbatza h ON h.HakbatzaId=ct.HakbatzaId " +
+                "WHERE ct.ConfigurationId=" + _configurationId + " AND ct.TeacherId=t.TeacherId AND ct.Hour > h.Hours),0) AS Req " +
+                "FROM Teacher t WHERE t.ConfigurationId=" + _configurationId);
+            for (int i = 0; i < dtReq.Rows.Count; i++)
+            {
+                int tid = ToInt(dtReq.Rows[i]["TeacherId"]);
+                int rq = ToInt(dtReq.Rows[i]["Req"]);
+                if (tid > 0) reqTotal[tid] = rq;
+            }
+        }
+        catch { return; }
+
+        // חישוב got_in_class פר (T,C)
+        Dictionary<string, int> gotInClass = new Dictionary<string, int>();
+        for (int i = 0; i < _allSlots.Count; i++)
+        {
+            HourSlot s = _allSlots[i];
+            if (s.AssignedTeacherId > 0)
+            {
+                string k = Key(s.ClassId, s.AssignedTeacherId);
+                if (gotInClass.ContainsKey(k)) gotInClass[k]++;
+                else gotInClass[k] = 1;
+            }
+        }
+        // חישוב req_in_class פר (T,C) מ-CT
+        Dictionary<string, int> reqInClass = new Dictionary<string, int>();
+        try
+        {
+            DataTable dtReqC = Dal.GetDataTable(
+                "SELECT TeacherId, ClassId, ISNULL(SUM(Hour),0) AS Req FROM ClassTeacher " +
+                "WHERE ConfigurationId=" + _configurationId + " AND Hour > 0 GROUP BY TeacherId, ClassId");
+            for (int i = 0; i < dtReqC.Rows.Count; i++)
+            {
+                int tid = ToInt(dtReqC.Rows[i]["TeacherId"]);
+                int cid = ToInt(dtReqC.Rows[i]["ClassId"]);
+                int rq = ToInt(dtReqC.Rows[i]["Req"]);
+                if (tid > 0 && cid > 0) reqInClass[Key(cid, tid)] = rq;
+            }
+        }
+        catch { return; }
+
+        // לכל תא ריק, מצא מורה שעוד לא הגיע ל-req גלובלי וב-class
+        for (int i = 0; i < _allSlots.Count; i++)
+        {
+            HourSlot s = _allSlots[i];
+            if (s.AssignedTeacherId > 0) continue;
+            if (s.Candidates == null) continue;
+            ClassTeacher chosen = null;
+            int bestShort = 0;
+            for (int k = 0; k < s.Candidates.Count; k++)
+            {
+                ClassTeacher cand = s.Candidates[k];
+                if (cand == null) continue;
+                // got_in_class < req_in_class
+                string rkLocal = Key(s.ClassId, cand.TeacherId);
+                int gotC = 0;
+                gotInClass.TryGetValue(rkLocal, out gotC);
+                int reqC = 0;
+                reqInClass.TryGetValue(rkLocal, out reqC);
+                if (gotC >= reqC) continue; // המורה השלים בכיתה
+                // got_total < req_total
+                int got;
+                if (!gotTotal.TryGetValue(cand.TeacherId, out got)) got = 0;
+                int req;
+                if (!reqTotal.TryGetValue(cand.TeacherId, out req)) req = 0;
+                int shortage = req - got;
+                if (shortage <= 0) continue;
+                int fd;
+                if (_teacherFreeDay.TryGetValue(cand.TeacherId, out fd) && fd > 0 && fd == s.Day) continue;
+                if (IsTeacherBlockedAtHour(cand.TeacherId, s.HourId)) continue;
+                if (IsBusy(cand.TeacherId, s.Day, s.Hour)) continue;
+                if (IsHomeroomLockedToHome(s, cand)) continue;
+                if (shortage > bestShort) { chosen = cand; bestShort = shortage; }
+            }
+            if (chosen == null) continue;
+            s.AssignedTeacherId = chosen.TeacherId;
+            s.AssignedProfessionalId = chosen.ProfessionalId;
+            s.AssignedHakbatza = 0;
+            s.AssignedIhud = 0;
+            SetBusy(chosen.TeacherId, s.Day, s.Hour, s);
+            GetDaySet(chosen.TeacherId, s.Day).Add(s.Hour);
+            IncClassDayCount(chosen.TeacherId, s.ClassId, s.Day, +1);
+            string rkPick = Key(s.ClassId, chosen.TeacherId);
+            if (gotInClass.ContainsKey(rkPick)) gotInClass[rkPick]++;
+            else gotInClass[rkPick] = 1;
+            if (gotTotal.ContainsKey(chosen.TeacherId)) gotTotal[chosen.TeacherId]++;
+            else gotTotal[chosen.TeacherId] = 1;
+        }
+    }
+
+    // PreScheduleHakbatzas: לפני ה-greedy, משבץ כל הקבצה כיחידה אטומית.
+    // משתמש ב-`_hakbatzaMeta` (נטען מטבלת Hakbatza החדשה) שמספק:
+    //   Hours: אורך ההקבצה (X = כמה שעות הקבצה רצה)
+    //   Mode: bijection / partial / simple
+    //   Classes/Teachers: רשימות מפורשות
+    //
+    // לכל הקבצה: בוחר X שעות שב-כולן יש slot פנוי בכל הכיתות, וכל המורים
+    // זמינים (לא FreeDay, לא TeacherHours-blocked, לא busy מהקבצה אחרת).
+    // בכל שעה: bijection (ה-Mode קובע אם מלא או חלקי).
+    // הקבצות נסרקות לפי גודל יורד (פחות גמישות → ראשונה).
+    private void PreScheduleHakbatzas()
+    {
+        // אם אין meta — fallback להתנהגות ישנה (לא רץ)
+        if (_hakbatzaMeta.Count == 0) return;
+
+        // מיון: partial/bijection ראשונים (יותר מגביל), אחר-כך לפי גודל
+        List<string> gkeys = new List<string>(_hakbatzaMeta.Keys);
+        gkeys.Sort((a, b) => {
+            HakbatzaMeta ma = _hakbatzaMeta[a], mb = _hakbatzaMeta[b];
+            int pa = (ma.Mode == "partial") ? 0 : (ma.Mode == "bijection") ? 1 : 2;
+            int pb = (mb.Mode == "partial") ? 0 : (mb.Mode == "bijection") ? 1 : 2;
+            if (pa != pb) return pa.CompareTo(pb);
+            int sa = ma.Classes.Count + ma.Teachers.Count;
+            int sb = mb.Classes.Count + mb.Teachers.Count;
+            return sb.CompareTo(sa);
+        });
+
+        for (int gi = 0; gi < gkeys.Count; gi++)
+        {
+            string gkey = gkeys[gi];
+            HakbatzaMeta meta = _hakbatzaMeta[gkey];
+            int X = meta.Hours;
+            HashSet<int> Cset = new HashSet<int>(meta.Classes);
+            HashSet<int> Tset = new HashSet<int>(meta.Teachers);
+            if (X <= 0 || Cset.Count == 0 || Tset.Count == 0) continue;
+            // מצא group records (לקבל ClassTeacher לכל זוג מורה-כיתה)
+            List<ClassTeacher> group;
+            if (!_hakbatzaGroups.TryGetValue(gkey, out group) || group == null || group.Count == 0) continue;
+
+            // אטומיות הקבצה: לאחר שה-PreSchedule משבץ X שעות, ה-greedy לא
+            // אמור להוסיף עוד שעות הקבצה (כי הקבצה רצה רק X שעות לפי המודל).
+            // בלי זה, _remaining[T,C]>0 גורם ל-greedy להמשיך ולשבץ את אותם
+            // CT records של Hak בעוד שעות — והופך הקבצה של 3 שעות ל-6 שעות
+            // בלוח. אאפס _remaining[T,C] אחרי השיבוץ למטה.
+
+            // איסוף כל ה-slots פוטנציאליים ב-Cset (אחרי שעה 1 של מחנכים).
+            // נארגן לפי HourId ⇒ List<HourSlot> פר Cset.
+            Dictionary<int, List<HourSlot>> slotsByHourId = new Dictionary<int, List<HourSlot>>();
+            for (int i = 0; i < _allSlots.Count; i++)
+            {
+                HourSlot s = _allSlots[i];
+                if (!Cset.Contains(s.ClassId)) continue;
+                if (s.AssignedTeacherId > 0) continue; // כבר תפוס (Hour 1 / קבצה קודמת)
+                List<HourSlot> list;
+                if (!slotsByHourId.TryGetValue(s.HourId, out list))
+                {
+                    list = new List<HourSlot>();
+                    slotsByHourId[s.HourId] = list;
+                }
+                list.Add(s);
+            }
+
+            // כל HourId ב-slotsByHourId שמכיל slot לכל אחת מ-Cset, וכל מורי Tset
+            // זמינים בה (לא FreeDay, לא blocked, לא busy)
+            List<int> validHourIds = new List<int>();
+            foreach (int hourId in slotsByHourId.Keys)
+            {
+                List<HourSlot> list = slotsByHourId[hourId];
+                if (list.Count < Cset.Count) continue; // לא כל הכיתות מיוצגות
+                int day = hourId / 10;
+                int hour = hourId % 10;
+                // לפחות |Cset| מורים מ-Tset זמינים בשעה הזו
+                int avail = 0;
+                foreach (int tid in Tset)
+                {
+                    int fd;
+                    if (_teacherFreeDay.TryGetValue(tid, out fd) && fd > 0 && fd == day) continue;
+                    if (IsTeacherBlockedAtHour(tid, hourId)) continue;
+                    if (IsBusy(tid, day, hour)) continue;
+                    avail++;
+                }
+                if (avail >= Cset.Count) validHourIds.Add(hourId);
+            }
+            if (validHourIds.Count < X) continue; // לא ניתן לתזמן את ההקבצה אטומית
+            // לוקחים את X השעות הראשונות (סדר עולה ⇒ עדיפות לבוקר), אבל מדלגים
+            // על שעות ש-bijection חלקי בהן יקרה. אטומיות: או מתזמנים את כל
+            // הכיתות בשעה הזו, או אף אחת.
+            validHourIds.Sort();
+            int scheduled = 0;
+            // counter שעוקב אחר כמות השיבוצים שכל מורה כבר קיבל ב-Hak הזה.
+            // משמש לrotation מאוזן (לא לתת תמיד לאותו ראשון).
+            Dictionary<int, int> hakAssignedCount = new Dictionary<int, int>();
+            for (int hiIdx = 0; hiIdx < validHourIds.Count && scheduled < X; hiIdx++)
+            {
+                int hourId = validHourIds[hiIdx];
+                int day = hourId / 10;
+                int hour = hourId % 10;
+                List<HourSlot> list = slotsByHourId[hourId];
+                // pre-flight: לוודא ש-bijection מלא אפשרי בשעה הזו לפני שיבוץ
+                bool canSchedule = true;
+                {
+                    HashSet<int> trial = new HashSet<int>();
+                    foreach (HourSlot s in list)
+                    {
+                        if (s.AssignedTeacherId > 0) { canSchedule = false; break; }
+                        bool found = false;
+                        if (s.Candidates != null)
+                        {
+                            for (int k = 0; k < s.Candidates.Count; k++)
+                            {
+                                ClassTeacher cand = s.Candidates[k];
+                                if (cand == null) continue;
+                                if (!Tset.Contains(cand.TeacherId)) continue;
+                                if (GetGroupKey(cand) != gkey) continue;
+                                if (trial.Contains(cand.TeacherId)) continue;
+                                int fd2;
+                                if (_teacherFreeDay.TryGetValue(cand.TeacherId, out fd2) && fd2 > 0 && fd2 == day) continue;
+                                if (IsTeacherBlockedAtHour(cand.TeacherId, hourId)) continue;
+                                if (IsBusy(cand.TeacherId, day, hour)) continue;
+                                string rk2 = Key(s.ClassId, cand.TeacherId);
+                                int rem2;
+                                if (!_remaining.TryGetValue(rk2, out rem2) || rem2 <= 0) continue;
+                                if (IsHomeroomLockedToHome(s, cand)) continue;
+                                trial.Add(cand.TeacherId);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) { canSchedule = false; break; }
+                    }
+                }
+                // pre-flight אינו חוסם — שיבוץ אופטימי. כל מה שלא יסתדר
+                // יישאר ל-greedy או ל-extras בpartial.
+                scheduled++;
+                HashSet<int> usedTeachers = new HashSet<int>();
+                foreach (HourSlot s in list)
+                {
+                    if (s.AssignedTeacherId > 0) continue;
+                    // round-robin אמיתי: בחירת מורה עם הכי מעט שיבוצי Hak (מ-meta.TeacherHours) שכבר קיבל בHak זה.
+                    ClassTeacher chosen = null;
+                    int bestPriority = Int32.MaxValue;
+                    if (s.Candidates != null)
+                    {
+                        for (int k = 0; k < s.Candidates.Count; k++)
+                        {
+                            ClassTeacher cand = s.Candidates[k];
+                            if (cand == null) continue;
+                            if (!Tset.Contains(cand.TeacherId)) continue;
+                            string ckey = GetGroupKey(cand);
+                            if (ckey != gkey) continue;
+                            if (usedTeachers.Contains(cand.TeacherId)) continue;
+                            int fd;
+                            if (_teacherFreeDay.TryGetValue(cand.TeacherId, out fd) && fd > 0 && fd == day) continue;
+                            if (IsTeacherBlockedAtHour(cand.TeacherId, hourId)) continue;
+                            if (IsBusy(cand.TeacherId, day, hour)) continue;
+                            string rk = Key(s.ClassId, cand.TeacherId);
+                            int rem;
+                            if (!_remaining.TryGetValue(rk, out rem) || rem <= 0) continue;
+                            if (IsHomeroomLockedToHome(s, cand)) continue;
+                            int hakDone;
+                            if (!hakAssignedCount.TryGetValue(cand.TeacherId, out hakDone)) hakDone = 0;
+                            int contrib;
+                            if (!meta.TeacherHours.TryGetValue(cand.TeacherId, out contrib)) contrib = 0;
+                            // אם המורה כבר השלים את חלקו ב-Hak — אסור עוד
+                            if (hakDone >= contrib) continue;
+                            // בחר מי שעוד צריך לקבל הכי הרבה (priority הכי נמוך)
+                            int priority = hakDone - contrib;
+                            if (priority < bestPriority) { chosen = cand; bestPriority = priority; }
+                        }
+                    }
+                    if (chosen == null) continue;
+                    // שיבוץ ישיר (לא דרך ApplyAssign — נעקוף את ApplyHakbatzaPropagation
+                    // כי כאן אנחנו ה-scheduler עצמו)
+                    s.AssignedTeacherId = chosen.TeacherId;
+                    s.AssignedProfessionalId = chosen.ProfessionalId;
+                    s.AssignedHakbatza = chosen.Hakbatza;
+                    s.AssignedIhud = chosen.Ihud;
+                    string rk2 = Key(s.ClassId, chosen.TeacherId);
+                    if (_remaining.ContainsKey(rk2) && _remaining[rk2] > 0)
+                        _remaining[rk2] = _remaining[rk2] - 1;
+                    GetDaySet(chosen.TeacherId, day).Add(hour);
+                    SetBusy(chosen.TeacherId, day, hour, s);
+                    IncClassDayCount(chosen.TeacherId, s.ClassId, day, +1);
+                    usedTeachers.Add(chosen.TeacherId);
+                    // עדכון counter rotation
+                    if (hakAssignedCount.ContainsKey(chosen.TeacherId)) hakAssignedCount[chosen.TeacherId]++;
+                    else hakAssignedCount[chosen.TeacherId] = 1;
+                }
+
+                // הערה: הוסר extras code — היה גורם ל-over-assignment של מורים
+                // ב-bijection mode וגם איטי. בpartial mode, חוסר-מורים שאינם
+                // ב-bijection הוא "פיצול אמיתי" של ה-data model (3 מורים, 2
+                // כיתות) — לא ניתן לכפר בו בלי לחרוג מ-Required של מורה אחר.
+            }
+
+            // לאחר שיבוץ X שעות הקבצה אטומיות, לאפס _remaining של ה-Hak —
+            // אבל לשמור את הסולו של אותו (T,C) אם קיים. אחרת ה-greedy ימשיך
+            // לשבץ Hak בעוד שעות (הופך הקבצה של 3 שעות ל-6 שעות בלוח).
+            foreach (ClassTeacher cttHak in group)
+            {
+                if (cttHak == null) continue;
+                string rkHak = Key(cttHak.ClassId, cttHak.TeacherId);
+                if (!_remaining.ContainsKey(rkHak)) continue;
+                int soloHrs = 0;
+                string sk = cttHak.ClassId + "_" + cttHak.TeacherId;
+                _soloHours.TryGetValue(sk, out soloHrs);
+                _remaining[rkHak] = soloHrs;
+            }
+        }
+    }
+
+    // אטומיות הקבצה — מחזיר List of (partnerClassId, partnerCT) אם ניתן
+    // ליצור bijection מלא: בכל כיתה אחרת בקבצה (חוץ מ-slot.ClassId) יש
+    // partner-teacher **שונה** (לא ct.TeacherId, ולא teacher כבר committed)
+    // שזמין ב-slot.HourId (לא FreeDay, לא TeacherHours-blocked, לא busy,
+    // יש לו remaining בכיתה הספציפית). מחזיר null אם לא ניתן.
+    // משמש את CanAssign (כבדיקה) ו-ApplyHakbatzaPropagation (לביצוע) —
+    // שתיהן קוראות לפונקציה זו כדי לוודא ש-CanAssign וה-Apply עקביים.
+    private List<KeyValuePair<int, ClassTeacher>> TryFindHakbatzaBijection(HourSlot slot, ClassTeacher ct)
+    {
+        string gkey = GetGroupKey(ct);
+        if (gkey == null) return new List<KeyValuePair<int, ClassTeacher>>();
+        List<ClassTeacher> group;
+        if (!_hakbatzaGroups.TryGetValue(gkey, out group) || group == null)
+            return new List<KeyValuePair<int, ClassTeacher>>();
+
+        HashSet<int> partnerClasses = new HashSet<int>();
+        for (int i = 0; i < group.Count; i++)
+        {
+            ClassTeacher g = group[i];
+            if (g == null) continue;
+            if (g.ClassId == slot.ClassId) continue;
+            partnerClasses.Add(g.ClassId);
+        }
+        if (partnerClasses.Count == 0)
+            return new List<KeyValuePair<int, ClassTeacher>>();
+
+        // committed: מורים שכבר תפוסים ב-bijection (mainSlot ו-partner שנבחרו)
+        HashSet<int> committed = new HashSet<int>();
+        committed.Add(ct.TeacherId);
+        List<KeyValuePair<int, ClassTeacher>> result = new List<KeyValuePair<int, ClassTeacher>>();
+
+        foreach (int pClassId in partnerClasses)
+        {
+            HourSlot pSlot = FindSlot(pClassId, slot.Day, slot.Hour);
+            // אם אין slot — נדלג (לא חוסם, אך לא נתרום ל-bijection)
+            if (pSlot == null) continue;
+            // אם כבר משובץ ע"י מישהו — אם זה ct או partner, OK; אחרת חוסם
+            if (pSlot.AssignedTeacherId > 0)
+            {
+                if (pSlot.AssignedTeacherId == ct.TeacherId) return null;
+                // already taken — לא ניתן להוסיף בו hakbatza partner שונה
+                // אבל הקבצה עדיין רצה (השיבוץ הזה לא תופס את ה-Hak בכיתה הזו)
+                // אז זה ok — לא נוסיף partner לכיתה הזו, אבל גם לא ניכשל
+                continue;
+            }
+            // חיפוש partner מ-group ל-pClassId שלא committed וזמין
+            ClassTeacher chosen = null;
+            for (int i = 0; i < group.Count; i++)
+            {
+                ClassTeacher g = group[i];
+                if (g == null || g.ClassId != pClassId) continue;
+                if (committed.Contains(g.TeacherId)) continue;
+                int pFD;
+                if (_teacherFreeDay.TryGetValue(g.TeacherId, out pFD) && pFD > 0 && pFD == slot.Day) continue;
+                if (IsTeacherBlockedAtHour(g.TeacherId, slot.HourId)) continue;
+                if (IsBusy(g.TeacherId, slot.Day, slot.Hour)) continue;
+                string rkP = Key(pClassId, g.TeacherId);
+                int remP;
+                if (!_remaining.TryGetValue(rkP, out remP) || remP <= 0) continue;
+                if (IsHomeroomLockedToHome(pSlot, g)) continue;
+                // verify in pSlot.Candidates
+                bool inCand = false;
+                if (pSlot.Candidates != null)
+                {
+                    for (int k = 0; k < pSlot.Candidates.Count; k++)
+                    {
+                        ClassTeacher cand = pSlot.Candidates[k];
+                        if (cand != null && cand.TeacherId == g.TeacherId
+                            && cand.Hakbatza == g.Hakbatza)
+                        { inCand = true; break; }
+                    }
+                }
+                if (!inCand) continue;
+                chosen = g;
+                break;
+            }
+            if (chosen == null) return null; // bijection לא אפשרי
+            committed.Add(chosen.TeacherId);
+            result.Add(new KeyValuePair<int, ClassTeacher>(pClassId, chosen));
+        }
+        return result;
+    }
+
+    private bool CanPropagateHakbatza(HourSlot slot, ClassTeacher ct)
+    {
+        // לאחר PreScheduleHakbatzas, המעגל הראשי לא משבץ Hak (כי כל הHak slots
+        // כבר תפוסים). אם בכל-זאת ה-greedy מנסה, אנו לא חוסמים — Apply יבדוק.
         return true;
     }
 
@@ -3850,14 +4396,14 @@ public class Shibutz
 
     private bool HasRemaining(int classId, int teacherId)
     {
+        // STRICT: A teacher has remaining hours for THIS class only if they were
+        // contracted to teach it (ClassTeacher.Hour > 0 OR Hakbatza/Ihud member).
+        // BuildModel only adds rk entries for valid (Class,Teacher) pairs, so a
+        // missing key means "not contracted to teach this class" — return false.
+        // Falling back to HasRemainingAnywhere produces over-fill (false-100%).
         string rk = Key(classId, teacherId);
         int rem;
-        if (!_remaining.TryGetValue(rk, out rem))
-        {
-            // If not in dictionary, check if teacher has remaining hours anywhere
-            // This allows assignment even if not explicitly initialized for this class
-            return HasRemainingAnywhere(teacherId);
-        }
+        if (!_remaining.TryGetValue(rk, out rem)) return false;
         return rem > 0;
     }
 
@@ -4065,14 +4611,20 @@ public class Shibutz
     private void ApplyAssign(HourSlot slot, ClassTeacher ct)
     {
         if (slot.Candidates == null || slot.Candidates.Count == 0) return;
-        
+
         // CRITICAL: Never overwrite homeroom at hour 1 (swaps can try to replace them!)
         if (slot.Hour == 1 && slot.AssignedTeacherId > 0 && IsHomeroomForSlot(slot, slot.AssignedTeacherId))
         {
             LogHomeroom(string.Format("ApplyAssign BLOCKED: Class {0} Day {1} - would overwrite homeroom T{2} with T{3}", slot.ClassId, slot.Day, slot.AssignedTeacherId, ct.TeacherId));
             return;
         }
-        
+
+        // CRITICAL: Never let a homeroom teacher land in a class that isn't their
+        // home while their home class still has remaining hours. Even if a caller
+        // (swap chain / fill-empty) skipped CanAssign, this guard fires on the
+        // raw write so the homeroom finishes their own contract before fanning out.
+        if (IsHomeroomLockedToHome(slot, ct)) return;
+
         // CRITICAL: Never over-assign - block if no remaining hours
         string rkCheck = Key(slot.ClassId, ct.TeacherId);
         if (_remaining.ContainsKey(rkCheck) && _remaining[rkCheck] <= 0) return;
@@ -4103,6 +4655,49 @@ public class Shibutz
         GetDaySet(ct.TeacherId, slot.Day).Add(slot.Hour);
         SetBusy(ct.TeacherId, slot.Day, slot.Hour, slot);
         IncClassDayCount(ct.TeacherId, slot.ClassId, slot.Day, +1);
+
+        // Hakbatza propagation בוצע ב-PreScheduleHakbatzas לפני המעגל הראשי.
+        // כאן ApplyAssign של hakbatza-slot יקרה רק אם ה-greedy מנסה לשבץ
+        // hakbatza שלא תוזמנה (כיתה אחת בלבד) — הוא ימולא בלי propagation.
+    }
+
+    // מפיצה את הקבצת ct לכל ה-partners ב-_hakbatzaGroups[gkey]. מניחה ש-
+    // CanPropagateHakbatza החזירה true (אחרת היא תבצע best-effort בלי לקרוס).
+    // ה-partner slots מקבלים AssignedTeacherId/AssignedHakbatza ויורד _remaining
+    // שלהם. UndoAssign של ה-slot המקורי יבטל את כולם דרך _hakPropagatedSlots.
+    private Dictionary<HourSlot, List<HourSlot>> _hakPropagatedSlots = new Dictionary<HourSlot, List<HourSlot>>();
+    // hakbatza propagation: משתמש ב-TryFindHakbatzaBijection כדי למצוא bijection
+    // מלא, ואז משבץ את ה-partners. אם CanAssign אישר (אומר ש-bijection קיים),
+    // Apply ימצא את אותו bijection ויבצע אותו.
+    private void ApplyHakbatzaPropagation(HourSlot mainSlot, ClassTeacher ct)
+    {
+        var bijection = TryFindHakbatzaBijection(mainSlot, ct);
+        if (bijection == null || bijection.Count == 0) return;
+        List<HourSlot> propagated = null;
+        foreach (var kv in bijection)
+        {
+            int pClassId = kv.Key;
+            ClassTeacher chosenPartner = kv.Value;
+            HourSlot pSlot = FindSlot(pClassId, mainSlot.Day, mainSlot.Hour);
+            if (pSlot == null) continue;
+            if (pSlot.AssignedTeacherId > 0) continue; // race protection
+            pSlot.AssignedTeacherId = chosenPartner.TeacherId;
+            pSlot.AssignedProfessionalId = chosenPartner.ProfessionalId;
+            pSlot.AssignedHakbatza = chosenPartner.Hakbatza;
+            pSlot.AssignedIhud = chosenPartner.Ihud;
+            string rkChosen = Key(pClassId, chosenPartner.TeacherId);
+            if (_remaining.ContainsKey(rkChosen) && _remaining[rkChosen] > 0)
+                _remaining[rkChosen] = _remaining[rkChosen] - 1;
+            GetDaySet(chosenPartner.TeacherId, mainSlot.Day).Add(mainSlot.Hour);
+            SetBusy(chosenPartner.TeacherId, mainSlot.Day, mainSlot.Hour, pSlot);
+            IncClassDayCount(chosenPartner.TeacherId, pClassId, mainSlot.Day, +1);
+            if (propagated == null) propagated = new List<HourSlot>();
+            propagated.Add(pSlot);
+        }
+        if (propagated != null && propagated.Count > 0)
+        {
+            _hakPropagatedSlots[mainSlot] = propagated;
+        }
     }
 
     private void UndoAssign(HourSlot slot)
@@ -4114,6 +4709,33 @@ public class Shibutz
         if (IsHomeroomForSlot(slot, t))
         {
             return;
+        }
+
+        // אם ה-slot הזה היה main של propagation הקבצה — לבטל קודם את כל ה-
+        // partner slots, אחרת הם יישארו תלויים בלי main.
+        List<HourSlot> propagated;
+        if (_hakPropagatedSlots.TryGetValue(slot, out propagated) && propagated != null)
+        {
+            for (int i = 0; i < propagated.Count; i++)
+            {
+                HourSlot pSlot = propagated[i];
+                if (pSlot == null || pSlot.AssignedTeacherId <= 0) continue;
+                if (IsHomeroomForSlot(pSlot, pSlot.AssignedTeacherId)) continue;
+                int pt = pSlot.AssignedTeacherId;
+                string pRk = Key(pSlot.ClassId, pt);
+                int pRem;
+                if (_remaining.TryGetValue(pRk, out pRem))
+                    _remaining[pRk] = pRem + 1;
+                HashSet<int> pSet = GetDaySet(pt, pSlot.Day);
+                if (pSet.Contains(pSlot.Hour)) pSet.Remove(pSlot.Hour);
+                ClearBusy(pt, pSlot.Day, pSlot.Hour);
+                IncClassDayCount(pt, pSlot.ClassId, pSlot.Day, -1);
+                pSlot.AssignedTeacherId = 0;
+                pSlot.AssignedProfessionalId = 0;
+                pSlot.AssignedHakbatza = 0;
+                pSlot.AssignedIhud = 0;
+            }
+            _hakPropagatedSlots.Remove(slot);
         }
 
         string rk = Key(slot.ClassId, t);

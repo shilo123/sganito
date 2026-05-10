@@ -1014,14 +1014,40 @@ DECLARE @dayNames TABLE (D INT, Name NVARCHAR(20));
 INSERT INTO @dayNames (D, Name) VALUES (1, N'ראשון'), (2, N'שני'), (3, N'שלישי'), (4, N'רביעי'), (5, N'חמישי'), (6, N'שישי');
 
 -- כיתות עם over-demand (סכום השעות הנדרשות > מספר השעות בלוח השבועי)
+-- הקבצה נספרת כ-MAX (כל המורים בהקבצה מלמדים באותה שעה), סולו כ-SUM
 SELECT N'class_over_demand' AS Kind,
   c.ClassId AS Id1, 0 AS Id2,
   c.Name AS Label,
-  CAST(SUM(ct.Hour) - @capPerClass AS NVARCHAR(10)) + N' שעות מעבר לקיבולת — נדרשות ' + CAST(SUM(ct.Hour) AS NVARCHAR(10)) + N' שעות אך בלוח יש רק ' + CAST(@capPerClass AS NVARCHAR(10)) AS Detail
-FROM Class c INNER JOIN ClassTeacher ct ON ct.ClassId=c.ClassId
-WHERE c.ConfigurationId=" + cfgId + @" AND ct.Hour IS NOT NULL
-GROUP BY c.ClassId, c.Name
-HAVING SUM(ct.Hour) > @capPerClass
+  CAST(rh.RealHours - @capPerClass AS NVARCHAR(10)) + N' שעות מעבר לקיבולת — נדרשות ' + CAST(rh.RealHours AS NVARCHAR(10)) + N' שעות אך בלוח יש רק ' + CAST(@capPerClass AS NVARCHAR(10)) AS Detail
+FROM Class c
+CROSS APPLY (
+  -- Solo + Hak.Hours פר כיתה + extras (CT.Hour - Hak.Hours שמתפזר כסולו)
+  SELECT
+    ISNULL((SELECT SUM(ct.Hour) FROM ClassTeacher ct WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.HakbatzaId IS NULL AND ct.Hour > 0), 0)
+    + ISNULL((SELECT SUM(h.Hours) FROM Hakbatza h INNER JOIN HakbatzaClass hc ON hc.HakbatzaId=h.HakbatzaId WHERE h.ConfigurationId=c.ConfigurationId AND hc.ClassId=c.ClassId), 0)
+    + ISNULL((SELECT SUM(ct.Hour - h.Hours) FROM ClassTeacher ct INNER JOIN Hakbatza h ON h.HakbatzaId=ct.HakbatzaId WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.Hour > h.Hours), 0)
+    AS RealHours
+) rh
+WHERE c.ConfigurationId=" + cfgId + @" AND rh.RealHours > @capPerClass
+
+UNION ALL
+
+-- כיתות עם under-demand
+SELECT N'class_under_demand' AS Kind,
+  c.ClassId AS Id1, 0 AS Id2,
+  c.Name AS Label,
+  N'נדרשות ' + CAST(rh2.RealHours AS NVARCHAR(10)) + N' שעות אך בלוח יש '
+    + CAST(@capPerClass AS NVARCHAR(10)) + N' (חסרות '
+    + CAST(@capPerClass - rh2.RealHours AS NVARCHAR(10)) + N' שעות)' AS Detail
+FROM Class c
+CROSS APPLY (
+  SELECT
+    ISNULL((SELECT SUM(ct.Hour) FROM ClassTeacher ct WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.HakbatzaId IS NULL AND ct.Hour > 0), 0)
+    + ISNULL((SELECT SUM(h.Hours) FROM Hakbatza h INNER JOIN HakbatzaClass hc ON hc.HakbatzaId=h.HakbatzaId WHERE h.ConfigurationId=c.ConfigurationId AND hc.ClassId=c.ClassId), 0)
+    + ISNULL((SELECT SUM(ct.Hour - h.Hours) FROM ClassTeacher ct INNER JOIN Hakbatza h ON h.HakbatzaId=ct.HakbatzaId WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.Hour > h.Hours), 0)
+    AS RealHours
+) rh2
+WHERE c.ConfigurationId=" + cfgId + @" AND rh2.RealHours < @capPerClass
 
 UNION ALL
 
@@ -1074,6 +1100,139 @@ HAVING COUNT(DISTINCT t.TeacherId) >= 3";
             HttpContext.Current.Response.Write("[]");
             // log only — pre-check failure shouldn't block the user
             System.Diagnostics.Debug.WriteLine("Assign_PreCheck failed: " + ex.Message);
+        }
+    }
+
+    // בדיקת היתכנות FreeDay מקדימה — רצה ברקע בכניסה לדף השיבוץ האוטומטי,
+    // לא תלויה בהיותו של שיבוץ קיים. מזהה התנגשויות ימי-חופש שעלולות למנוע
+    // שיבוץ 100%, גם אם ספירת התאים הריקים = 0 (כי השיבוץ עוד לא רץ).
+    // החזרה זהה למבנה PreCheckIssue: { Kind, Id1, Id2, Label, Detail }.
+    //
+    // 2 בדיקות:
+    //   A. class_freeday_capacity_squeeze — Hall's המקומי. כיתה שיש בה מורה
+    //      עם FreeDay=Z, וסך הדרישה (MAX-per-Hakbatza) > קיבולת ימי-לא-Z.
+    //      פירושו: כל מי שלא ביום Z חייב לדחוס דרישה גדולה לימים פחותים →
+    //      תאים ריקים בלתי-נמנעים. תופס את מקרה אושרית/מוריה.
+    //   B. hakbatza_freeday_split — מורים בהקבצה אחת עם ימי-חופש שונים.
+    //      הקבצה חייבת לרוץ באותה שעה לכל הכיתות החברות, אז הימים שבהם
+    //      ניתן להריץ אותה הם רק הימים שאף מורה בהקבצה לא בחופש.
+    [WebMethod]
+    public void Assign_FreeDayPreCheck()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            string sql = @"
+DECLARE @dayNames TABLE (D INT, Name NVARCHAR(20));
+INSERT INTO @dayNames (D, Name) VALUES (1, N'ראשון'), (2, N'שני'), (3, N'שלישי'), (4, N'רביעי'), (5, N'חמישי'), (6, N'שישי');
+
+DECLARE @TotalCap INT = (SELECT COUNT(*) FROM SchoolHours
+                         WHERE ConfigurationId = " + cfgId + @"
+                           AND (IsOnlyShehya = 0 OR IsOnlyShehya IS NULL));
+
+;WITH DayCap AS (
+  SELECT (HourId/10) AS Day, COUNT(*) AS Cap
+  FROM SchoolHours
+  WHERE ConfigurationId = " + cfgId + @" AND (IsOnlyShehya = 0 OR IsOnlyShehya IS NULL)
+  GROUP BY (HourId/10)
+),
+ClassDayDemand AS (
+  -- לכל (כיתה, יום Z): סך הדרישה של מורים בכיתה עם FreeDay=Z.
+  -- הקבצה: אם מורה אחד ב-Hakbatza Z, ההקבצה כולה לא יכולה ללמד ב-Z, אז סופרים MAX של הקבצה.
+  -- סולו: SUM של ClassTeacher.Hour.
+  SELECT ct.ClassId, c.Name AS ClassName, t.FreeDay AS Z,
+    SUM(CASE WHEN ct.Hakbatza IS NOT NULL THEN 0 ELSE ct.Hour END)
+      + ISNULL((
+          SELECT SUM(g.h) FROM (
+            SELECT MAX(ct2.Hour) AS h
+            FROM ClassTeacher ct2
+            INNER JOIN Teacher t2 ON t2.TeacherId = ct2.TeacherId
+            WHERE ct2.ClassId = ct.ClassId AND ct2.ConfigurationId = " + cfgId + @"
+              AND t2.ConfigurationId = " + cfgId + @"
+              AND ct2.Hakbatza IS NOT NULL AND ct2.Hour > 0
+              AND t2.FreeDay = t.FreeDay
+            GROUP BY ct2.Hakbatza
+          ) g
+        ), 0) AS DemandWithFreeDayZ,
+    STUFF((
+      SELECT N', ' + ISNULL(t2.FirstName, N'') + N' ' + ISNULL(t2.LastName, N'')
+      FROM ClassTeacher ct2
+      INNER JOIN Teacher t2 ON t2.TeacherId = ct2.TeacherId
+      WHERE ct2.ClassId = ct.ClassId AND ct2.ConfigurationId = " + cfgId + @"
+        AND t2.ConfigurationId = " + cfgId + @"
+        AND t2.FreeDay = t.FreeDay AND ct2.Hour > 0
+      GROUP BY t2.TeacherId, t2.FirstName, t2.LastName
+      FOR XML PATH(''), TYPE
+    ).value('.', 'NVARCHAR(MAX)'), 1, 2, N'') AS Members
+  FROM ClassTeacher ct
+  INNER JOIN Class c ON c.ClassId = ct.ClassId
+  INNER JOIN Teacher t ON t.TeacherId = ct.TeacherId
+  WHERE ct.ConfigurationId = " + cfgId + @"
+    AND t.ConfigurationId = " + cfgId + @"
+    AND ct.Hour > 0 AND t.FreeDay IS NOT NULL AND t.FreeDay > 0
+  GROUP BY ct.ClassId, c.Name, t.FreeDay
+)
+-- בדיקה A: יום עמוס מדי במורים-עם-FreeDay-בו.
+-- אם DemandWithFreeDayZ > Capacity_NotZ → סך השעות שצריכות להיכנס בלא-Z חורג.
+-- בנוסחה: מורים עם FreeDay=Z חייבים את כל שעותיהם ב-לא-Z. אם זה לבד גדול
+-- מהקיבולת בלא-Z → אי-היתכנות פיזית, ללא תלות בשאר המורים.
+SELECT N'class_freeday_capacity_squeeze' AS Kind,
+  cdd.ClassId AS Id1, cdd.Z AS Id2,
+  cdd.ClassName AS Label,
+  N'בכיתה ' + cdd.ClassName + N': ' + ISNULL(cdd.Members, N'')
+    + N' (יום חופש: ' + ISNULL((SELECT Name FROM @dayNames WHERE D = cdd.Z), CAST(cdd.Z AS NVARCHAR(2))) + N')'
+    + N'. דרישה משלהם ' + CAST(cdd.DemandWithFreeDayZ AS NVARCHAR(10))
+    + N' ש""ש חייבת להיכנס ב-' + CAST(@TotalCap - dc.Cap AS NVARCHAR(10))
+    + N' שעות בלבד של ימי-לא-' + ISNULL((SELECT Name FROM @dayNames WHERE D = cdd.Z), CAST(cdd.Z AS NVARCHAR(2)))
+    AS Detail
+FROM ClassDayDemand cdd
+INNER JOIN DayCap dc ON dc.Day = cdd.Z
+WHERE cdd.DemandWithFreeDayZ > (@TotalCap - dc.Cap)
+
+UNION ALL
+
+-- בדיקה B: הקבצה עם ימי-חופש לא-מסונכרנים
+SELECT N'hakbatza_freeday_split' AS Kind,
+  x.Hakbatza AS Id1, x.LayerId AS Id2,
+  N'הקבצה ' + CAST(x.Hakbatza AS NVARCHAR(10)) + N' בשכבה ' + CAST(x.LayerId AS NVARCHAR(10)) AS Label,
+  N'מורים בהקבצה זו צריכים אותו יום חופש (אחרת לא ניתן להריץ): ' + x.Members AS Detail
+FROM (
+  SELECT ct.Hakbatza, c.LayerId,
+    COUNT(DISTINCT ISNULL(t.FreeDay, 0)) AS DistinctFreeDays,
+    STUFF((
+      SELECT N' | ' + ISNULL(t2.FirstName, N'') + N' (' +
+        CASE WHEN ISNULL(t2.FreeDay, 0) = 0 THEN N'ללא'
+             ELSE ISNULL((SELECT Name FROM @dayNames WHERE D = t2.FreeDay), CAST(t2.FreeDay AS NVARCHAR(2))) END
+        + N')'
+      FROM ClassTeacher ct3
+      INNER JOIN Teacher t2 ON t2.TeacherId = ct3.TeacherId
+      INNER JOIN Class c2 ON c2.ClassId = ct3.ClassId
+      WHERE ct3.Hakbatza = ct.Hakbatza AND ct3.ConfigurationId = " + cfgId + @"
+        AND c2.LayerId = c.LayerId AND t2.ConfigurationId = " + cfgId + @"
+      GROUP BY t2.TeacherId, t2.FirstName, t2.FreeDay
+      FOR XML PATH(''), TYPE
+    ).value('.', 'NVARCHAR(MAX)'), 1, 3, N'') AS Members
+  FROM ClassTeacher ct
+  INNER JOIN Class c ON c.ClassId = ct.ClassId
+  INNER JOIN Teacher t ON t.TeacherId = ct.TeacherId
+  WHERE ct.ConfigurationId = " + cfgId + @"
+    AND t.ConfigurationId = " + cfgId + @"
+    AND ct.Hakbatza IS NOT NULL AND ct.Hakbatza > 0
+  GROUP BY ct.Hakbatza, c.LayerId
+  HAVING COUNT(DISTINCT ISNULL(t.FreeDay, 0)) > 1
+) x";
+            DataTable dt = Dal.GetDataTable(sql);
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.Clear();
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[]");
+            System.Diagnostics.Debug.WriteLine("Assign_FreeDayPreCheck failed: " + ex.Message);
         }
     }
 
@@ -1174,6 +1333,8 @@ ORDER BY TeacherCount DESC, c.LayerId, c.Name";
         {
             string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
             int cfgId = Helper.ConvertToInt(cId);
+            // RequiredHours: סופרים MAX לכל הקבצה (כל המורים בהקבצה מלמדים באותה שעה),
+            // ו-SUM לכל מורה סולו. אחרת בכיתה עם הקבצות יוצא over-count וה-FullyBooked לעולם לא מסתדר.
             string sql = @"
 DECLARE @cap INT = (SELECT COUNT(*) FROM SchoolHours
                     WHERE ConfigurationId = " + cfgId + @"
@@ -1185,11 +1346,16 @@ SELECT
   @cap AS Capacity
 FROM Class c
 OUTER APPLY (
-  SELECT ISNULL(SUM(ct.Hour), 0) AS RequiredHours
-  FROM ClassTeacher ct
-  WHERE ct.ClassId = c.ClassId
-    AND ct.ConfigurationId = c.ConfigurationId
-    AND ct.Hour IS NOT NULL
+  SELECT ISNULL(SUM(g.h), 0) AS RequiredHours
+  FROM (
+    SELECT MAX(ct.Hour) AS h
+    FROM ClassTeacher ct
+    WHERE ct.ClassId = c.ClassId
+      AND ct.ConfigurationId = c.ConfigurationId
+      AND ct.Hour IS NOT NULL
+      AND ct.Hour > 0
+    GROUP BY ISNULL(CAST(ct.Hakbatza AS varchar(20)), 'T' + CAST(ct.TeacherId AS varchar(20)))
+  ) g
 ) x
 WHERE c.ConfigurationId = " + cfgId + @"
 GROUP BY c.LayerId
@@ -1259,10 +1425,29 @@ ORDER BY c.LayerId";
         int ctId = Helper.ConvertToInt(ClassTeacherId);
         int cfgId = Helper.ConvertToInt(cId);
 
-        // Store 0 as NULL to match the data convention used elsewhere
+        // Store 0 as NULL to match the data convention used elsewhere.
+        // GUARD: assigning a Hakbatza number to a row with Hour=0/NULL produces
+        // a "ghost member" — the teacher shows up in the Hakbatza UI but has
+        // no contracted hours, and the scheduler used to over-fill cells with
+        // them. If the caller is trying to set Hak>0 on an Hour=0 row, set the
+        // row's Hour to the Hakbatza's MAX(Hour) (matching what Hakbatza_AddTeacher
+        // would do for a fresh teacher). Hak=0 (clear) is always allowed.
         string hakSql = hakVal > 0 ? hakVal.ToString() : "NULL";
-        string sql = "UPDATE ClassTeacher SET Hakbatza=" + hakSql + ", Ihud=NULL" +
-                     " WHERE ClassTeacherId=" + ctId + " AND ConfigurationId=" + cfgId;
+        string sql;
+        if (hakVal > 0)
+        {
+            sql = @"
+DECLARE @LayerId INT = (SELECT c.LayerId FROM ClassTeacher ct INNER JOIN Class c ON c.ClassId=ct.ClassId WHERE ct.ClassTeacherId=" + ctId + @" AND ct.ConfigurationId=" + cfgId + @");
+DECLARE @HakHour INT = ISNULL((SELECT MAX(ct.Hour) FROM ClassTeacher ct INNER JOIN Class c ON c.ClassId=ct.ClassId WHERE ct.ConfigurationId=" + cfgId + @" AND c.LayerId=@LayerId AND ct.Hakbatza=" + hakVal + @" AND ct.Hour > 0), 1);
+UPDATE ClassTeacher SET Hakbatza=" + hakVal + @", Ihud=NULL,
+  Hour = CASE WHEN ISNULL(Hour,0) <= 0 THEN @HakHour ELSE Hour END
+WHERE ClassTeacherId=" + ctId + @" AND ConfigurationId=" + cfgId + ";";
+        }
+        else
+        {
+            sql = "UPDATE ClassTeacher SET Hakbatza=NULL, Ihud=NULL" +
+                  " WHERE ClassTeacherId=" + ctId + " AND ConfigurationId=" + cfgId;
+        }
         Dal.ExecuteNonQuery(sql);
 
         HttpContext.Current.Response.Clear();
@@ -1433,6 +1618,7 @@ SELECT
   ISNULL(c.LayerId,0) AS LayerId,
   ISNULL(ct.TeacherId, 0) AS TeacherId,
   ISNULL(t.FirstName,'') + ' ' + ISNULL(t.LastName,'') AS TeacherName,
+  ISNULL(ct.Hour, 0) AS Hour,
   ISNULL(gi.Name, '') AS Name,
   ISNULL(gi.ProfessionalId, 0) AS ProfessionalId,
   ISNULL(p.Name, '') AS ProfessionalName
@@ -2379,13 +2565,14 @@ WHERE ct.ConfigurationId = " + cfgId + @"
                     HttpContext.Current.Session["ShibutzErrors"] = new List<ShibutzError>();
                     HttpContext.Current.Session["ShibutzSavedCount"] = 0;
                     HttpContext.Current.Session["ShibutzErrorCount"] = 0;
+                    HttpContext.Current.Session["ShibutzLastException"] = ex.GetType().Name + ": " + ex.Message + " | " + ex.StackTrace;
                 }
             }
             catch
             {
                 // Ignore session errors
             }
-            
+
             DataTable dt = new DataTable();
             if (HttpContext.Current != null && HttpContext.Current.Response != null)
             {
@@ -2393,6 +2580,21 @@ WHERE ct.ConfigurationId = " + cfgId + @"
             }
         }
         } // end lock
+    }
+
+    [WebMethod(EnableSession = true)]
+    public void Assign_GetLastException()
+    {
+        try
+        {
+            string ex = HttpContext.Current.Session["ShibutzLastException"] as string;
+            HttpContext.Current.Response.ContentType = "text/plain; charset=utf-8";
+            HttpContext.Current.Response.Write(ex ?? "(none)");
+        }
+        catch (Exception e)
+        {
+            HttpContext.Current.Response.Write("Error reading: " + e.Message);
+        }
     }
 
     [WebMethod(EnableSession = true)]

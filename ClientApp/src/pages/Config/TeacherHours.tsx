@@ -4,6 +4,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { useToast } from '../../lib/toast';
 import ExportButtons from '../../lib/ExportButtons';
 import { buildExportHandlers } from '../../lib/export';
+import ExcelImportModal, { type ExcelColumnSpec, type ParseRowResult } from '../../lib/ExcelImportModal';
 
 interface Teacher {
   TeacherId: number | string;
@@ -217,6 +218,7 @@ export default function TeacherHours() {
   }>>>(new Map());
   const [filterName, setFilterName] = useState('');
   const [filterTafkid, setFilterTafkid] = useState<string>('');
+  const [showImportModal, setShowImportModal] = useState(false);
   const [filterClass, setFilterClass] = useState<string>('');
   const [initialLoading, setInitialLoading] = useState(true);
   const [freeDayBusy, setFreeDayBusy] = useState(false);
@@ -440,12 +442,17 @@ export default function TeacherHours() {
       }
       if (tafQ && String(t.TafkidId ?? '') !== tafQ) return false;
       if (clsQ) {
+        // מורה כלולה אם היא מחנכ/ת הכיתה (ManageClassId) או שיש לה רישום
+        // ב-ClassTeacher לאותה כיתה (כל המורים המקצועיים שמלמדים בה).
         const mc = (t as { ManageClassId?: unknown }).ManageClassId;
-        if (mc == null || String(mc) !== clsQ) return false;
+        const isHomeroom = mc != null && String(mc) === clsQ;
+        const teaches = (classesByTeacher.get(String(t.TeacherId)) ?? [])
+          .some((c) => String(c.ClassId) === clsQ);
+        if (!isHomeroom && !teaches) return false;
       }
       return true;
     });
-  }, [sortedTeachers, filterName, filterTafkid, filterClass]);
+  }, [sortedTeachers, filterName, filterTafkid, filterClass, classesByTeacher]);
 
   useEffect(() => {
     if (selectedTeacher) {
@@ -1140,6 +1147,15 @@ export default function TeacherHours() {
           <div className="panel panel-info">
             <div className="panel-heading" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <h3 className="panel-title" style={{ margin: 0 }}>&nbsp;בחירת מורה</h3>
+              <button
+                type="button"
+                className="excel-import-btn"
+                onClick={() => setShowImportModal(true)}
+                title="ייבוא מקובץ Excel"
+              >
+                <i className="fa fa-file-excel-o" />
+                ייבוא מ-Excel
+              </button>
               <div style={{ marginInlineStart: 'auto' }}>
                 {(() => {
                   // Export the full teacher list (management view)
@@ -1755,7 +1771,7 @@ export default function TeacherHours() {
             </select>
           </div>
           <div className="teacher-filter-bar__field">
-            <label htmlFor="fltClass">כיתה (מחנך/ת)</label>
+            <label htmlFor="fltClass">כיתה</label>
             <select
               id="fltClass"
               className="form-control"
@@ -2389,8 +2405,172 @@ export default function TeacherHours() {
           </div>
         </div>
       )}
+
+      {showImportModal && (
+        <ExcelImportModal
+          open={showImportModal}
+          onClose={() => setShowImportModal(false)}
+          title="ייבוא מורים מ-Excel"
+          description="העלה קובץ Excel עם רשימת מורים. ניתן להוריד תבנית ריקה ולמלא אותה."
+          schema={TEACHERS_IMPORT_SCHEMA}
+          sampleRows={TEACHERS_IMPORT_SAMPLE}
+          existingCount={teachers.length}
+          parseRow={(raw, rowIdx) => parseTeacherRow(raw, rowIdx, tafkidOptions, professionalOptions)}
+          performImport={async (rows, onProgress) => importTeachers(rows, onProgress)}
+          onCompleted={() => loadTeachers()}
+        />
+      )}
     </>
   );
+}
+
+// ============================================================
+// Excel import — Teachers
+// ============================================================
+
+const TEACHERS_IMPORT_SCHEMA: ExcelColumnSpec[] = [
+  { key: 'firstName', header: 'שם פרטי', required: true, description: 'שם פרטי של המורה', example: 'שרה' },
+  { key: 'lastName', header: 'שם משפחה', required: true, description: 'שם משפחה של המורה', example: 'כהן' },
+  { key: 'tafkid', header: 'תפקיד', required: true, description: 'תפקיד המורה', example: 'מחנכ/ת כיתה',
+    hint: 'ערכים מותרים: מחנכ/ת כיתה, מורה מקצועי, מנהל, סגן כיתה, קרן קרב' },
+  { key: 'professional', header: 'מקצוע', required: false, description: 'מקצוע המורה (לפי שם)', example: 'אנגלית',
+    hint: 'יש להזין שם מקצוע קיים במערכת. השאר ריק אם לא רלוונטי.' },
+  { key: 'freeDay', header: 'יום חופשי', required: false, description: 'יום חופש שבועי', example: 'שני',
+    hint: 'ראשון / שני / שלישי / רביעי / חמישי / ללא (השאר ריק = ללא)' },
+  { key: 'frontaly', header: 'שעות מוקצבות', required: true, description: 'מספר שעות פרונטליות שבועיות', example: '22' },
+  { key: 'shehya', header: 'שהייה', required: false, description: 'שעות שהייה', example: '5' },
+  { key: 'partani', header: 'פרטני', required: false, description: 'שעות פרטני', example: '4' },
+  { key: 'tz', header: 'תעודת זהות', required: false, description: 'מס׳ ת״ז (אופציונלי)', example: '012345678' },
+  { key: 'email', header: 'דוא״ל', required: false, description: 'כתובת דוא״ל (אופציונלי)', example: 'sara@school.co.il' },
+];
+
+const TEACHERS_IMPORT_SAMPLE: Array<Record<string, string | number>> = [
+  { firstName: 'שרה', lastName: 'כהן', tafkid: 'מחנכ/ת כיתה', professional: '', freeDay: 'שני', frontaly: 22, shehya: 5, partani: 4, tz: '', email: '' },
+  { firstName: 'דוד', lastName: 'לוי', tafkid: 'מורה מקצועי', professional: 'אנגלית', freeDay: 'רביעי', frontaly: 18, shehya: 4, partani: 3, tz: '', email: '' },
+  { firstName: 'נועה', lastName: 'אברהם', tafkid: 'מורה מקצועי', professional: 'מתמטיקה', freeDay: 'ללא', frontaly: 24, shehya: 5, partani: 4, tz: '', email: '' },
+];
+
+const FREE_DAY_MAP: Record<string, string> = {
+  'ראשון': '1', 'שני': '2', 'שלישי': '3', 'רביעי': '4', 'חמישי': '5', 'שישי': '6',
+  'ללא': '0', '': '0', 'אין': '0',
+};
+
+interface TeacherImportPayload {
+  firstName: string;
+  lastName: string;
+  tafkidId: string;
+  professionalId: string;
+  freeDay: string;
+  frontaly: string;
+  shehya: string;
+  partani: string;
+  tz: string;
+  email: string;
+}
+
+function parseTeacherRow(
+  raw: Record<string, unknown>,
+  rowIdx: number,
+  tafkidOptions: Array<{ TafkidId: number; Name: string }>,
+  professionals: Array<{ ProfessionalId: number | string; Name: string }>,
+): ParseRowResult<TeacherImportPayload> {
+  const errors: string[] = [];
+  const get = (k: string): string => {
+    // ב-XLSX ה-keys הם הכותרות בעברית
+    const v = raw[k];
+    return v == null ? '' : String(v).trim();
+  };
+  const firstName = get('שם פרטי');
+  const lastName = get('שם משפחה');
+  const tafkidName = get('תפקיד');
+  const profName = get('מקצוע');
+  const freeDayName = get('יום חופשי');
+  const frontaly = get('שעות מוקצבות');
+  const shehya = get('שהייה');
+  const partani = get('פרטני');
+  const tz = get('תעודת זהות');
+  const email = get('דוא״ל') || get('דוא"ל') || get('דואל');
+  // דילוג על שורה ריקה לחלוטין
+  if (!firstName && !lastName && !tafkidName && !frontaly) return { ok: false };
+
+  if (!firstName) errors.push('חסר שם פרטי');
+  if (!lastName) errors.push('חסר שם משפחה');
+  if (!frontaly || isNaN(Number(frontaly))) errors.push('שעות מוקצבות חייב להיות מספר');
+
+  const tafRow = tafkidOptions.find((t) => t.Name.trim() === tafkidName.trim());
+  if (!tafRow) errors.push(`תפקיד "${tafkidName}" לא קיים`);
+
+  let profId = '';
+  if (profName) {
+    const p = professionals.find((pp) => String(pp.Name).trim() === profName.trim());
+    if (!p) errors.push(`מקצוע "${profName}" לא קיים`);
+    else profId = String(p.ProfessionalId);
+  }
+
+  const fd = FREE_DAY_MAP[freeDayName] ?? (Number(freeDayName) >= 0 && Number(freeDayName) <= 6 ? String(Number(freeDayName)) : null);
+  if (fd == null) errors.push(`יום חופשי "${freeDayName}" לא חוקי (ראשון-חמישי או ללא)`);
+
+  if (errors.length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    payload: {
+      firstName, lastName,
+      tafkidId: String(tafRow!.TafkidId),
+      professionalId: profId,
+      freeDay: fd!,
+      frontaly: String(Number(frontaly)),
+      shehya: shehya && !isNaN(Number(shehya)) ? String(Number(shehya)) : '0',
+      partani: partani && !isNaN(Number(partani)) ? String(Number(partani)) : '0',
+      tz, email,
+    },
+  };
+}
+
+async function importTeachers(
+  rows: TeacherImportPayload[],
+  onProgress: (cur: number, total: number) => void,
+): Promise<{ success: number; failed: number; errors: string[] }> {
+  // 1) שלוף את המורים הקיימים בקונפיג
+  let existing: Array<{ TeacherId: number | string }> = [];
+  try {
+    existing = await ajax<Array<{ TeacherId: number | string }>>('Teacher_GetTeacherList', { TeacherId: '', Mode: '', SubMode: '' });
+  } catch { /* ignore */ }
+  // 2) מחק את כולם (בלי אישור — המודאל כבר אישר)
+  let deleted = 0;
+  for (const t of (existing || [])) {
+    try {
+      await ajax('Teacher_DML', { TeacherId: String(t.TeacherId), Type: 'delete', Tafkid: '0', FirstName: '', LastName: '', Email: '', Frontaly: '0', FreeDay: '0', Tz: '', Shehya: '0', Partani: '0', ProfessionalId: '' });
+      deleted++;
+    } catch { /* ignore */ }
+    onProgress(Math.round((deleted / Math.max(1, existing.length)) * 0.3 * rows.length), rows.length);
+  }
+  // 3) טען חדשים
+  let success = 0; let failed = 0; const errors: string[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      await ajax('Teacher_DML', {
+        TeacherId: '0',
+        Type: 'insert',
+        Tafkid: r.tafkidId,
+        FirstName: r.firstName,
+        LastName: r.lastName,
+        Email: r.email,
+        Frontaly: r.frontaly,
+        FreeDay: r.freeDay,
+        Tz: r.tz,
+        Shehya: r.shehya,
+        Partani: r.partani,
+        ProfessionalId: r.professionalId,
+      });
+      success++;
+    } catch (e) {
+      failed++;
+      errors.push(`${r.firstName} ${r.lastName}: ${(e as Error).message}`);
+    }
+    onProgress(i + 1, rows.length);
+  }
+  return { success, failed, errors };
 }
 
 function SLOTS_PER_DAY(day: number): number[] {

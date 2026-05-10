@@ -68,6 +68,21 @@ function formatElapsed(seconds: number): string {
   return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
 }
 
+interface ClassLiveProgress {
+  ClassId: number;
+  ClassName: string;
+  TotalSlots: number;
+  FilledSlots: number;
+}
+interface ShibutzLiveStatus {
+  IsRunning: boolean;
+  ElapsedMs: number;
+  TotalSlots: number;
+  RedSlots: number;
+  CurrentStep: string;
+  Classes: ClassLiveProgress[];
+}
+
 // HourId encodes the day in the leading digit (1=ראשון, 2=שני, …) and the
 // hour sequence in the trailing digits — same convention as Assign.tsx.
 function splitUnusedHourIds(csv: string): { day: number; hour: number }[] {
@@ -146,7 +161,7 @@ export default function AssignAuto() {
   // combination could fill, and the apply button writes the new contract.
   interface TeacherLite { TeacherId: number; FullName: string; FreeDay: number; Frontaly: number }
   interface ClassLite { ClassId: number; ClassName: string }
-  interface ClassTeacherLite { ClassId: number; TeacherId: number; Hour: number; ClassTeacherId: number }
+  interface ClassTeacherLite { ClassId: number; TeacherId: number; Hour: number; ClassTeacherId: number; Hakbatza: number | null; Ihud: number | null }
   const [allTeachers, setAllTeachers] = useState<TeacherLite[]>([]);
   const [allClasses, setAllClasses] = useState<ClassLite[]>([]);
   const [classTeacherRows, setClassTeacherRows] = useState<ClassTeacherLite[]>([]);
@@ -186,7 +201,7 @@ export default function AssignAuto() {
     try {
       type TRow = { TeacherId: number | string; FirstName?: string; LastName?: string; FreeDay?: number | string | null; Frontaly?: number | string | null };
       type CRow = { ClassId: number | string; ClassName?: string; Name?: string };
-      type CTRow = { ClassId: number | string; TeacherId: number | string; Hour: number | string | null; ClassTeacherId: number | string };
+      type CTRow = { ClassId: number | string; TeacherId: number | string; Hour: number | string | null; ClassTeacherId: number | string; Hakbatza?: number | string | null; Ihud?: number | string | null };
       type AssignRow = { TeacherId: number | string; ClassId: number | string; HourId: number | string };
       type SHRow = { HourId: number | string; IsOnlyShehya?: number | string | boolean | null };
       const [tRows, cRows, ctRows, taRows, shRows] = await Promise.all([
@@ -212,6 +227,8 @@ export default function AssignAuto() {
         TeacherId: Number(r.TeacherId),
         Hour: Number(r.Hour ?? 0) || 0,
         ClassTeacherId: Number(r.ClassTeacherId ?? 0),
+        Hakbatza: r.Hakbatza == null || r.Hakbatza === '' ? null : Number(r.Hakbatza) || null,
+        Ihud: r.Ihud == null || r.Ihud === '' ? null : Number(r.Ihud) || null,
       }));
       const busy = new Map<number, Set<number>>();
       // (ClassId, HourId) cells that are actually filled — used to derive
@@ -319,29 +336,113 @@ export default function AssignAuto() {
     }
   }, []);
 
+  // טוען Empty cells per class ישירות מ-DB. שונה מ-emptyCellsByClass שב-state
+  // (זה נטען רק כש-modal נפתח); כאן אנחנו צריכים את הנתונים לפני קבלת
+  // ההחלטה איזה modal להציג.
+  async function fetchEmptyCellsByClass(): Promise<Map<number, Set<number>>> {
+    type AssignRow = { ClassId: number | string; HourId: number | string };
+    type SHRow = { HourId: number | string; IsOnlyShehya?: number | string | boolean | null };
+    type CRow = { ClassId: number | string };
+    const [taRows, shRows, cRows] = await Promise.all([
+      ajax<AssignRow[]>('Gen_GetTable', { TableName: 'TeacherAssignment', Condition: 'ConfigurationId=1 AND HourTypeId=1' }).catch(() => [] as AssignRow[]),
+      ajax<SHRow[]>('Gen_GetTable', { TableName: 'SchoolHours', Condition: 'ConfigurationId=1' }).catch(() => [] as SHRow[]),
+      ajax<CRow[]>('Class_GetAllClass').catch(() => [] as CRow[]),
+    ]);
+    const filled = new Set<string>();
+    for (const a of (Array.isArray(taRows) ? taRows : [])) {
+      const cid = Number(a.ClassId), hid = Number(a.HourId);
+      if (cid && hid) filled.add(`${cid}_${hid}`);
+    }
+    const validHourIds: number[] = [];
+    for (const r of (Array.isArray(shRows) ? shRows : [])) {
+      const ios = String(r.IsOnlyShehya ?? '').toLowerCase();
+      if (ios === '1' || ios === 'true') continue;
+      const hid = Number(r.HourId);
+      if (hid > 0) validHourIds.push(hid);
+    }
+    const empties = new Map<number, Set<number>>();
+    for (const c of (Array.isArray(cRows) ? cRows : [])) {
+      const cid = Number(c.ClassId);
+      if (!cid) continue;
+      for (const hid of validHourIds) {
+        if (!filled.has(`${cid}_${hid}`)) {
+          let s = empties.get(cid);
+          if (!s) { s = new Set(); empties.set(cid, s); }
+          s.add(hid);
+        }
+      }
+    }
+    return empties;
+  }
+
+  // בנה רשימת התנגשויות יום-חופשי מתוך diagnostic של post-assign:
+  // נכלול רק (ClassId, FreeDay) שעבורם יש תא ריק בכיתה ביום ה-FreeDay של
+  // המורה — אחרת זו לא בעיית FreeDay אלא over-demand גלובלי / Hakbatza /
+  // התנגשות אחרת. הפורמט זהה ל-SP `Class_GetFreeDayConflicts`.
+  function buildFreeDayConflictsFromDiag(
+    diag: DiagnosticRow[],
+    emptyCellsByCls: Map<number, Set<number>>,
+  ): FreeDayConflict[] {
+    const emptyDaysByClass = new Map<number, Set<number>>();
+    for (const [cid, hours] of emptyCellsByCls) {
+      const days = new Set<number>();
+      for (const h of hours) days.add(Math.floor(h / 10));
+      emptyDaysByClass.set(cid, days);
+    }
+    const byKey = new Map<string, FreeDayConflict>();
+    for (const r of diag) {
+      if (!(r.Missing > 0)) continue;
+      if (!(r.FreeDay > 0)) continue;
+      const days = emptyDaysByClass.get(r.ClassId);
+      if (!days || !days.has(r.FreeDay)) continue;
+      const key = `${r.ClassId}_${r.FreeDay}`;
+      let entry = byKey.get(key);
+      if (!entry) {
+        entry = {
+          ClassId: r.ClassId,
+          ClassName: r.ClassName,
+          LayerId: 0,
+          FreeDay: r.FreeDay,
+          TeacherCount: 0,
+          TeachersCsv: '',
+        };
+        byKey.set(key, entry);
+      }
+      entry.TeacherCount++;
+      entry.TeachersCsv += (entry.TeachersCsv ? '|' : '') + `${r.TeacherId}:${r.TeacherName}`;
+    }
+    return Array.from(byKey.values());
+  }
+
   useEffect(() => {
     checkFreeDayConflicts();
   }, [checkFreeDayConflicts]);
 
-  // בדיקת היתכנות מקדימה — רצה ברקע, ללא loading. אם יש בעיות שעלולות
-  // למנוע שיבוץ 100%, מציגים תווית. רק כשהשיבוץ הנוכחי < 100%.
+  // בדיקת היתכנות מקדימה — רצה ברקע ללא loading. מאחדת:
+  //   1. Assign_PreCheck — over-demand גלובלי/כיתתי/מורה + 3+ מורים עם אותו FreeDay.
+  //   2. Assign_FreeDayPreCheck — Hall's המקומי (יום עמוס מדי) + הקבצות עם
+  //      FreeDay לא-מסונכרן.
+  // רצה ב-mount וכן בכל שינוי ב-currentGapCount, כדי שגם משתמש שזה עתה
+  // נכנס לדף (בלי שיבוץ קיים) יראה את הבאנר אם הנתונים בעייתיים.
   interface PreCheckIssue { Kind: string; Id1: number; Id2: number; Label: string; Detail: string }
   const [preCheckIssues, setPreCheckIssues] = useState<PreCheckIssue[]>([]);
   const [showPreCheckDetails, setShowPreCheckDetails] = useState(false);
   useEffect(() => {
-    // רק אם השיבוץ לא 100% (יש משבצות ריקות) — מבצעים pre-check
-    if (currentGapCount === null || currentGapCount === 0) {
-      setPreCheckIssues([]);
-      return;
-    }
     let cancelled = false;
     (async () => {
       try {
-        const data = await ajax<PreCheckIssue[]>('Assign_PreCheck');
+        const [primary, freeDay] = await Promise.all([
+          ajax<PreCheckIssue[]>('Assign_PreCheck').catch(() => [] as PreCheckIssue[]),
+          ajax<PreCheckIssue[]>('Assign_FreeDayPreCheck').catch(() => [] as PreCheckIssue[]),
+        ]);
         if (cancelled) return;
-        setPreCheckIssues(Array.isArray(data) ? data : []);
+        const merged: PreCheckIssue[] = [
+          ...(Array.isArray(primary) ? primary : []),
+          ...(Array.isArray(freeDay) ? freeDay : []),
+        ];
+        setPreCheckIssues(merged);
       } catch (err) {
-        console.error('Assign_PreCheck failed', err);
+        console.error('PreCheck failed', err);
       }
     })();
     return () => { cancelled = true; };
@@ -360,6 +461,29 @@ export default function AssignAuto() {
       setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
     }, 1000);
     return () => clearInterval(id);
+  }, [isLoading]);
+
+  // Live progress polling — מציג למשתמש מה השרת עושה תוך כדי השיבוץ. לא נוגע
+  // בלוגיקת השיבוץ עצמה: רק קורא ל-Assign_GetShibutzLiveStatus כל ~700ms.
+  // ה-state מתאפס כשה-loading נסגר.
+  const [liveStatus, setLiveStatus] = useState<ShibutzLiveStatus | null>(null);
+  useEffect(() => {
+    if (!isLoading) {
+      setLiveStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const s = await ajax<ShibutzLiveStatus>('Assign_GetShibutzLiveStatus');
+        if (!cancelled && s && typeof s === 'object') setLiveStatus(s);
+      } catch {
+        // הפולינג חסין לכשלים — נמשיך לדגום בלי להפסיק
+      }
+    };
+    tick();
+    const id = setInterval(tick, 700);
+    return () => { cancelled = true; clearInterval(id); };
   }, [isLoading]);
 
   async function fetchShibutzErrors(): Promise<{
@@ -891,8 +1015,20 @@ export default function AssignAuto() {
         setResultMode('errors');
         setEmptyCellsState(reportedGap);
         setErrorCount(reportedGap);
-        setShowDiagnostic(true);
         setSuccessAlert(true);
+        // אם החוסר נובע מ-FreeDay של מורה — תא ריק בכיתה ביום ה-FreeDay
+        // של מורה שיש לו Missing>0 — הצג את ה-modal הייעודי לפתרון ימי
+        // חופשי במקום ה-Diagnostic של dropdowns.
+        const empties = await fetchEmptyCellsByClass();
+        const fdConflicts = buildFreeDayConflictsFromDiag(diag, empties);
+        if (fdConflicts.length > 0) {
+          setShowDiagnostic(false);
+          setFreeDayConflicts(fdConflicts);
+          pendingFlowRef.current = 'assign';
+          openConflictModalNow(fdConflicts);
+        } else {
+          setShowDiagnostic(true);
+        }
       }
       // רענן את ה-coverage pill בראש המסך (MasterLayout) — מאזין לאירוע.
       window.dispatchEvent(new CustomEvent('class-status-changed'));
@@ -975,11 +1111,23 @@ export default function AssignAuto() {
       } else {
         setEmptyCellsState(remaining);
         setErrorCount(remaining);
-        // הצג את אותו דיאגנוסטיקה כמו ב-runAuto — מבוסס משבצות חיות מ-DB,
-        // לא על הסשן (שעלול להיות ריק כי לא הופעל ShibutzAuto). הפופאפ
-        // עצמו בונה כרטיסים מ-emptyCellsByClass.
-        setShowDiagnostic(true);
         setSuccessAlert(true);
+        // אם החוסר נובע מ-FreeDay של מורה — הצג modal ייעודי במקום
+        // ה-Diagnostic של dropdowns. אחרי עדכון FreeDay נמשיך ב-fixGaps
+        // (לא נמחק שיבוץ קיים, רק נמלא חוסרים).
+        const empties = await fetchEmptyCellsByClass();
+        const fdConflicts = buildFreeDayConflictsFromDiag(diag, empties);
+        if (fdConflicts.length > 0) {
+          setShowDiagnostic(false);
+          setFreeDayConflicts(fdConflicts);
+          pendingFlowRef.current = 'fixGaps';
+          openConflictModalNow(fdConflicts);
+        } else {
+          // הצג את אותו דיאגנוסטיקה כמו ב-runAuto — מבוסס משבצות חיות מ-DB,
+          // לא על הסשן (שעלול להיות ריק כי לא הופעל ShibutzAuto). הפופאפ
+          // עצמו בונה כרטיסים מ-emptyCellsByClass.
+          setShowDiagnostic(true);
+        }
         if (filled > 0) {
           toast.warning(`מולאו ${filled} חוסרים. נותרו ${remaining} משבצות שאין להן מורה זמין.`);
         } else {
@@ -1078,23 +1226,78 @@ export default function AssignAuto() {
 
   return (
     <div style={{ direction: 'rtl' }}>
-      {isLoading && (
-        <div className="action-loading" role="status" aria-live="polite">
-          <div className="action-loading__card assign-loading-card">
-            <div className="assign-loading-spinner" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </div>
-            <div className="action-loading__title">{loadingTitle}...</div>
-            <div className="action-loading__sub">אנא המתן, התהליך עשוי לקחת מספר שניות</div>
-            <div className="action-loading__bar" />
-            <div className="assign-loading-timer" aria-live="off">
-              <i className="fa fa-clock-o" /> {formatElapsed(elapsedSec)}
+      {isLoading && (() => {
+        const live = liveStatus && liveStatus.IsRunning ? liveStatus : null;
+        const total = live?.TotalSlots ?? 0;
+        const red = live?.RedSlots ?? 0;
+        const filled = Math.max(0, total - red);
+        const pct = total > 0 ? Math.min(100, Math.round((filled / total) * 1000) / 10) : 0;
+        const step = live?.CurrentStep?.trim();
+        const headline = step && step.length > 0 ? step : loadingTitle;
+        // ממיין את הכיתות: קודם פעילות (לא מלאות, יש שיבוץ), אחר-כך מלאות,
+        // ואז ריקות. תמיד מגביל ל-12 שכבר נראה דחוס מספיק במסך.
+        const classes = (live?.Classes ?? [])
+          .slice()
+          .sort((a, b) => {
+            const aDone = a.TotalSlots > 0 && a.FilledSlots >= a.TotalSlots ? 1 : 0;
+            const bDone = b.TotalSlots > 0 && b.FilledSlots >= b.TotalSlots ? 1 : 0;
+            const aActive = a.FilledSlots > 0 && !aDone ? 1 : 0;
+            const bActive = b.FilledSlots > 0 && !bDone ? 1 : 0;
+            if (aActive !== bActive) return bActive - aActive;
+            if (aDone !== bDone) return aDone - bDone;
+            return (b.FilledSlots / Math.max(1, b.TotalSlots)) - (a.FilledSlots / Math.max(1, a.TotalSlots));
+          })
+          .slice(0, 12);
+        return (
+          <div className="action-loading" role="status" aria-live="polite">
+            <div className="action-loading__card assign-loading-card assign-loading-card--live">
+              <div className="assign-loading-spinner" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+              <div className="action-loading__title">{headline}...</div>
+              <div className="action-loading__sub">
+                {live ? `${filled.toLocaleString('he-IL')} מתוך ${total.toLocaleString('he-IL')} משבצות שובצו` : 'אנא המתן, התהליך עשוי לקחת מספר שניות'}
+              </div>
+              {live && total > 0 ? (
+                <>
+                  <div className="assign-progress" aria-label={`התקדמות ${pct}%`}>
+                    <div className="assign-progress__fill" style={{ width: `${pct}%` }} />
+                    <div className="assign-progress__label">{pct.toFixed(1)}%</div>
+                  </div>
+                  {classes.length > 0 && (
+                    <div className="assign-progress-classes">
+                      {classes.map((c) => {
+                        const cPct = c.TotalSlots > 0 ? Math.min(100, Math.round((c.FilledSlots / c.TotalSlots) * 100)) : 0;
+                        const cDone = c.TotalSlots > 0 && c.FilledSlots >= c.TotalSlots;
+                        const cActive = !cDone && c.FilledSlots > 0;
+                        const cls = `assign-progress-classes__item${cDone ? ' is-done' : ''}${cActive ? ' is-active' : ''}`;
+                        return (
+                          <div key={c.ClassId} className={cls} title={`${c.ClassName} – ${c.FilledSlots}/${c.TotalSlots}`}>
+                            <div className="assign-progress-classes__head">
+                              <span className="assign-progress-classes__name">{c.ClassName}</span>
+                              <span className="assign-progress-classes__count">{c.FilledSlots}/{c.TotalSlots}</span>
+                            </div>
+                            <div className="assign-progress-classes__bar">
+                              <div className="assign-progress-classes__fill" style={{ width: `${cPct}%` }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="action-loading__bar" />
+              )}
+              <div className="assign-loading-timer" aria-live="off">
+                <i className="fa fa-clock-o" /> {formatElapsed(elapsedSec)}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <div className="assign-auto">
         <div className="assign-auto__card">
@@ -1144,24 +1347,48 @@ export default function AssignAuto() {
                       the user clicks "שבץ". Without it the conflict modal
                       only surfaces during the assign flow, so a user just
                       browsing the page would never know the schedule is
-                      unsolvable until they tried. */}
-                  {freeDayConflicts.length > 0 && (
-                    <div className="assign-auto__free-day-warn">
-                      <i className="fa fa-exclamation-triangle" />
-                      <span>
-                        התנגשות יום חופשי ב-{freeDayConflicts.length}{' '}
-                        {freeDayConflicts.length === 1 ? 'כיתה' : 'כיתות'} —
-                        השיבוץ לא יושלם עד שיוסדר.
-                      </span>
-                      <button
-                        type="button"
-                        className="assign-auto__free-day-btn"
-                        onClick={() => openConflictModalNow(freeDayConflicts)}
-                      >
-                        פתור עכשיו
-                      </button>
-                    </div>
-                  )}
+                      unsolvable until they tried.
+                      ה-banner מופיע גם בשלוש בעיות FreeDay אחרות שמזוהות
+                      ב-PreCheck (overload 3+, capacity squeeze, hakbatza
+                      split) — אחרת המשתמש לא רואה אזהרה ברורה ואת מסלול
+                      ה"פתור עכשיו". */}
+                  {(() => {
+                    const freeDayKinds = new Set([
+                      'class_freeday_overload',
+                      'class_freeday_capacity_squeeze',
+                      'hakbatza_freeday_split',
+                    ]);
+                    const freeDayPreCheckCount = preCheckIssues.filter(i => freeDayKinds.has(i.Kind)).length;
+                    const totalFreeDayClasses = freeDayConflicts.length || freeDayPreCheckCount;
+                    if (totalFreeDayClasses === 0) return null;
+                    return (
+                      <div className="assign-auto__free-day-warn">
+                        <i className="fa fa-exclamation-triangle" />
+                        <span>
+                          {freeDayConflicts.length > 0
+                            ? `התנגשות יום חופשי ב-${freeDayConflicts.length} ${freeDayConflicts.length === 1 ? 'כיתה' : 'כיתות'} — השיבוץ לא יושלם עד שיוסדר.`
+                            : `זוהו ${freeDayPreCheckCount} בעיות יום חופשי שעלולות למנוע שיבוץ מלא.`}
+                        </span>
+                        {freeDayConflicts.length > 0 ? (
+                          <button
+                            type="button"
+                            className="assign-auto__free-day-btn"
+                            onClick={() => openConflictModalNow(freeDayConflicts)}
+                          >
+                            פתור עכשיו
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="assign-auto__free-day-btn"
+                            onClick={() => setShowPreCheckDetails(true)}
+                          >
+                            ראה פירוט
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="assign-auto__actions">
@@ -1239,6 +1466,16 @@ export default function AssignAuto() {
                 icon: 'fa-school',
                 tone: 'class',
               },
+              class_under_demand: {
+                title: 'כיתות שב"הגדרות כיתות ומורים" חסרות שעות מול קיבולת',
+                icon: 'fa-school',
+                tone: 'class',
+              },
+              hakbatza_imbalance: {
+                title: 'הקבצות עם שעות לא הגיוניות (CT.Hour > היקף הקבצה)',
+                icon: 'fa-balance-scale',
+                tone: 'class',
+              },
               teacher_over_demand: {
                 title: 'מורים שצריכים יותר שעות מהזמין להם',
                 icon: 'fa-user-clock',
@@ -1249,8 +1486,26 @@ export default function AssignAuto() {
                 icon: 'fa-calendar-times-o',
                 tone: 'freeday',
               },
+              class_freeday_capacity_squeeze: {
+                title: 'כיתות עם דחיסת יום חופש (מורים בעלי יום חופש דורשים יותר מהזמין בשאר הימים)',
+                icon: 'fa-calendar-times-o',
+                tone: 'freeday',
+              },
+              hakbatza_freeday_split: {
+                title: 'הקבצות עם ימי חופש לא-מסונכרנים בין מורים',
+                icon: 'fa-calendar-times-o',
+                tone: 'freeday',
+              },
             };
-            const grouped = (['class_over_demand', 'teacher_over_demand', 'class_freeday_overload'] as const)
+            const grouped = ([
+              'class_over_demand',
+              'class_under_demand',
+              'hakbatza_imbalance',
+              'teacher_over_demand',
+              'class_freeday_overload',
+              'class_freeday_capacity_squeeze',
+              'hakbatza_freeday_split',
+            ] as const)
               .map((kind) => ({ kind, items: preCheckIssues.filter((i) => i.Kind === kind) }))
               .filter((g) => g.items.length > 0);
             return (
@@ -1969,22 +2224,20 @@ export default function AssignAuto() {
                   if (classTeacherRows.length > 0 && allClasses.length > 0 && validHourIdsList.length > 0) {
                     const capPerClass = validHourIdsList.length;
                     const demandByClass = new Map<number, number>();
-                    // Aggregate: Hakbatza = MAX of group, others = SUM
-                    type Agg = { gKey: string; hour: number };
+                    // Hakbatza/Ihud = MAX לכל קבוצה (כולם באותה שעה), סולו = ערך הרשומה
                     const groups = new Map<number, Map<string, number>>();
                     for (const r of classTeacherRows) {
                       if (!(r.Hour > 0)) continue;
                       const cid = r.ClassId;
-                      const gk = `T${r.TeacherId}`;
-                      // ClassTeacher row interface here only has Hour/ClassTeacherId — the
-                      // Hakbatza/Ihud columns aren't fetched in loadRecommendationData,
-                      // so use SUM for everyone (over-counts Hakbatza but works for
-                      // detecting over-demand classes — the visual "card" still shows
-                      // up). For exact "Hakbatza-as-MAX" math we'd need to extend the
-                      // ClassTeacherLite interface.
+                      const gk = r.Hakbatza
+                        ? `H${r.Hakbatza}`
+                        : r.Ihud
+                          ? `I${r.Ihud}`
+                          : `T${r.TeacherId}`;
                       let cMap = groups.get(cid);
                       if (!cMap) { cMap = new Map(); groups.set(cid, cMap); }
-                      cMap.set(gk, (cMap.get(gk) ?? 0) + r.Hour);
+                      const prev = cMap.get(gk) ?? 0;
+                      cMap.set(gk, gk[0] === 'T' ? prev + r.Hour : Math.max(prev, r.Hour));
                     }
                     for (const [cid, cMap] of groups) {
                       let sum = 0;
@@ -1993,7 +2246,7 @@ export default function AssignAuto() {
                     }
                     for (const [cid, demand] of demandByClass) {
                       if (demand <= capPerClass) continue;
-                      if (map.has(cid)) continue; // already covered as empty-cell card
+                      if (map.has(cid)) continue;
                       const cls = allClasses.find((c) => c.ClassId === cid);
                       map.set(cid, {
                         classId: cid,

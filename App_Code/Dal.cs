@@ -452,6 +452,7 @@ public class Dal
         using (SqlCommand cmd = new SqlCommand(storedProcedureName, mySqlConnection))
         {
             cmd.CommandType = CommandType.StoredProcedure;
+            cmd.CommandTimeout = 120; // saves of 851+ rows need more than 30s
             if (tx != null) cmd.Transaction = tx;
             FillParametersFromCache(cmd);
 
@@ -501,13 +502,11 @@ public class Dal
 
     public static DataSet ExeDataSetSp(string storedProcedureName, params object[] Params)
     {
-
-
-
         using (SqlConnection con = new SqlConnection(_dbConnectionString))
         using (SqlCommand cmd = new SqlCommand(storedProcedureName, con))
         {
             cmd.CommandType = CommandType.StoredProcedure;
+            cmd.CommandTimeout = 120; // SPs ייצור TeachList איטיים — 2 דקות
             con.Open();
             FillParametersFromCache(cmd);
 
