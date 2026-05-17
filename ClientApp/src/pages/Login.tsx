@@ -31,37 +31,45 @@ export default function Login() {
   }
 
   return (
-    <div className="container" style={{ maxWidth: 400, marginTop: 100 }}>
-      <div className="panel panel-default">
-        <div className="panel-heading"><h3 className="panel-title">סגנית - כניסה למערכת</h3></div>
-        <div className="panel-body">
-          <form onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label htmlFor="txtUserName">שם משתמש</label>
-              <input
-                id="txtUserName"
-                className="form-control"
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                autoFocus
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="txtPassword">סיסמה</label>
-              <input
-                id="txtPassword"
-                type="password"
-                className="form-control"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            {error && <div id="spEnterAlert" className="alert alert-danger">שם משתמש או סיסמה שגויים</div>}
-            <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
-              {loading ? 'מתחבר...' : 'כניסה'}
-            </button>
-          </form>
+    <div className="login-screen">
+      <div className="login-card">
+        <div className="login-brand">
+          <div className="login-brand-mark">ס</div>
+          <div>
+            <div className="login-brand-name">סגנית</div>
+            <div className="login-brand-sub">מערכת ניהול שיבוץ</div>
+          </div>
         </div>
+
+        <h1>ברוך הבא 👋</h1>
+        <p className="login-lead">הזן את פרטי ההתחברות שלך כדי להיכנס למערכת.</p>
+
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label htmlFor="txtUserName">שם משתמש</label>
+            <input
+              id="txtUserName"
+              className="form-control"
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="form-group">
+            <label htmlFor="txtPassword">סיסמה</label>
+            <input
+              id="txtPassword"
+              type="password"
+              className="form-control"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+          {error && <div id="spEnterAlert" className="alert alert-danger">שם משתמש או סיסמה שגויים</div>}
+          <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
+            {loading ? 'מתחבר...' : 'כניסה'}
+          </button>
+        </form>
       </div>
     </div>
   );

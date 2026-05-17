@@ -3,7 +3,8 @@ import { ajax } from '../../api/client';
 import { useToast } from '../../lib/toast';
 import ExportButtons from '../../lib/ExportButtons';
 import { buildExportHandlers } from '../../lib/export';
-import ExcelImportModal, { type ExcelColumnSpec, type ParseRowResult } from '../../lib/ExcelImportModal';
+import ExcelImportModal, { type ExcelColumnSpec, type ParseRowResult, type ExcelImportTemplate, type ParsedRowsResult, type ExcelPreviewSheet } from '../../lib/ExcelImportModal';
+import * as XLSX from 'xlsx';
 
 // ---------- types returned by backend SPs ----------
 interface TafkidRow {
@@ -92,6 +93,12 @@ export default function TeacherClass() {
   const [professionalOpts, setProfessionalOpts] = useState<ProfessionalOption[]>([]);
   const [teachers, setTeachers] = useState<TeacherRow[]>([]);
   const [classes, setClasses] = useState<ClassRow[]>([]);
+  // refs מתעדכנים שמשמשים את ייבוא ה-Excel כדי לקבל תמיד את המצב העדכני (גם אחרי הוספה אוטומטית של מורים/כיתות)
+  const teachersRef = useRef<TeacherRow[]>([]);
+  const classesRef = useRef<ClassRow[]>([]);
+  const importClassesRef = useRef<ClassRow[]>([]); // כל הכיתות מכל השכבות — לאשף הייבוא
+  useEffect(() => { teachersRef.current = teachers; }, [teachers]);
+  useEffect(() => { classesRef.current = classes; }, [classes]);
   const [showImportModal, setShowImportModal] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   // Sidebar quick-filter — narrows the teacher panel without removing groups
@@ -536,6 +543,14 @@ export default function TeacherClass() {
   useEffect(() => {
     loadClasses(layerId);
   }, [layerId, loadClasses]);
+
+  // אשף הייבוא צריך כיתות מכל השכבות (א'–ו') — נטען אותן כשהמודאל נפתח
+  const reloadImportClasses = useCallback(async () => {
+    importClassesRef.current = await fetchAllClassRows();
+  }, []);
+  useEffect(() => {
+    if (showImportModal) void reloadImportClasses();
+  }, [showImportModal, reloadImportClasses]);
 
   // close context menu on any document click
   useEffect(() => {
@@ -3502,11 +3517,14 @@ export default function TeacherClass() {
           open={showImportModal}
           onClose={() => setShowImportModal(false)}
           title="ייבוא הקצאות כיתות-מורים מ-Excel"
-          description="העלה קובץ Excel עם רשימת זוגות (כיתה, מורה) ומספר שעות. תומך גם בסימון מחנכ/ת."
-          schema={CLASSTEACHER_IMPORT_SCHEMA}
-          sampleRows={CLASSTEACHER_IMPORT_SAMPLE}
-          existingCount={0 /* יחושב בזמן הייבוא — מאפשר תמיד את ההעלאה */}
-          parseRow={(raw, rowIdx) => parseClassTeacherRow(raw, rowIdx, classes, teachers, layerId)}
+          description="הקובץ נקרא בפורמט 'פריסת שעות' — גיליון נפרד לכל שכבה (כיתה א׳–ו׳) עם בלוקי מקצוע / מס שעות / מורה תחת כותרת שם הכיתה."
+          templates={buildClassTeacherTemplates(importClassesRef, teachersRef, {
+            tafkidId: tafkidOpts[0]?.TafkidId,
+            layerId,
+            loadTeachers,
+            loadClasses: reloadImportClasses,
+          })}
+          existingCount={0}
           performImport={async (rows, onProgress) => importClassTeachers(rows, onProgress)}
           onCompleted={() => { loadTeachers(); loadClasses(layerId); }}
         />
@@ -3611,49 +3629,786 @@ async function importClassTeachers(
   onProgress: (cur: number, total: number) => void,
 ): Promise<{ success: number; failed: number; errors: string[] }> {
   let success = 0; let failed = 0; const errors: string[] = [];
+  const total = Math.max(1, rows.length);
+  // הצמדה: ClassTeacher_SP Type 4 מעדכן Hour לפי ClassTeacherId, ו-SP Type 1
+  // לא מחזיר את המזהה החדש. לכן עובדים בשלושה שלבים — כמו ב-onDrop של הדף:
+  //   שלב 1: Type 1 — הוספת כל זוגות כיתה/מורה (Hour=NULL).
+  //   שלב 2: טעינה מחדש של נתוני הכיתות → מיפוי (כיתה|מורה)→ClassTeacherId.
+  //   שלב 3: Type 4 — קביעת ה-Hour האמיתי לפי המזהה.
+  // הערה: Type 5 הוא פקודת מחיקה ב-SP — לכן אינו בשימוש כאן. סימון מחנכ/ת
+  // (IsTeacher) נקבע אוטומטית ב-Type 1 לפי תפקיד המורה.
+
+  // --- שלב 1: הוספת הזוגות ---
+  const inserted: boolean[] = new Array(rows.length).fill(false);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     try {
-      // Type=1: insert זוג ClassTeacher (Hour=NULL)
       await ajax('Class_SetTeacherToClass', {
         ClassId: String(r.classId),
         TeacherId: String(r.teacherId),
         Hour: '',
-        TargetHakbatza: '0', SourceHakbatza: '0',
-        TargetIhud: '0', SourceIhud: '0',
-        TargetClassTeacherId: '0', SourceClassTeacherId: '0',
-        Type: '1',
+        TargetHakbatza: '', SourceHakbatza: '',
+        TargetIhud: '', SourceIhud: '',
+        TargetClassTeacherId: '', SourceClassTeacherId: '',
+        Type: 1,
       });
-      // Type=4: עדכן Hour לערך הנכון
+      inserted[i] = true;
+    } catch (e) {
+      failed++;
+      errors.push(`${r.classNameRaw} / ${r.teacherNameRaw}: ${(e as Error).message}`);
+    }
+    onProgress(Math.round((i + 1) * 0.5), total);
+  }
+
+  // --- שלב 2: טעינת ClassTeacherId לכל זוג (מכל השכבות — הכיתות פזורות) ---
+  const idMap = new Map<string, number>();
+  try {
+    const fresh = await fetchAllClassRows();
+    for (const row of fresh) {
+      if (Number(row.Hakbatza ?? 0) !== 0) continue; // רק שיבוצים רגילים (לא הקבצה)
+      if (row.ClassTeacherId == null || row.TeacherId == null) continue;
+      const key = `${row.ClassId}|${row.TeacherId}`;
+      if (!idMap.has(key)) idMap.set(key, Number(row.ClassTeacherId));
+    }
+  } catch (e) {
+    errors.push(`טעינת מזהי השיבוץ נכשלה: ${(e as Error).message}`);
+  }
+
+  // --- שלב 3: קביעת השעות ---
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    onProgress(Math.round(total * 0.5 + (i + 1) * 0.5), total);
+    if (!inserted[i]) continue;
+    const ctId = idMap.get(`${r.classId}|${r.teacherId}`);
+    if (ctId == null) {
+      failed++;
+      errors.push(`${r.classNameRaw} / ${r.teacherNameRaw}: לא נמצא מזהה שיבוץ אחרי ההוספה`);
+      continue;
+    }
+    try {
       await ajax('Class_SetTeacherToClass', {
         ClassId: String(r.classId),
         TeacherId: String(r.teacherId),
         Hour: String(r.hour),
-        TargetHakbatza: '0', SourceHakbatza: '0',
-        TargetIhud: '0', SourceIhud: '0',
-        TargetClassTeacherId: '0', SourceClassTeacherId: '0',
-        Type: '4',
+        TargetHakbatza: '', SourceHakbatza: '',
+        TargetIhud: '', SourceIhud: '',
+        TargetClassTeacherId: '', SourceClassTeacherId: String(ctId),
+        Type: 4,
       });
-      // אם מחנכ/ת — Type=5 (מסמן IsTeacher=true)
-      if (r.isHomeroom) {
-        try {
-          await ajax('Class_SetTeacherToClass', {
-            ClassId: String(r.classId),
-            TeacherId: String(r.teacherId),
-            Hour: String(r.hour),
-            TargetHakbatza: '0', SourceHakbatza: '0',
-            TargetIhud: '0', SourceIhud: '0',
-            TargetClassTeacherId: '0', SourceClassTeacherId: '0',
-            Type: '5',
-          });
-        } catch { /* not critical */ }
-      }
       success++;
     } catch (e) {
       failed++;
       errors.push(`${r.classNameRaw} / ${r.teacherNameRaw}: ${(e as Error).message}`);
     }
-    onProgress(i + 1, rows.length);
   }
   return { success, failed, errors };
 }
+
+// ============================================================
+// Templates registry — מוחזר ל-ExcelImportModal
+// ============================================================
+
+type ClassRowLite = { ClassId: number | string; ClassName: string; Name?: string | null };
+type TeacherRowLite = { TeacherId: number | string; FirstName?: string | null; LastName?: string | null; FullText?: string | null };
+
+interface BuildTemplatesCtx {
+  tafkidId?: number;
+  layerId: number;
+  loadTeachers: () => void | Promise<void>;
+  loadClasses: () => void | Promise<void>;
+}
+
+async function addTeachersByName(names: string[], tafkidId: number | undefined): Promise<{ added: number; failed: number; errors: string[] }> {
+  const tafkid = tafkidId != null ? String(tafkidId) : '0';
+  let added = 0; let failed = 0; const errors: string[] = [];
+  for (const fullName of names) {
+    // פצל ל-FirstName / LastName לפי הרווח הראשון
+    const trimmed = fullName.trim().replace(/\s+/g, ' ');
+    const parts = trimmed.split(' ');
+    const firstName = parts[0] ?? trimmed;
+    const lastName = parts.length > 1 ? parts.slice(1).join(' ') : '';
+    try {
+      await ajax('Teacher_DML', {
+        TeacherId: '0',
+        Type: 2, // 2 = הוספה (SP מצפה ל-tinyint, לא למחרוזת "insert")
+        Tafkid: tafkid,
+        FirstName: firstName,
+        LastName: lastName,
+        Email: '',
+        Frontaly: '0',
+        FreeDay: '0',
+        Tz: '',
+        Shehya: '0',
+        Partani: '0',
+        ProfessionalId: '',
+      });
+      added++;
+    } catch (e) {
+      failed++;
+      errors.push(`${fullName}: ${(e as Error).message}`);
+    }
+  }
+  return { added, failed, errors };
+}
+
+// ממפה שם גיליון ("כיתה א" / "כתה ג'") ל-LayerId (א'=1 .. ו'=6)
+function sheetNameToLayerId(sheetName: string): number | null {
+  const m = String(sheetName ?? '').match(/^\s*כ(?:י)?תה?\s*([א-ו])/);
+  if (!m) return null;
+  const idx = 'אבגדהו'.indexOf(m[1]);
+  return idx >= 0 ? idx + 1 : null;
+}
+
+async function addClassesByName(
+  names: string[],
+  defaultLayerId: number,
+  existingClasses: ClassRowLite[],
+  classLayers?: Record<string, number>,
+): Promise<{ added: number; failed: number; errors: string[] }> {
+  // Seq מקסימלי לכל שכבה — כדי להוסיף כל כיתה בסוף השכבה הנכונה שלה
+  const maxSeqByLayer = new Map<number, number>();
+  for (const c of existingClasses) {
+    const lid = Number((c as { LayerId?: number }).LayerId ?? 0);
+    const cs = Number((c as { Seq?: number }).Seq ?? 0);
+    if (cs > (maxSeqByLayer.get(lid) ?? 0)) maxSeqByLayer.set(lid, cs);
+  }
+  let added = 0; let failed = 0; const errors: string[] = [];
+  for (const name of names) {
+    // שכבה לפי הגיליון שממנו הכיתה הגיעה; ברירת מחדל — השכבה הנבחרת בדף
+    const layerId = (classLayers && classLayers[name] != null) ? classLayers[name] : defaultLayerId;
+    const nextSeq = (maxSeqByLayer.get(layerId) ?? 0) + 1;
+    maxSeqByLayer.set(layerId, nextSeq);
+    try {
+      await ajax('Class_SetClassData', {
+        ClassId: '',
+        LayerId: layerId,
+        ClassName: name.trim(),
+        Seq: String(nextSeq),
+        mode: 1,
+      });
+      added++;
+    } catch (e) {
+      failed++;
+      errors.push(`${name}: ${(e as Error).message}`);
+    }
+  }
+  return { added, failed, errors };
+}
+
+// טוען את כל הכיתות מכל השכבות (א'–ו'). אשף הייבוא חייב לראות כיתות בכל
+// השכבות — Class_GetClassByLayerId מחזיר רק שכבה אחת בכל קריאה.
+async function fetchAllClassRows(): Promise<ClassRow[]> {
+  const all: ClassRow[] = [];
+  for (let lid = 1; lid <= 6; lid++) {
+    try {
+      const data = await ajax<ClassRow[]>('Class_GetClassByLayerId', { LayerId: lid });
+      if (Array.isArray(data)) all.push(...data);
+    } catch { /* דלג על שכבה שנכשלה */ }
+  }
+  return all;
+}
+
+function buildClassTeacherTemplates(
+  classesRef: React.RefObject<ClassRowLite[]>,
+  teachersRef: React.RefObject<TeacherRowLite[]>,
+  ctx: BuildTemplatesCtx,
+): ExcelImportTemplate<ClassTeacherImportPayload>[] {
+  // getters שמחזירים תמיד את המצב העדכני
+  const getClasses = () => classesRef.current ?? [];
+  const getTeachers = () => teachersRef.current ?? [];
+  // תבנית משנית (תאימות לאחור) — טבלה שטוחה בגיליון יחיד.
+  const flatTemplate: ExcelImportTemplate<ClassTeacherImportPayload> = {
+      id: 'flat',
+      name: 'טבלה שטוחה (גיליון יחיד)',
+      description: 'כל שורה = הקצאה אחת (כיתה / מורה / שעות / מחנכ‫ת). הפורמט הסטנדרטי המומלץ.',
+      schema: CLASSTEACHER_IMPORT_SCHEMA,
+      sampleRows: CLASSTEACHER_IMPORT_SAMPLE,
+      previewSheet: FLAT_PREVIEW_SHEET,
+      detect: (wb) => {
+        // ציון גבוה אם הגיליון הראשון מכיל את הכותרות "כיתה" + "מורה" + "שעות"
+        const first = wb.Sheets[wb.SheetNames[0]];
+        if (!first) return 0;
+        const grid = XLSX.utils.sheet_to_json<unknown[]>(first, { defval: '', header: 1 });
+        if (grid.length === 0) return 0;
+        const headerRow = (grid[0] || []) as unknown[];
+        const headers = new Set(headerRow.map((v) => String(v ?? '').trim()));
+        let hits = 0;
+        if (headers.has('כיתה')) hits++;
+        if (headers.has('מורה')) hits++;
+        if (headers.has('שעות')) hits++;
+        return hits / 3;
+      },
+      parseFile: (wb) => parseFlatClassTeacherWorkbook(wb, getClasses(), getTeachers()),
+      addMissingTeachers: (names) => addTeachersByName(names, ctx.tafkidId),
+      addMissingClasses: (names, classLayers) => addClassesByName(names, ctx.layerId, getClasses(), classLayers),
+      onAfterAutoAdd: async () => { await ctx.loadTeachers(); await ctx.loadClasses(); await new Promise((r) => setTimeout(r, 60)); },
+  };
+  // התבנית הראשית — פורמט "פריסת שעות" כפי שהקובץ מגיע מבית הספר.
+  const multiSheetTemplate: ExcelImportTemplate<ClassTeacherImportPayload> = {
+      id: 'multi-sheet-blocks',
+      name: 'פריסת שעות — גיליון לכל שכבה',
+      description: 'גיליון נפרד לכל שכבה ("כיתה א" עד "כיתה ו"). בכל גיליון בלוקים: שורת כותרת עם שם הכיתה (לדוגמה "סימי-23 ה"), שורת "מקצוע / מס שעות / מורה", ואז שורת מקצוע אחת לכל שיעור. נתמך גם גיליון מטריצה ("פריסת שעות") שבו השורות=כיתות והעמודות=מורים.',
+      schema: MULTISHEET_PREVIEW_SCHEMA,
+      sampleRows: [],
+      previewSheet: MULTISHEET_BLOCKS_PREVIEW,
+      buildTemplateWorkbook: () => buildMultiSheetBlocksTemplate(),
+      detect: (wb) => {
+        const classSheets = wb.SheetNames.filter(isClassSheetName).length;
+        // קובץ עם בלוקי כיתות — התאמה מלאה
+        if (classSheets >= 2) return 1;
+        if (classSheets === 1) return 0.6;
+        // קובץ עם רק גיליון מטריצה — גם מתאים
+        for (const name of wb.SheetNames) {
+          const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { defval: '', header: 1 });
+          for (let r = 0; r < Math.min(grid.length, 4); r++) {
+            const row = (grid[r] || []) as unknown[];
+            const firstCell = normalizeText(row[0]);
+            if (firstCell === 'כתה' || firstCell === 'כיתה') {
+              const headersCount = row.filter((v) => String(v ?? '').trim()).length;
+              if (headersCount >= 4) return 0.85;
+            }
+          }
+        }
+        return 0;
+      },
+      parseFile: (wb) => parseMultiSheetCombined(wb, getClasses(), getTeachers()),
+      addMissingTeachers: (names) => addTeachersByName(names, ctx.tafkidId),
+      addMissingClasses: (names, classLayers) => addClassesByName(names, ctx.layerId, getClasses(), classLayers),
+      onAfterAutoAdd: async () => { await ctx.loadTeachers(); await ctx.loadClasses(); await new Promise((r) => setTimeout(r, 60)); },
+  };
+  // התבנית הראשית מוצגת ראשונה — היא זו שהמודאל מציג כברירת מחדל.
+  return [multiSheetTemplate, flatTemplate];
+}
+
+// מבנה הנתונים שהמערכת מחלצת מקובץ "פריסת שעות" (עמודה לכל שדה אחרי הפרסור)
+const MULTISHEET_PREVIEW_SCHEMA: ExcelColumnSpec[] = [
+  { key: 'classNameRaw', header: 'כיתה', required: true,
+    description: 'שם הכיתה — מחולץ אוטומטית מכותרת הבלוק (התא שמעל "מקצוע").', example: 'סימי',
+    hint: 'בקובץ "פריסת שעות" כל כיתה נקראת על שם המחנכת. אין עמודת "כיתה" נפרדת — השם נקרא מהכותרת "סימי-23 ה".' },
+  { key: 'teacherNameRaw', header: 'מורה', required: true,
+    description: 'שם המורה — נקרא מעמודת "מורה" בכל שורת מקצוע בבלוק.', example: 'סימי',
+    hint: 'בתא שמכיל כמה מורים ("אושרית/ליאורי", "מלי+ליאורי") נלקח המורה הראשון.' },
+  { key: 'hour', header: 'שעות (מסוכם)', required: true,
+    description: 'סך השעות שהמורה מלמד/ת בכיתה — סיכום עמודת "מס שעות" של כל המקצועות שלו/ה באותו בלוק.', example: '23' },
+];
+
+// ============================================================
+// Parser רב-גיליוני: בלוקי כיתות
+// ============================================================
+
+function normalizeText(s: unknown): string {
+  return String(s ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[֑-ֽֿׁ-ׂׄ-ׇ]/g, '')
+    .replace(/[״"׳']/g, '');
+}
+
+function isClassSheetName(name: string): boolean {
+  return /^\s*כתה\s*[א-ת]/i.test(name) || /^\s*כיתה\s*[א-ת]/i.test(name);
+}
+
+function findAllBlockStarts(grid: unknown[][]): Array<{ row: number; col: number }> {
+  const out: Array<{ row: number; col: number }> = [];
+  for (let r = 0; r < grid.length; r++) {
+    const row = grid[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      if (normalizeText(row[c]) === 'מקצוע') out.push({ row: r, col: c });
+    }
+  }
+  return out;
+}
+
+function extractClassNameFromTitleCell(raw: unknown): string {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  const dashIdx = s.indexOf('-');
+  if (dashIdx > 0) s = s.slice(0, dashIdx);
+  s = s.replace(/\s*\d.*$/, '');
+  return s.trim();
+}
+
+function toHourNumber(v: unknown): number {
+  if (v == null || v === '') return 0;
+  const n = Number(String(v).replace(/[^\d.]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function extractTeacherFromCell(v: unknown): string {
+  const s = String(v ?? '').trim();
+  if (!s) return '';
+  // תא עם כמה מורים — "אושרית/ליאורי", "מלי+ליאורי", "שרית, מדריכה" — נלקח הראשון
+  const m = s.match(/^([^/,+]+)/);
+  return (m ? m[1] : s).trim();
+}
+
+function parseClassBlocksWorkbook(
+  wb: XLSX.WorkBook,
+  classes: ClassRowLite[],
+  teachers: TeacherRowLite[],
+): ParsedRowsResult<ClassTeacherImportPayload> {
+  // שלב 1: חילוץ כל זוגות (className, teacherName, hour, subject) מהגיליונות
+  type Raw = { sheet: string; className: string; teacherName: string; hour: number; subject: string };
+  const raws: Raw[] = [];
+  const errors: Array<{ rowIdx: number; messages: string[]; sheet?: string }> = [];
+  let totalRaw = 0;
+
+  for (const name of wb.SheetNames) {
+    if (!isClassSheetName(name)) continue;
+    const sheet = wb.Sheets[name];
+    const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { defval: '', header: 1 });
+    const starts = findAllBlockStarts(grid);
+    if (starts.length === 0) {
+      errors.push({ sheet: name, rowIdx: 0, messages: ['לא נמצאו בלוקי כיתות (תא "מקצוע")'] });
+      continue;
+    }
+    const byCol = new Map<number, number[]>();
+    for (const b of starts) {
+      const arr = byCol.get(b.col) ?? [];
+      arr.push(b.row);
+      byCol.set(b.col, arr);
+    }
+    for (const { row: headerRow, col: startCol } of starts) {
+      const rowsInCol = byCol.get(startCol)!;
+      const nextHeader = rowsInCol.find((r) => r > headerRow);
+      const stopBefore = nextHeader != null ? Math.max(headerRow + 1, nextHeader - 1) : grid.length;
+
+      const titleRow = headerRow > 0 ? (grid[headerRow - 1] || []) : [];
+      const titleCell = titleRow[startCol + 2] ?? titleRow[startCol + 1] ?? titleRow[startCol] ?? '';
+      const className = extractClassNameFromTitleCell(titleCell);
+      if (!className) {
+        errors.push({ sheet: name, rowIdx: headerRow + 1, messages: [`בלוק בעמודה ${startCol + 1}: לא נמצא שם כיתה בכותרת ("${String(titleCell)}")`] });
+        continue;
+      }
+
+      let blank = 0;
+      for (let r = headerRow + 1; r < stopBefore; r++) {
+        const row = grid[r] || [];
+        const subject = String(row[startCol] ?? '').trim();
+        const hoursRaw = row[startCol + 1];
+        const teacherRawCell = String(row[startCol + 2] ?? '').trim();
+        if (!subject && !hoursRaw && !teacherRawCell) {
+          if (++blank >= 5) break;
+          continue;
+        }
+        blank = 0;
+        const sn = normalizeText(subject);
+        if (sn === 'מקצוע' || sn === 'מורה' || sn === 'מס שעות') continue;
+        totalRaw++;
+        const teacher = extractTeacherFromCell(teacherRawCell);
+        if (!teacher) continue;
+        const hoursStr = String(hoursRaw ?? '').trim();
+        if (!hoursStr) continue;
+        const hours = toHourNumber(hoursRaw);
+        if (hours <= 0) {
+          errors.push({ sheet: name, rowIdx: r + 1, messages: [`"${subject || '?'} / ${teacher}": שעות לא חוקיות (${String(hoursRaw)})`] });
+          continue;
+        }
+        raws.push({ sheet: name, className, teacherName: teacher, subject, hour: hours });
+      }
+    }
+  }
+
+  // שלב 2: איגוד לפי (כיתה, מורה) וסיכום שעות
+  const agg = new Map<string, { className: string; teacherName: string; hour: number; subjects: string[]; sheet: string }>();
+  for (const r of raws) {
+    const k = `${r.className}|||${r.teacherName}`;
+    const prev = agg.get(k);
+    if (prev) {
+      prev.hour += r.hour;
+      prev.subjects.push(r.subject);
+    } else {
+      agg.set(k, { className: r.className, teacherName: r.teacherName, hour: r.hour, subjects: [r.subject], sheet: r.sheet });
+    }
+  }
+
+  // שלב 3: התאמה לישויות במערכת (תוך שימוש בלוגיקת ההתאמה הקיימת)
+  const out: ClassTeacherImportPayload[] = [];
+  const missingClasses = new Set<string>();
+  const missingTeachers = new Set<string>();
+  const missingClassLayers: Record<string, number> = {}; // שם כיתה → LayerId (לפי הגיליון)
+  for (const a of agg.values()) {
+    const pseudo: Record<string, unknown> = {
+      'כיתה': a.className,
+      'מורה': a.teacherName,
+      'שעות': a.hour,
+      'מחנכ/ת': a.className === a.teacherName ? 'כן' : '',
+    };
+    const res = parseClassTeacherRow(pseudo, 0, classes, teachers, 0);
+    if (res.ok && res.payload) {
+      out.push(res.payload);
+    } else if (res.errors && res.errors.length) {
+      for (const m of res.errors) {
+        const mc = m.match(/^כיתה "([^"]+)" לא נמצאה במערכת$/);
+        if (mc) {
+          missingClasses.add(mc[1]);
+          // הכיתה שייכת לשכבה של הגיליון שממנו הבלוק נקרא
+          const lid = sheetNameToLayerId(a.sheet);
+          if (lid != null) missingClassLayers[mc[1]] = lid;
+        }
+        const mt = m.match(/^מורה "([^"]+)" לא נמצא\/ה במערכת$/);
+        if (mt) missingTeachers.add(mt[1]);
+      }
+      errors.push({
+        sheet: a.sheet,
+        rowIdx: 0,
+        messages: [`"${a.className} / ${a.teacherName}" (${a.hour}ש'): ${res.errors.join(', ')}`],
+      });
+    }
+  }
+
+  return {
+    rows: out,
+    errors,
+    totalRaw,
+    actionable: {
+      missingClasses: Array.from(missingClasses).sort((a, b) => a.localeCompare(b, 'he')),
+      missingTeachers: Array.from(missingTeachers).sort((a, b) => a.localeCompare(b, 'he')),
+      missingClassLayers,
+    },
+  };
+}
+
+// ============================================================
+// Parser שטוח (גיליון יחיד) — עם איסוף חסרים
+// ============================================================
+function parseFlatClassTeacherWorkbook(
+  wb: XLSX.WorkBook,
+  classes: ClassRowLite[],
+  teachers: TeacherRowLite[],
+): ParsedRowsResult<ClassTeacherImportPayload> {
+  const sheetName = wb.SheetNames[0];
+  const sheet = wb.Sheets[sheetName];
+  const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
+  const rows: ClassTeacherImportPayload[] = [];
+  const errors: Array<{ rowIdx: number; messages: string[]; sheet?: string }> = [];
+  const missingClasses = new Set<string>();
+  const missingTeachers = new Set<string>();
+  for (let i = 0; i < raw.length; i++) {
+    const r = parseClassTeacherRow(raw[i], i + 2, classes, teachers, 0);
+    if (r.ok && r.payload) {
+      rows.push(r.payload);
+    } else if (r.errors && r.errors.length) {
+      for (const m of r.errors) {
+        const mc = m.match(/^כיתה "([^"]+)" לא נמצאה במערכת$/);
+        if (mc) missingClasses.add(mc[1]);
+        const mt = m.match(/^מורה "([^"]+)" לא נמצא\/ה במערכת$/);
+        if (mt) missingTeachers.add(mt[1]);
+      }
+      errors.push({ rowIdx: i + 2, messages: r.errors, sheet: sheetName });
+    }
+  }
+  return {
+    rows,
+    errors,
+    totalRaw: raw.length,
+    actionable: {
+      missingClasses: Array.from(missingClasses).sort((a, b) => a.localeCompare(b, 'he')),
+      missingTeachers: Array.from(missingTeachers).sort((a, b) => a.localeCompare(b, 'he')),
+    },
+  };
+}
+
+// ============================================================
+// בונה חוברת הורדה לתבנית הרב-גיליונית — דמו של 2 שכבות
+// ============================================================
+function buildMultiSheetBlocksTemplate(): XLSX.WorkBook {
+  const wb = XLSX.utils.book_new();
+
+  const makeClassSheet = (header1: [string, string, string], header2: [string, string, string], rows1: Array<[string, number, string]>, rows2: Array<[string, number, string]>) => {
+    // עמודות 0-2 בלוק 1, עמודה 3 מפריד, עמודות 4-6 בלוק 2
+    const aoa: unknown[][] = [];
+    aoa.push([header1[0], header1[1], header1[2], '', header2[0], header2[1], header2[2]]);
+    aoa.push(['מקצוע', 'מס שעות', 'מורה', '', 'מקצוע', 'מס שעות', 'מורה']);
+    const maxRows = Math.max(rows1.length, rows2.length);
+    for (let i = 0; i < maxRows; i++) {
+      const a = rows1[i] ?? ['', '', ''];
+      const b = rows2[i] ?? ['', '', ''];
+      aoa.push([a[0], a[1] === '' ? '' : a[1], a[2], '', b[0], b[1] === '' ? '' : b[1], b[2]]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 3 }, { wch: 14 }, { wch: 10 }, { wch: 14 }];
+    return ws;
+  };
+
+  XLSX.utils.book_append_sheet(wb, makeClassSheet(
+    ['כתה א', 'בנים', 'סימי-22'],
+    ['כתה א', 'בנים', 'לירז-23'],
+    [['תורה', 6, 'סימי'], ['חשבון', 6, 'סימי'], ['חנ״ג', 2, 'שרית'], ['אומנות', 2, 'גלית']],
+    [['תורה', 6, 'לירז'], ['חשבון', 6, 'לירז'], ['חנ״ג', 2, 'שרית'], ['אומנות', 2, 'גלית']],
+  ), 'כיתה א');
+
+  XLSX.utils.book_append_sheet(wb, makeClassSheet(
+    ['כתה ב', 'בנות', 'אורית-22'],
+    ['כתה ב', 'בנות', 'תחיה-22'],
+    [['תורה', 6, 'אורית'], ['עברית', 6, 'אורית'], ['חשבון', 6, 'אורית'], ['חנ״ג', 2, 'ערן']],
+    [['תורה', 6, 'תחיה'], ['עברית', 6, 'תחיה'], ['חשבון', 6, 'תחיה'], ['חנ״ג', 2, 'ערן']],
+  ), 'כיתה ב');
+
+  // גיליון מטריצה — סיכום נוסף, לא חובה אבל מומלץ
+  const matrix: unknown[][] = [
+    ['כתה', 'לירז', 'סימי', 'אורית', 'אריאל', 'תחיה', 'שרית', 'גלית', 'ערן', 'סה״כ'],
+    ['א לירז', 22, '', '', '', '', 2, 2, '', 26],
+    ['א סימי', '', 22, '', '', '', 2, 2, '', 26],
+    ['ב אורית', '', '', 21, '', '', 2, '', 2, 25],
+    ['ב תחיה', '', '', '', '', 22, 2, '', 2, 26],
+  ];
+  const wsMatrix = XLSX.utils.aoa_to_sheet(matrix);
+  wsMatrix['!cols'] = [{ wch: 12 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 7 }];
+  XLSX.utils.book_append_sheet(wb, wsMatrix, 'פריסת שעות');
+
+  // גיליון הסבר
+  const help: string[][] = [
+    ['הוראות מילוי תבנית — בלוקי כיתות + מטריצת שעות'],
+    [''],
+    ['חלק 1 — בלוקי כיתות (גיליונות "כיתה א" עד "כיתה ו"):'],
+    ['1. צור גיליון לכל שכבה: "כיתה א", "כיתה ב", "כיתה ג", "כיתה ד", "כיתה ה", "כיתה ו".'],
+    ['2. בכל גיליון, צור בלוק לכל כיתה: 3 עמודות (מקצוע | מס שעות | מורה) ועמודה ריקה כמפריד בין בלוקים.'],
+    ['3. בשורת הכותרת של הבלוק (השורה שמעל "מקצוע"), כתוב את שם המורה-המחנך בעמודה השלישית (לדוגמה: "אורית-22" או "סימי-23 ה").'],
+    ['4. בכל שורה תחת הכותרת הזן מקצוע, מספר שעות, ושם המורה המלמד אותו.'],
+    ['5. שעות לכל זוג (כיתה × מורה) מסוכמות יחד גם אם הן בכמה שורות.'],
+    [''],
+    ['חלק 2 — גיליון מטריצה ("פריסת שעות"):'],
+    ['6. שורה 1 = כותרות: עמודה A "כתה", עמודות הבאות = שמות המורים.'],
+    ['7. עמודה A = רשימת הכיתות. הפורמט: "<אות שכבה> <שם מחנך/ת>" — למשל "א לירז", "ב אורית".'],
+    ['8. כל תא = מספר שעות שהמורה (בעמודה) מלמד/ת בכיתה (בשורה). תאים ריקים = אין הקצאה.'],
+    ['9. עמודות "סה״כ" / "חוסרים" וכו\' — יידלגו אוטומטית.'],
+    [''],
+    ['10. שמות הכיתות והמורים חייבים להיות זהים לרשימות שמופיעות במערכת.'],
+    ['11. אם יש זוג (כיתה × מורה) שמופיע גם בבלוקים וגם במטריצה — הבלוקים גוברים.'],
+    ['12. אפשר להשתמש רק במטריצה (בלי בלוקים) או רק בבלוקים (בלי מטריצה).'],
+  ];
+  const wsHelp = XLSX.utils.aoa_to_sheet(help);
+  wsHelp['!cols'] = [{ wch: 90 }];
+  XLSX.utils.book_append_sheet(wb, wsHelp, 'הסברים');
+
+  return wb;
+}
+
+// ============================================================
+// תצוגות previewSheet — דוגמה ויזואלית של איך הקובץ נראה
+// ============================================================
+
+const FLAT_PREVIEW_SHEET: ExcelPreviewSheet = {
+  sheetName: 'נתונים',
+  cells: [
+    ['כיתה', 'מורה', 'שעות', 'מחנכ/ת'],
+    ['רויטל', 'רויטל אוטמזגין', 23, 'כן'],
+    ['רויטל', 'מאור חקלאות', 1, 'לא'],
+    ['אושרית', 'אושרית קבלה', 22, 'כן'],
+    ['אושרית', 'שרה לוי', 2, 'לא'],
+  ],
+  headerRows: [0],
+};
+
+const MULTISHEET_BLOCKS_PREVIEW: ExcelPreviewSheet[] = [
+  {
+    sheetName: 'כיתה א',
+    cells: [
+      ['כתה א', 'בנים', 'סימי-22', '', 'כתה א', 'בנים', 'לירז-23'],
+      ['מקצוע', 'מס שעות', 'מורה', '', 'מקצוע', 'מס שעות', 'מורה'],
+      ['תורה', 6, 'סימי', '', 'תורה', 6, 'לירז'],
+      ['חשבון', 6, 'סימי', '', 'חשבון', 6, 'לירז'],
+      ['חנ״ג', 2, 'שרית', '', 'חנ״ג', 2, 'שרית'],
+      ['אומנות', 2, 'גלית', '', 'אומנות', 2, 'גלית'],
+    ],
+    titleRows: [0],
+    headerRows: [1],
+    narrowCols: [3],
+  },
+  {
+    sheetName: 'כיתה ב',
+    cells: [
+      ['כתה ב', 'בנות', 'אורית-22', '', 'כתה ב', 'בנות', 'תחיה-22'],
+      ['מקצוע', 'מס שעות', 'מורה', '', 'מקצוע', 'מס שעות', 'מורה'],
+      ['תורה', 6, 'אורית', '', 'תורה', 6, 'תחיה'],
+      ['עברית', 6, 'אורית', '', 'עברית', 6, 'תחיה'],
+      ['חשבון', 6, 'אורית', '', 'חשבון', 6, 'תחיה'],
+      ['חנ״ג', 2, 'ערן', '', 'חנ״ג', 2, 'ערן'],
+    ],
+    titleRows: [0],
+    headerRows: [1],
+    narrowCols: [3],
+  },
+  {
+    sheetName: 'פריסת שעות',
+    cells: [
+      ['כתה', 'לירז', 'סימי', 'אורית', 'אריאל', 'שרית', 'גלית', 'סה״כ'],
+      ['א לירז', 22, '', '', '', 2, 2, 26],
+      ['א סימי', '', 22, '', '', 2, 2, 26],
+      ['ב אורית', '', '', 21, '', 2, 2, 25],
+      ['ב אריאל', '', '', '', 22, 2, 2, 26],
+    ],
+    headerRows: [0],
+  },
+];
+
+// ============================================================
+// Parser מאוחד לתבנית רב-גיליונית — בלוקים + מטריצה
+//   - אם יש בלוקי כיתות → קרא מהם (הם המקור המהימן).
+//   - אם אין → קרא מהמטריצה.
+//   - לא קוראים משניהם כדי למנוע כפילות (אותו מידע, אופנים שונים).
+// ============================================================
+function parseMultiSheetCombined(
+  wb: XLSX.WorkBook,
+  classes: ClassRowLite[],
+  teachers: TeacherRowLite[],
+): ParsedRowsResult<ClassTeacherImportPayload> {
+  const hasBlocks = wb.SheetNames.some(isClassSheetName);
+  if (hasBlocks) {
+    const blocks = parseClassBlocksWorkbook(wb, classes, teachers);
+    // ניסיון לקרוא מטריצה רק להוספת זוגות שלא מופיעים בבלוקים (כדי לכסות מורים מקצועיים שלא נכנסו לבלוקים)
+    const matrix = parseMatrixWorkbook(wb, classes, teachers);
+    if (matrix.rows.length === 0) return blocks;
+    // מפתח-זיהוי לזוג: classId+teacherId
+    const seen = new Set<string>();
+    for (const r of blocks.rows) seen.add(`${r.classId}|${r.teacherId}`);
+    const merged: ClassTeacherImportPayload[] = [...blocks.rows];
+    for (const r of matrix.rows) {
+      const k = `${r.classId}|${r.teacherId}`;
+      if (!seen.has(k)) { merged.push(r); seen.add(k); }
+    }
+    // איחוד חוסרים
+    const ma = blocks.actionable ?? {};
+    const mb = matrix.actionable ?? {};
+    const missingClasses = Array.from(new Set([...(ma.missingClasses ?? []), ...(mb.missingClasses ?? [])])).sort((a, b) => a.localeCompare(b, 'he'));
+    const missingTeachers = Array.from(new Set([...(ma.missingTeachers ?? []), ...(mb.missingTeachers ?? [])])).sort((a, b) => a.localeCompare(b, 'he'));
+    // מיפוי שכבות — הבלוקים מהימנים יותר, לכן גוברים על המטריצה
+    const missingClassLayers = { ...(mb.missingClassLayers ?? {}), ...(ma.missingClassLayers ?? {}) };
+    return {
+      rows: merged,
+      errors: blocks.errors,
+      totalRaw: blocks.totalRaw + matrix.totalRaw,
+      actionable: { missingClasses, missingTeachers, missingClassLayers },
+    };
+  }
+  // אין בלוקי כיתות — קרא רק מהמטריצה
+  return parseMatrixWorkbook(wb, classes, teachers);
+}
+
+// ============================================================
+// Parser למטריצת שעות (שורה=כיתה, עמודה=מורה, תא=שעות)
+// ============================================================
+function parseMatrixWorkbook(
+  wb: XLSX.WorkBook,
+  classes: ClassRowLite[],
+  teachers: TeacherRowLite[],
+): ParsedRowsResult<ClassTeacherImportPayload> {
+  const errors: Array<{ rowIdx: number; messages: string[]; sheet?: string }> = [];
+  let totalRaw = 0;
+  type Raw = { sheet: string; className: string; teacherName: string; hour: number; grade: string };
+  const raws: Raw[] = [];
+
+  // עמודות/שורות שיש לדלג עליהן (סיכומים והערות)
+  const skipHeaders = new Set(['סה״כ', 'סהכ', 'סה"כ', 'סהכל', 'חוסרים', 'הערות', 'מילוי', 'סטטוס']);
+  const skipClassNames = new Set(['סה״כ', 'סהכ', 'סה"כ', 'סהכל', 'סך הכל', 'סיכום', 'חוסרים']);
+
+  // אם יש מספר גיליונות מטריצה, נטעין רק את הראשון — כדי למנוע כפילויות.
+  let alreadyParsedMatrix = false;
+
+  for (const sheetName of wb.SheetNames) {
+    if (alreadyParsedMatrix) break;
+    const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sheetName], { defval: '', header: 1 });
+    // אתר את שורת הכותרת — זו שמתחילה ב"כתה"/"כיתה" בעמודה הראשונה
+    let headerRowIdx = -1;
+    for (let r = 0; r < Math.min(grid.length, 5); r++) {
+      const first = normalizeText((grid[r] || [])[0]);
+      if (first === 'כתה' || first === 'כיתה') {
+        headerRowIdx = r;
+        break;
+      }
+    }
+    if (headerRowIdx < 0) continue;
+    alreadyParsedMatrix = true;
+
+    const header = (grid[headerRowIdx] || []) as unknown[];
+    // בנה מיפוי עמודה → שם מורה (דלג על עמודה 0 ועל "סה"כ" וכו')
+    const colTeacher: Array<{ col: number; teacher: string }> = [];
+    for (let c = 1; c < header.length; c++) {
+      const raw = normalizeText(header[c]);
+      if (!raw) continue;
+      if (skipHeaders.has(raw)) continue;
+      colTeacher.push({ col: c, teacher: extractTeacherFromCell(header[c]) });
+    }
+    if (colTeacher.length === 0) continue;
+
+    for (let r = headerRowIdx + 1; r < grid.length; r++) {
+      const row = grid[r] || [];
+      const classRaw = String(row[0] ?? '').trim();
+      if (!classRaw) continue;
+      // דלג על שורות סיכום ("סה"כ" וכדומה)
+      if (skipClassNames.has(normalizeText(classRaw))) continue;
+      // שם הכיתה מ"א לירז" → "לירז" (החלק אחרי הרווח), או כל המחרוזת אם אין רווח
+      const parts = classRaw.split(/\s+/);
+      const className = parts.length >= 2 ? parts.slice(1).join(' ') : classRaw;
+      const grade = parts.length >= 2 ? parts[0] : ''; // אות השכבה ("א".."ו")
+
+      for (const { col, teacher } of colTeacher) {
+        const v = row[col];
+        const s = String(v ?? '').trim();
+        if (!s) continue;
+        const hours = toHourNumber(v);
+        totalRaw++;
+        if (hours <= 0) {
+          errors.push({ sheet: sheetName, rowIdx: r + 1, messages: [`"${className} / ${teacher}": שעות לא חוקיות (${s})`] });
+          continue;
+        }
+        raws.push({ sheet: sheetName, className, teacherName: teacher, hour: hours, grade });
+      }
+    }
+  }
+
+  // איגוד לפי (class, teacher) - אם אותו זוג מופיע בכמה גיליונות, נסכם
+  const agg = new Map<string, { className: string; teacherName: string; hour: number; sheet: string; grade: string }>();
+  for (const r of raws) {
+    const k = `${r.className}|||${r.teacherName}`;
+    const prev = agg.get(k);
+    if (prev) prev.hour += r.hour;
+    else agg.set(k, { className: r.className, teacherName: r.teacherName, hour: r.hour, sheet: r.sheet, grade: r.grade });
+  }
+
+  const out: ClassTeacherImportPayload[] = [];
+  const missingClasses = new Set<string>();
+  const missingTeachers = new Set<string>();
+  const missingClassLayers: Record<string, number> = {}; // שם כיתה → LayerId (לפי אות השכבה)
+  for (const a of agg.values()) {
+    const pseudo: Record<string, unknown> = {
+      'כיתה': a.className,
+      'מורה': a.teacherName,
+      'שעות': a.hour,
+      'מחנכ/ת': a.className === a.teacherName ? 'כן' : '',
+    };
+    const res = parseClassTeacherRow(pseudo, 0, classes, teachers, 0);
+    if (res.ok && res.payload) {
+      out.push(res.payload);
+    } else if (res.errors && res.errors.length) {
+      for (const m of res.errors) {
+        const mc = m.match(/^כיתה "([^"]+)" לא נמצאה במערכת$/);
+        if (mc) {
+          missingClasses.add(mc[1]);
+          const gi = 'אבגדהו'.indexOf(a.grade);
+          if (gi >= 0) missingClassLayers[mc[1]] = gi + 1;
+        }
+        const mt = m.match(/^מורה "([^"]+)" לא נמצא\/ה במערכת$/);
+        if (mt) missingTeachers.add(mt[1]);
+      }
+      errors.push({
+        sheet: a.sheet,
+        rowIdx: 0,
+        messages: [`"${a.className} / ${a.teacherName}" (${a.hour}ש'): ${res.errors.join(', ')}`],
+      });
+    }
+  }
+
+  return {
+    rows: out,
+    errors,
+    totalRaw,
+    actionable: {
+      missingClasses: Array.from(missingClasses).sort((a, b) => a.localeCompare(b, 'he')),
+      missingTeachers: Array.from(missingTeachers).sort((a, b) => a.localeCompare(b, 'he')),
+      missingClassLayers,
+    },
+  };
+}
+
