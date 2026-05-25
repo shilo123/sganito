@@ -13,9 +13,30 @@ import AssignConfig from './pages/Assign/AssignConfig';
 import AssignMatrix from './pages/Assign/AssignMatrix';
 import BetKneset from './pages/BetKneset/BetKneset';
 import BetKnesetEdit from './pages/BetKneset/BetKnesetEdit';
+import MyIssues from './pages/Issues/MyIssues';
+import AdminLogin from './admin/AdminLogin';
+import AdminLayout from './admin/AdminLayout';
+import AdminDashboard from './admin/AdminDashboard';
+import AdminSchools from './admin/AdminSchools';
+import AdminIssues from './admin/AdminIssues';
+import { AdminAuthProvider } from './admin/AdminAuthContext';
 
 export const router = createBrowserRouter([
   { path: '/Login', element: <Login /> },
+
+  // Admin routes — wrapped in AdminAuthProvider
+  {
+    path: '/admin',
+    element: <AdminAuthProvider><AdminLayout /></AdminAuthProvider>,
+    children: [
+      { index: true, element: <AdminDashboard /> },
+      { path: 'schools', element: <AdminSchools /> },
+      { path: 'issues',  element: <AdminIssues /> },
+    ],
+  },
+  { path: '/admin/login', element: <AdminAuthProvider><AdminLogin /></AdminAuthProvider> },
+
+  // Regular school user routes
   {
     path: '/',
     element: <MasterLayout />,
@@ -33,6 +54,7 @@ export const router = createBrowserRouter([
       { path: 'Assign/AssignMatrix', element: <AssignMatrix /> },
       { path: 'BetKneset/BetKneset', element: <BetKneset /> },
       { path: 'BetKneset/BetKnesetEdit', element: <BetKnesetEdit /> },
+      { path: 'Issues/MyIssues', element: <MyIssues /> },
     ],
   },
   { path: '*', element: <Navigate to="/Login" replace /> },

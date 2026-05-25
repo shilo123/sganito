@@ -586,18 +586,30 @@ public class Shibutz
             {
                 string cname = _classNames.ContainsKey(slot.ClassId) ? _classNames[slot.ClassId] : ("Class" + slot.ClassId);
                 string tname = _teacherNames.ContainsKey(homeroom.TeacherId) ? _teacherNames[homeroom.TeacherId] : ("T" + homeroom.TeacherId);
-                LogHomeroom(string.Format("ASSIGN: {0} Day{1} -> {2} (M={3})", cname, slot.Day, tname, homeroom.ManageClassId));
-                slot.AssignedTeacherId = homeroom.TeacherId;
-                slot.AssignedProfessionalId = homeroom.ProfessionalId;
-                slot.AssignedHakbatza = homeroom.Hakbatza;
-                slot.AssignedIhud = homeroom.Ihud;
-                SetBusy(homeroom.TeacherId, slot.Day, slot.Hour, slot);
-                GetDaySet(homeroom.TeacherId, slot.Day).Add(slot.Hour);
-                
+
+                // CRITICAL: Don't over-assign the homeroom. If they're already out of
+                // remaining hours for THIS class, skip this day. Without this guard,
+                // a homeroom with CT.Hour=2 would still get assigned to hour 1 of all
+                // 6 days (6 cells), producing 4 over-quota cells in the class.
                 string rk = Key(slot.ClassId, homeroom.TeacherId);
-                if (_remaining.ContainsKey(rk) && _remaining[rk] > 0)
+                if (_remaining.ContainsKey(rk) && _remaining[rk] <= 0)
                 {
-                    _remaining[rk] = _remaining[rk] - 1;
+                    LogHomeroom(string.Format("SKIP: {0} Day{1} -> {2} (no remaining hours)", cname, slot.Day, tname));
+                }
+                else
+                {
+                    LogHomeroom(string.Format("ASSIGN: {0} Day{1} -> {2} (M={3})", cname, slot.Day, tname, homeroom.ManageClassId));
+                    slot.AssignedTeacherId = homeroom.TeacherId;
+                    slot.AssignedProfessionalId = homeroom.ProfessionalId;
+                    slot.AssignedHakbatza = homeroom.Hakbatza;
+                    slot.AssignedIhud = homeroom.Ihud;
+                    SetBusy(homeroom.TeacherId, slot.Day, slot.Hour, slot);
+                    GetDaySet(homeroom.TeacherId, slot.Day).Add(slot.Hour);
+
+                    if (_remaining.ContainsKey(rk) && _remaining[rk] > 0)
+                    {
+                        _remaining[rk] = _remaining[rk] - 1;
+                    }
                 }
             }
             else
@@ -3898,7 +3910,12 @@ public class Shibutz
         // המורה אינו יכול ללמד בשעה זו — דלג עליה בשיבוץ אוטומטי.
         if (IsTeacherBlockedAtHour(ct.TeacherId, slot.HourId)) return false;
         
-        // Ensure remaining hours are initialized for this teacher/class combination
+        // Ensure remaining hours are initialized for this teacher/class combination.
+        // NOTE: BuildModel already SUMs ct.LastTeacherHoursInClass across multiple
+        // ClassTeacher rows for the same (Class, Teacher) pair (e.g. solo Hour=3 +
+        // solo Hour=1 = total 4 hours required). We MUST NOT downgrade it here.
+        // The previous "MIN when key exists" logic caused the engine to leave
+        // empty cells when a teacher had multiple solo ClassTeacher rows.
         string rk = Key(slot.ClassId, ct.TeacherId);
         if (!_remaining.ContainsKey(rk))
         {
@@ -3906,14 +3923,7 @@ public class Shibutz
             if (remainingHours <= 0) remainingHours = 1;
             _remaining[rk] = remainingHours;
         }
-        else
-        {
-            // Use MIN when key exists - prevent over-assignment from inconsistent data
-            int current = _remaining[rk];
-            int remainingHours = ct.LastTeacherHoursInClass;
-            if (remainingHours > 0 && remainingHours < current)
-                _remaining[rk] = remainingHours;
-        }
+        // else: trust the SUM from BuildModel — don't overwrite.
 
         // Now check if teacher has remaining hours
         int rem = _remaining[rk];

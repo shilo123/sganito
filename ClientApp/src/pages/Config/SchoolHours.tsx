@@ -203,10 +203,10 @@ export default function SchoolHours() {
     if (e.button !== 0) return; // רק לחיצה שמאלית
     const isActive = !!activeMap[hourId];
     if (isActive && guardRemoveAssigned(hourId)) return;
-    // First add in a fresh session needs explicit confirmation. Once
-    // confirmed (or once the user finishes a drag and releases the mouse),
-    // the rest of the drag-add session runs without further popups.
-    if (!isActive && !addConfirmedThisSession.current) {
+    // הפופאפ הזה נועד להזהיר שהוספת שעה תפתח משבצות ריקות שידרשו שיבוץ.
+    // אם אין בכלל שיבוצים במערכת — אין על מה להזהיר; פשוט מוסיפים את השעה.
+    const hasAnyAssignments = Object.values(assignedHourCounts).some((n) => n > 0);
+    if (!isActive && hasAnyAssignments && !addConfirmedThisSession.current) {
       setAddConfirm({
         hourId,
         day: Number(hourId.charAt(0)),

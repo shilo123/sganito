@@ -4777,4 +4777,292 @@ ORDER BY TeacherName";
         return serializer.Serialize(rows);
     }
 
+
+    // ============================================================
+    // Admin / Issues / Onboarding (נוסף 2026-05-25)
+    // ============================================================
+
+    #region AdminAuth
+
+    private const string ADMIN_COOKIE = "AdminData";
+
+    [WebMethod]
+    public void Admin_Login()
+    {
+        string UserName = GetParams("UserName");
+        string Password = GetParams("Password");
+
+        DataTable dt = Dal.ExeSp("Admin_Login", UserName, Password);
+
+        if (dt.Rows.Count > 0)
+        {
+            HttpCookie cookie = new HttpCookie(ADMIN_COOKIE);
+            cookie["AdminId"]  = dt.Rows[0]["AdminId"].ToString();
+            cookie["FullName"] = Server.UrlEncode(dt.Rows[0]["FullName"].ToString());
+            cookie["UserName"] = Server.UrlEncode(dt.Rows[0]["UserName"].ToString());
+            cookie["Email"]    = Server.UrlEncode(dt.Rows[0]["Email"].ToString());
+            cookie.Expires = DateTime.Now.AddDays(7);
+            cookie.HttpOnly = false; // Frontend needs to read it
+            HttpContext.Current.Response.Cookies.Add(cookie);
+        }
+
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Admin_Logout()
+    {
+        HttpCookie cookie = new HttpCookie(ADMIN_COOKIE);
+        cookie.Expires = DateTime.Now.AddDays(-1);
+        HttpContext.Current.Response.Cookies.Add(cookie);
+        HttpContext.Current.Response.Write("[{\"ok\":1}]");
+    }
+
+    private string GetAdminIdFromCookie()
+    {
+        HttpCookie c = HttpContext.Current.Request.Cookies[ADMIN_COOKIE];
+        if (c == null || string.IsNullOrEmpty(c["AdminId"])) return null;
+        return c["AdminId"];
+    }
+
+    [WebMethod]
+    public void Admin_GetCurrent()
+    {
+        string adminId = GetAdminIdFromCookie();
+        if (adminId == null)
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        HttpCookie c = HttpContext.Current.Request.Cookies[ADMIN_COOKIE];
+        DataTable dt = new DataTable();
+        dt.Columns.Add("AdminId");
+        dt.Columns.Add("FullName");
+        dt.Columns.Add("UserName");
+        dt.Columns.Add("Email");
+        DataRow r = dt.NewRow();
+        r["AdminId"] = adminId;
+        r["FullName"] = Server.UrlDecode(c["FullName"] ?? "");
+        r["UserName"] = Server.UrlDecode(c["UserName"] ?? "");
+        r["Email"]    = Server.UrlDecode(c["Email"]    ?? "");
+        dt.Rows.Add(r);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    #endregion
+
+    #region AdminDashboard
+
+    [WebMethod]
+    public void Admin_GetSchoolsDashboard()
+    {
+        if (GetAdminIdFromCookie() == null)
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        DataTable dt = Dal.ExeSp("Admin_GetSchoolsDashboard");
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Admin_AddSchool()
+    {
+        if (GetAdminIdFromCookie() == null)
+        {
+            HttpContext.Current.Response.Write("[{\"Success\":0,\"Message\":\"לא מורשה\"}]");
+            return;
+        }
+
+        string SchoolName  = GetParams("SchoolName");
+        string UserName    = GetParams("UserName");
+        string Password    = GetParams("Password");
+        string FirstName   = GetParams("AdminFirstName");
+        string LastName    = GetParams("AdminLastName");
+        string Email       = GetParams("Email");
+
+        if (string.IsNullOrWhiteSpace(SchoolName) || string.IsNullOrWhiteSpace(UserName) || string.IsNullOrWhiteSpace(Password))
+        {
+            HttpContext.Current.Response.Write("[{\"Success\":0,\"Message\":\"חסרים שדות חובה\"}]");
+            return;
+        }
+
+        DataTable dt = Dal.ExeSp("Admin_AddSchool",
+            SchoolName, UserName, Password,
+            string.IsNullOrEmpty(FirstName) ? UserName : FirstName,
+            string.IsNullOrEmpty(LastName) ? "" : LastName,
+            Email ?? "");
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Admin_DeleteSchool()
+    {
+        if (GetAdminIdFromCookie() == null)
+        {
+            HttpContext.Current.Response.Write("[{\"Success\":0,\"Message\":\"לא מורשה\"}]");
+            return;
+        }
+        string SchoolId = GetParams("SchoolId");
+        DataTable dt = Dal.ExeSp("Admin_DeleteSchool", SchoolId);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Admin_ImpersonateSchool()
+    {
+        // אדמין יכול לנייט למשתמש של בית ספר כדי לעזור לו עם נתונים
+        if (GetAdminIdFromCookie() == null)
+        {
+            HttpContext.Current.Response.Write("[{\"ok\":0}]");
+            return;
+        }
+        string SchoolId = GetParams("SchoolId");
+        // קוראים את המשתמש הראשי של בית הספר
+        string sql = "SELECT TOP 1 u.UserId, u.RoleId, c.ConfigurationId, c.SchoolId, " +
+                     "s.Name, y.YearId, y.Name AS HebDate, " +
+                     "(u.FirstName + ' ' + u.LastName) AS UserName " +
+                     "FROM Users u " +
+                     "INNER JOIN Configuration c ON c.SchoolId = u.SchoolId " +
+                     "INNER JOIN Year y ON y.YearId = c.YearId " +
+                     "INNER JOIN School s ON s.SchoolId = u.SchoolId " +
+                     "WHERE u.SchoolId = " + SchoolId + " AND u.Active = 1 " +
+                     "AND GETDATE() BETWEEN y.StartDate AND y.EndDate " +
+                     "ORDER BY u.UserId";
+        DataTable dt = Dal.GetDataTable(sql);
+        if (dt.Rows.Count > 0)
+        {
+            HttpCookie cookie = new HttpCookie("UserData");
+            cookie["UserId"] = dt.Rows[0]["UserId"].ToString();
+            cookie["RoleId"] = dt.Rows[0]["RoleId"].ToString();
+            cookie["ConfigurationId"] = dt.Rows[0]["ConfigurationId"].ToString();
+            cookie["UserName"] = Server.UrlEncode(dt.Rows[0]["UserName"].ToString());
+            cookie["HebDate"] = Server.UrlEncode(dt.Rows[0]["HebDate"].ToString());
+            cookie["Name"] = Server.UrlEncode(dt.Rows[0]["Name"].ToString());
+            cookie["SchoolId"] = dt.Rows[0]["SchoolId"].ToString();
+            cookie.Expires = DateTime.Now.AddDays(1); // התחזות זמנית בלבד
+            HttpContext.Current.Response.Cookies.Add(cookie);
+        }
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    #endregion
+
+    #region Issues
+
+    [WebMethod]
+    public void Issue_Insert()
+    {
+        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
+        if (ud == null || string.IsNullOrEmpty(ud["UserId"]))
+        {
+            HttpContext.Current.Response.Write("[{\"ok\":0,\"Message\":\"לא מחובר\"}]");
+            return;
+        }
+
+        string Title       = GetParams("Title");
+        string Description = GetParams("Description");
+        string Category    = GetParams("Category");
+        string Priority    = GetParams("Priority");
+
+        if (string.IsNullOrWhiteSpace(Title) || string.IsNullOrWhiteSpace(Description))
+        {
+            HttpContext.Current.Response.Write("[{\"ok\":0,\"Message\":\"חסרים כותרת או תיאור\"}]");
+            return;
+        }
+
+        DataTable dt = Dal.ExeSp("Issue_Insert",
+            ud["ConfigurationId"], ud["SchoolId"], ud["UserId"],
+            string.IsNullOrEmpty(Category) ? "כללי" : Category,
+            string.IsNullOrEmpty(Priority) ? "רגיל" : Priority,
+            Title, Description);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Issue_GetMine()
+    {
+        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
+        if (ud == null || string.IsNullOrEmpty(ud["SchoolId"]))
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        DataTable dt = Dal.ExeSp("Issue_GetMine", ud["SchoolId"]);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Admin_GetIssues()
+    {
+        if (GetAdminIdFromCookie() == null)
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        string StatusFilter = GetParams("StatusFilter");
+        DataTable dt = Dal.ExeSp("Admin_GetIssues", StatusFilter ?? "");
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Admin_RespondIssue()
+    {
+        string adminId = GetAdminIdFromCookie();
+        if (adminId == null)
+        {
+            HttpContext.Current.Response.Write("[{\"ok\":0}]");
+            return;
+        }
+        string IssueId       = GetParams("IssueId");
+        string Status        = GetParams("Status");
+        string AdminResponse = GetParams("AdminResponse");
+
+        DataTable dt = Dal.ExeSp("Admin_RespondIssue", IssueId, adminId, Status,
+            string.IsNullOrEmpty(AdminResponse) ? null : (object)AdminResponse);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    #endregion
+
+    #region Onboarding
+
+    [WebMethod]
+    public void User_GetOnboardingState()
+    {
+        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
+        if (ud == null || string.IsNullOrEmpty(ud["UserId"]))
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        DataTable dt = Dal.ExeSp("User_GetOnboardingState", ud["UserId"]);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void User_SetOnboardingState()
+    {
+        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
+        if (ud == null || string.IsNullOrEmpty(ud["UserId"]))
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        // BIT/TINYINT parameters must be passed as bool/int (not string "0"/"1")
+        // because Dal.ExeSp uses Convert.ChangeType which can't parse "0" as Boolean.
+        string IsFirstLoginRaw = GetParams("IsFirstLogin");
+        string OnboardingStepRaw = GetParams("OnboardingStep");
+        bool isFirst = IsFirstLoginRaw == "1" || string.Equals(IsFirstLoginRaw, "true", StringComparison.OrdinalIgnoreCase);
+        int step;
+        if (!int.TryParse(OnboardingStepRaw, out step)) step = 0;
+        int userId;
+        if (!int.TryParse(ud["UserId"], out userId)) userId = 0;
+
+        DataTable dt = Dal.ExeSp("User_SetOnboardingState", userId, isFirst, step);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    #endregion
+
 }

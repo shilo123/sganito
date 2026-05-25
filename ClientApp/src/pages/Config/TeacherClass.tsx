@@ -348,7 +348,19 @@ export default function TeacherClass() {
   const loadHakbatzaList = useCallback(async () => {
     try {
       const data = await ajax<HakbatzaRow[]>('Hakbatza_GetAll');
-      setHakbatzaRows(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      // אותה בעיית null של TeacherName שיש ב-Class_GetClassByLayerId קיימת
+      // גם כאן — עוטפים בלאוקאפ למפת תצוגת המורים.
+      const m = teacherDisplayMapRef.current;
+      const enriched = list.map((r) => {
+        const tid = Number(r.TeacherId ?? 0);
+        if (!tid) return r;
+        const cur = String(r.TeacherName ?? '').trim();
+        if (cur) return r;
+        const disp = m.get(tid);
+        return disp ? { ...r, TeacherName: disp } : r;
+      });
+      setHakbatzaRows(enriched);
     } catch (err) {
       console.error('Hakbatza_GetAll failed', err);
     }
@@ -497,10 +509,48 @@ export default function TeacherClass() {
     }
   }, []);
 
+  // ה-SP `Teacher_GetTeacherList` בונה את FullText כצירוף "LastName FirstName".
+  // למורים שלא הוגדר להם LastName (מורים שנוצרו עם שם פרטי בלבד — למשל
+  // דרך הייבוא מ-Excel) ה-FullText יוצא NULL, וכך גם TeacherName של שיבוצים.
+  // התוצאה: בכרטיסי הכיתות ובפאנל המורים מופיע פס ריק. נתקן זאת מיד אחרי
+  // הטעינה — נמלא fallback ל-FirstName ב-FullText, ונבנה מפת תצוגה לפי
+  // TeacherId לשימוש ב-class rows.
+  const normalizeTeacherDisplay = (list: TeacherRow[]): TeacherRow[] =>
+    list.map((t) => {
+      const first = String(t.FirstName ?? '').trim();
+      const last = String(t.LastName ?? '').trim();
+      const full = String(t.FullText ?? '').trim();
+      const display = full || (first && last ? `${first} ${last}` : (first || last));
+      return { ...t, FullText: display };
+    });
+
+  // מפת TeacherId → שם תצוגה, מחושבת מתוך teachers הנוכחיים — משמשת
+  // להעשרת class rows כש-TeacherName חוזר ריק מה-SP.
+  const teacherDisplayMapRef = useRef<Map<number, string>>(new Map());
+  function rebuildTeacherDisplayMap(list: TeacherRow[]) {
+    const m = new Map<number, string>();
+    for (const t of list) m.set(Number(t.TeacherId), String(t.FullText ?? '').trim());
+    teacherDisplayMapRef.current = m;
+  }
+  function enrichClassRows(rows: ClassRow[]): ClassRow[] {
+    const m = teacherDisplayMapRef.current;
+    return rows.map((r) => {
+      const tid = Number(r.TeacherId ?? 0);
+      if (!tid) return r;
+      const cur = String(r.TeacherName ?? '').trim();
+      if (cur) return r;
+      const disp = m.get(tid);
+      if (!disp) return r;
+      return { ...r, TeacherName: disp };
+    });
+  }
+
   const loadTeachers = useCallback(async () => {
     try {
       const data = await ajax<TeacherRow[]>('Teacher_GetTeacherList', { TeacherId: -99 });
-      setTeachers(Array.isArray(data) ? data : []);
+      const list = normalizeTeacherDisplay(Array.isArray(data) ? data : []);
+      rebuildTeacherDisplayMap(list);
+      setTeachers(list);
     } catch (err) {
       console.error('Teacher_GetTeacherList failed', err);
       setTeachers([]);
@@ -508,22 +558,21 @@ export default function TeacherClass() {
   }, []);
 
   const loadClasses = useCallback(async (layer: number) => {
+    // טוענים מורים תחילה כדי שמפת התצוגה תהיה מעודכנת לפני שמעשירים את class rows
+    try {
+      const tdata = await ajax<TeacherRow[]>('Teacher_GetTeacherList', { TeacherId: -99 });
+      const list = normalizeTeacherDisplay(Array.isArray(tdata) ? tdata : []);
+      rebuildTeacherDisplayMap(list);
+      setTeachers(list);
+    } catch (err) {
+      console.error('Teacher_GetTeacherList (refresh) failed', err);
+    }
     try {
       const data = await ajax<ClassRow[]>('Class_GetClassByLayerId', { LayerId: layer });
-      setClasses(Array.isArray(data) ? data : []);
+      setClasses(enrichClassRows(Array.isArray(data) ? data : []));
     } catch (err) {
       console.error('Class_GetClassByLayerId failed', err);
       setClasses([]);
-    }
-    // Any operation that reloads `classes` also changed ClassTeacher rows,
-    // so the per-teacher TotalRequired count needs to refresh too.
-    // Without this, the side panel "(N)" pill goes stale after Hakbatza
-    // edits, drag-drops, or hour changes.
-    try {
-      const tdata = await ajax<TeacherRow[]>('Teacher_GetTeacherList', { TeacherId: -99 });
-      setTeachers(Array.isArray(tdata) ? tdata : []);
-    } catch (err) {
-      console.error('Teacher_GetTeacherList (refresh) failed', err);
     }
   }, []);
 
@@ -3630,17 +3679,35 @@ async function importClassTeachers(
 ): Promise<{ success: number; failed: number; errors: string[] }> {
   let success = 0; let failed = 0; const errors: string[] = [];
   const total = Math.max(1, rows.length);
-  // הצמדה: ClassTeacher_SP Type 4 מעדכן Hour לפי ClassTeacherId, ו-SP Type 1
-  // לא מחזיר את המזהה החדש. לכן עובדים בשלושה שלבים — כמו ב-onDrop של הדף:
-  //   שלב 1: Type 1 — הוספת כל זוגות כיתה/מורה (Hour=NULL).
-  //   שלב 2: טעינה מחדש של נתוני הכיתות → מיפוי (כיתה|מורה)→ClassTeacherId.
-  //   שלב 3: Type 4 — קביעת ה-Hour האמיתי לפי המזהה.
-  // הערה: Type 5 הוא פקודת מחיקה ב-SP — לכן אינו בשימוש כאן. סימון מחנכ/ת
-  // (IsTeacher) נקבע אוטומטית ב-Type 1 לפי תפקיד המורה.
+  // הייבוא צריך להיות אידמפוטנטי — אם הזוג (כיתה×מורה) כבר קיים ב-DB, רק
+  // נעדכן את השעות במקום לייצר רישום כפול.
+  //   שלב 0: סריקת DB → מיפוי קיים (כיתה|מורה)→ClassTeacherId.
+  //   שלב 1: Type 1 (INSERT) רק עבור זוגות חדשים.
+  //   שלב 2: רענון המיפוי כדי לתפוס את ה-IDs שנוצרו ב-Type 1.
+  //   שלב 3: Type 4 (UPDATE Hour) לכל זוג — כך גם זוגות קיימים יקבלו את
+  //          השעות מהאקסל.
 
-  // --- שלב 1: הוספת הזוגות ---
-  const inserted: boolean[] = new Array(rows.length).fill(false);
+  // --- שלב 0: מיפוי שיבוצים קיימים ב-DB ---
+  const idMap = new Map<string, number>();
+  try {
+    const fresh = await fetchAllClassRows();
+    for (const row of fresh) {
+      if (Number(row.Hakbatza ?? 0) !== 0) continue; // רק שיבוצים רגילים (לא הקבצה)
+      if (row.ClassTeacherId == null || row.TeacherId == null) continue;
+      const key = `${row.ClassId}|${row.TeacherId}`;
+      if (!idMap.has(key)) idMap.set(key, Number(row.ClassTeacherId));
+    }
+  } catch (e) {
+    errors.push(`טעינת מזהי שיבוץ קיימים נכשלה: ${(e as Error).message}`);
+  }
+
+  // --- שלב 1: הוספה רק לזוגות שלא קיימים ---
+  const needInsert: number[] = [];
   for (let i = 0; i < rows.length; i++) {
+    if (!idMap.has(`${rows[i].classId}|${rows[i].teacherId}`)) needInsert.push(i);
+  }
+  for (let j = 0; j < needInsert.length; j++) {
+    const i = needInsert[j];
     const r = rows[i];
     try {
       await ajax('Class_SetTeacherToClass', {
@@ -3652,33 +3719,32 @@ async function importClassTeachers(
         TargetClassTeacherId: '', SourceClassTeacherId: '',
         Type: 1,
       });
-      inserted[i] = true;
     } catch (e) {
       failed++;
       errors.push(`${r.classNameRaw} / ${r.teacherNameRaw}: ${(e as Error).message}`);
     }
-    onProgress(Math.round((i + 1) * 0.5), total);
+    onProgress(Math.round((j + 1) / Math.max(1, needInsert.length) * 0.4 * total), total);
   }
 
-  // --- שלב 2: טעינת ClassTeacherId לכל זוג (מכל השכבות — הכיתות פזורות) ---
-  const idMap = new Map<string, number>();
-  try {
-    const fresh = await fetchAllClassRows();
-    for (const row of fresh) {
-      if (Number(row.Hakbatza ?? 0) !== 0) continue; // רק שיבוצים רגילים (לא הקבצה)
-      if (row.ClassTeacherId == null || row.TeacherId == null) continue;
-      const key = `${row.ClassId}|${row.TeacherId}`;
-      if (!idMap.has(key)) idMap.set(key, Number(row.ClassTeacherId));
+  // --- שלב 2: רענון מיפוי כדי לקבל את ה-IDs החדשים ---
+  if (needInsert.length > 0) {
+    try {
+      const fresh = await fetchAllClassRows();
+      for (const row of fresh) {
+        if (Number(row.Hakbatza ?? 0) !== 0) continue;
+        if (row.ClassTeacherId == null || row.TeacherId == null) continue;
+        const key = `${row.ClassId}|${row.TeacherId}`;
+        if (!idMap.has(key)) idMap.set(key, Number(row.ClassTeacherId));
+      }
+    } catch (e) {
+      errors.push(`רענון מזהי שיבוץ נכשל: ${(e as Error).message}`);
     }
-  } catch (e) {
-    errors.push(`טעינת מזהי השיבוץ נכשלה: ${(e as Error).message}`);
   }
 
-  // --- שלב 3: קביעת השעות ---
+  // --- שלב 3: קביעת השעות לכל הזוגות ---
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    onProgress(Math.round(total * 0.5 + (i + 1) * 0.5), total);
-    if (!inserted[i]) continue;
+    onProgress(Math.round(total * 0.4 + (i + 1) * 0.6), total);
     const ctId = idMap.get(`${r.classId}|${r.teacherId}`);
     if (ctId == null) {
       failed++;
@@ -3728,7 +3794,7 @@ async function addTeachersByName(names: string[], tafkidId: number | undefined):
     const firstName = parts[0] ?? trimmed;
     const lastName = parts.length > 1 ? parts.slice(1).join(' ') : '';
     try {
-      await ajax('Teacher_DML', {
+      const ins = await ajax<Array<{ TeacherId?: number }>>('Teacher_DML', {
         TeacherId: '0',
         Type: 2, // 2 = הוספה (SP מצפה ל-tinyint, לא למחרוזת "insert")
         Tafkid: tafkid,
@@ -3742,6 +3808,24 @@ async function addTeachersByName(names: string[], tafkidId: number | undefined):
         Partani: '0',
         ProfessionalId: '',
       });
+      // ה-SP `Teacher_DML` Type=2 יוצר רישומי TeacherHours לכל שעות בית
+      // הספר כשעות **חסומות** למורה (isWork>0) — תופעת לוואי שמגרמת לכך
+      // שמורה חדש מופיע ב-PreCheck כעם "0 זמינות". מנקים זאת מיד אחרי
+      // ההוספה ע"י קריאת Teacher_SetTeacherHours Type=2 לכל HourId.
+      const newId = Number(ins?.[0]?.TeacherId ?? 0);
+      if (newId > 0) {
+        try {
+          const hours = await ajax<Array<{ HourId: number }>>('Teacher_GetAllTeacherHours', { TeacherId: newId });
+          for (const h of (Array.isArray(hours) ? hours : [])) {
+            try {
+              await ajax('Teacher_SetTeacherHours', { TeacherId: newId, HourId: h.HourId, Type: 2 });
+            } catch { /* ignore single-hour clear failure */ }
+          }
+        } catch (e) {
+          // אם הקריאה הראשית נכשלה — לא נעצור את הזרימה; המורה עדיין נוסף.
+          console.error('Failed to clear TeacherHours for new teacher', newId, e);
+        }
+      }
       added++;
     } catch (e) {
       failed++;
@@ -3976,11 +4060,12 @@ function parseClassBlocksWorkbook(
       const titleRow = headerRow > 0 ? (grid[headerRow - 1] || []) : [];
       const titleCell = titleRow[startCol + 2] ?? titleRow[startCol + 1] ?? titleRow[startCol] ?? '';
       const className = extractClassNameFromTitleCell(titleCell);
-      if (!className) {
-        errors.push({ sheet: name, rowIdx: headerRow + 1, messages: [`בלוק בעמודה ${startCol + 1}: לא נמצא שם כיתה בכותרת ("${String(titleCell)}")`] });
-        continue;
-      }
 
+      // אסוף שורות תוכן של הבלוק לפני שמדווחים שגיאה — בלוק עם כותרת ריקה
+      // ובלי שום שורת נתונים הוא בלוק "פנוי" (למשל כיתה שעדיין לא שובצה) ולא
+      // צריך להעמיס שגיאה על המשתמש בגללו.
+      type BlockRow = { r: number; subject: string; hoursRaw: unknown; teacher: string; hoursStr: string };
+      const dataRows: BlockRow[] = [];
       let blank = 0;
       for (let r = headerRow + 1; r < stopBefore; r++) {
         const row = grid[r] || [];
@@ -3994,17 +4079,35 @@ function parseClassBlocksWorkbook(
         blank = 0;
         const sn = normalizeText(subject);
         if (sn === 'מקצוע' || sn === 'מורה' || sn === 'מס שעות') continue;
-        totalRaw++;
         const teacher = extractTeacherFromCell(teacherRawCell);
-        if (!teacher) continue;
         const hoursStr = String(hoursRaw ?? '').trim();
-        if (!hoursStr) continue;
-        const hours = toHourNumber(hoursRaw);
+        // שורת סיכום של הבלוק היא בד"כ עם hours בלבד (ללא מקצוע וללא מורה),
+        // למשל "" / 37 / "" — לא שורת נתונים אמיתית.
+        if (!subject && !teacher) continue;
+        dataRows.push({ r, subject, hoursRaw, teacher, hoursStr });
+      }
+
+      // בלוק "פנוי" — אין שום שורה עם מורה תקין. גם אם יש שורות עם שם
+      // מקצוע ("תורה", 4, "") בלי מורה — הן רק תזכורות שלא הושלמו ולא מספיק
+      // כדי לדרוש מהמשתמש להזין שם כיתה לבלוק שאיש לא ילמד בו בפועל.
+      const hasRealAssignment = dataRows.some((d) => d.teacher && d.hoursStr);
+      if (!hasRealAssignment) continue;
+
+      if (!className) {
+        errors.push({ sheet: name, rowIdx: headerRow + 1, messages: [`בלוק בעמודה ${startCol + 1}: לא נמצא שם כיתה בכותרת ("${String(titleCell)}")`] });
+        continue;
+      }
+
+      for (const d of dataRows) {
+        totalRaw++;
+        if (!d.teacher) continue; // מקצוע ללא מורה משויך — מדלגים בשקט
+        if (!d.hoursStr) continue;
+        const hours = toHourNumber(d.hoursRaw);
         if (hours <= 0) {
-          errors.push({ sheet: name, rowIdx: r + 1, messages: [`"${subject || '?'} / ${teacher}": שעות לא חוקיות (${String(hoursRaw)})`] });
+          errors.push({ sheet: name, rowIdx: d.r + 1, messages: [`"${d.subject || '?'} / ${d.teacher}": שעות לא חוקיות (${String(d.hoursRaw)})`] });
           continue;
         }
-        raws.push({ sheet: name, className, teacherName: teacher, subject, hour: hours });
+        raws.push({ sheet: name, className, teacherName: d.teacher, subject: d.subject, hour: hours });
       }
     }
   }
@@ -4256,31 +4359,13 @@ function parseMultiSheetCombined(
 ): ParsedRowsResult<ClassTeacherImportPayload> {
   const hasBlocks = wb.SheetNames.some(isClassSheetName);
   if (hasBlocks) {
-    const blocks = parseClassBlocksWorkbook(wb, classes, teachers);
-    // ניסיון לקרוא מטריצה רק להוספת זוגות שלא מופיעים בבלוקים (כדי לכסות מורים מקצועיים שלא נכנסו לבלוקים)
-    const matrix = parseMatrixWorkbook(wb, classes, teachers);
-    if (matrix.rows.length === 0) return blocks;
-    // מפתח-זיהוי לזוג: classId+teacherId
-    const seen = new Set<string>();
-    for (const r of blocks.rows) seen.add(`${r.classId}|${r.teacherId}`);
-    const merged: ClassTeacherImportPayload[] = [...blocks.rows];
-    for (const r of matrix.rows) {
-      const k = `${r.classId}|${r.teacherId}`;
-      if (!seen.has(k)) { merged.push(r); seen.add(k); }
-    }
-    // איחוד חוסרים
-    const ma = blocks.actionable ?? {};
-    const mb = matrix.actionable ?? {};
-    const missingClasses = Array.from(new Set([...(ma.missingClasses ?? []), ...(mb.missingClasses ?? [])])).sort((a, b) => a.localeCompare(b, 'he'));
-    const missingTeachers = Array.from(new Set([...(ma.missingTeachers ?? []), ...(mb.missingTeachers ?? [])])).sort((a, b) => a.localeCompare(b, 'he'));
-    // מיפוי שכבות — הבלוקים מהימנים יותר, לכן גוברים על המטריצה
-    const missingClassLayers = { ...(mb.missingClassLayers ?? {}), ...(ma.missingClassLayers ?? {}) };
-    return {
-      rows: merged,
-      errors: blocks.errors,
-      totalRaw: blocks.totalRaw + matrix.totalRaw,
-      actionable: { missingClasses, missingTeachers, missingClassLayers },
-    };
+    // הבלוקים הם המקור היחיד והמהימן: שורת הסיכום שלהם ("סה"כ 37") היא הסך
+    // הרשמי של הכיתה לפי הקובץ. גיליונות מטריצה לעיתים מציגים את אותו סך
+    // עם פירוט-מורים שונה (למשל לירז במטריצה=22 אבל בבלוק=24, ויש מורים
+    // נוספים במטריצה שמכסים את ההפרש) — שילוב של שניהם גורם לעודף שעות
+    // ולסטייה מהסיכום שהקובץ עצמו מצהיר עליו. לכן: אם הקובץ כולל בלוקים,
+    // המטריצה תיקרא רק לאיתור כיתות חדשות שיש להוסיף, ולא לזוגות שיבוץ.
+    return parseClassBlocksWorkbook(wb, classes, teachers);
   }
   // אין בלוקי כיתות — קרא רק מהמטריצה
   return parseMatrixWorkbook(wb, classes, teachers);

@@ -9,8 +9,6 @@ import AssignAuto from './AssignAuto';
 
 interface ConfigurationRow {
   ConfigurationId: string;
-  MaxHourInShibutz: string;
-  MinForPitzul: string;
   SchoolId?: string;
 }
 
@@ -43,11 +41,8 @@ export default function AssignConfig() {
   const { user } = useAuth();
   const toast = useToast();
 
-  const [maxHourInShibutz, setMaxHourInShibutz] = useState<string>('');
-  const [minForPitzul, setMinForPitzul] = useState<string>('');
   const [schoolId, setSchoolId] = useState<string>('');
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
 
   const [showExtra, setShowExtra] = useState(false);
   const [extraRows, setExtraRows] = useState<HourExtraRow[]>([]);
@@ -80,8 +75,6 @@ export default function AssignConfig() {
         });
         if (cancelled) return;
         if (Array.isArray(rows) && rows.length > 0) {
-          setMaxHourInShibutz(rows[0].MaxHourInShibutz ?? '');
-          setMinForPitzul(rows[0].MinForPitzul ?? '');
           setSchoolId(rows[0].SchoolId ?? user.SchoolId ?? '');
         }
       } catch (e) {
@@ -95,6 +88,12 @@ export default function AssignConfig() {
       cancelled = true;
     };
   }, [user]);
+  // stepValue/handleSave הוסרו יחד עם כרטיס "הגדרות כלליות" שהוסר מה-UI.
+  // openExtra ומנגנון מודאל החריגים נשמרים — המודאל עצמו עדיין רנדר ויכול
+  // להיפתח בעתיד דרך כפתור שיוסיפו מחדש.
+  void extraRows; void teachers; void classes; void days;
+  void selTeacher; void selClass; void selDay; void extraValue;
+  void setShowExtra;
 
   const canManageLogo = user?.RoleId === '1';
   const logoSrc = schoolId ? `/assets/images/SchoolLogo/${schoolId}_.png?v=${logoKey}` : '';
@@ -109,39 +108,6 @@ export default function AssignConfig() {
     img.onerror = () => setLogoOk(false);
     img.src = logoSrc;
   }, [logoSrc]);
-
-  function stepValue(
-    current: string,
-    delta: number,
-    setter: (v: string) => void,
-    min = 0,
-    max = 99,
-  ) {
-    const n = Number(current);
-    const base = isNaN(n) ? 0 : n;
-    const next = Math.max(min, Math.min(max, base + delta));
-    setter(String(next));
-  }
-
-  async function handleSave() {
-    if (isNaN(Number(minForPitzul)) || isNaN(Number(maxHourInShibutz))) {
-      toast.warning('יש להזין ערכים מספריים בלבד', { title: 'קלט לא תקין' });
-      return;
-    }
-    setSaving(true);
-    try {
-      await ajax('Assign_SetConfiguration', {
-        MaxHourInShibutz: maxHourInShibutz,
-        MinForPitzul: minForPitzul,
-      });
-      toast.success('ההגדרות נשמרו בהצלחה');
-    } catch (e) {
-      console.error('Assign_SetConfiguration failed', e);
-      toast.error('אירעה שגיאה בשמירת ההגדרות');
-    } finally {
-      setSaving(false);
-    }
-  }
 
   async function loadExtraData() {
     try {
@@ -297,125 +263,6 @@ export default function AssignConfig() {
 
       <div className="assign-config">
         <AssignAuto />
-
-        <div className="assign-config__card">
-          <div className="assign-config__header assign-config__header--blue">
-            <div>
-              <div className="assign-config__kicker">הגדרות שיבוץ</div>
-              <h2 className="assign-config__title">
-                <i className="fa fa-cog" />
-                הגדרות כלליות
-              </h2>
-            </div>
-            <button
-              type="button"
-              className="assign-config__btn assign-config__btn--ghost"
-              onClick={openExtra}
-              style={{ background: 'rgba(255,255,255,0.92)' }}
-              title="רשימת מורים המורשים לעבוד יותר מ-2 שעות"
-            >
-              <i className="fa fa-users" />
-              חריגים — מורים עם יותר מ-2 שעות
-            </button>
-          </div>
-
-          <div className="assign-config__body">
-            <div className="assign-config__grid">
-              <div className="cfg-stat">
-                <div className="cfg-stat__top">
-                  <div className="cfg-stat__icon cfg-stat__icon--primary">
-                    <i className="fa fa-clock-o" />
-                  </div>
-                  <div className="cfg-stat__label">מקסימום שעות למורה ביום</div>
-                </div>
-                <div className="cfg-stat__stepper">
-                  <button
-                    type="button"
-                    className="cfg-stat__step-btn"
-                    onClick={() => stepValue(maxHourInShibutz, -1, setMaxHourInShibutz)}
-                    aria-label="הפחת"
-                  >
-                    −
-                  </button>
-                  <input
-                    type="text"
-                    id="txtRetzef"
-                    className="cfg-stat__input"
-                    value={maxHourInShibutz}
-                    onChange={(e) => setMaxHourInShibutz(e.target.value)}
-                    inputMode="numeric"
-                  />
-                  <button
-                    type="button"
-                    className="cfg-stat__step-btn"
-                    onClick={() => stepValue(maxHourInShibutz, 1, setMaxHourInShibutz)}
-                    aria-label="הוסף"
-                  >
-                    +
-                  </button>
-                  <span className="cfg-stat__unit">שעות</span>
-                </div>
-                <div className="cfg-stat__hint">
-                  מספר שעות הוראה מקסימלי שאפשר להקצות למורה בודד ביום אחד
-                </div>
-              </div>
-
-              <div className="cfg-stat">
-                <div className="cfg-stat__top">
-                  <div className="cfg-stat__icon cfg-stat__icon--teal">
-                    <i className="fa fa-calendar" />
-                  </div>
-                  <div className="cfg-stat__label">סף פיזור שעות למספר ימים</div>
-                </div>
-                <div className="cfg-stat__stepper">
-                  <button
-                    type="button"
-                    className="cfg-stat__step-btn"
-                    onClick={() => stepValue(minForPitzul, -1, setMinForPitzul)}
-                    aria-label="הפחת"
-                  >
-                    −
-                  </button>
-                  <input
-                    type="text"
-                    id="txtMin"
-                    className="cfg-stat__input"
-                    value={minForPitzul}
-                    onChange={(e) => setMinForPitzul(e.target.value)}
-                    inputMode="numeric"
-                  />
-                  <button
-                    type="button"
-                    className="cfg-stat__step-btn"
-                    onClick={() => stepValue(minForPitzul, 1, setMinForPitzul)}
-                    aria-label="הוסף"
-                  >
-                    +
-                  </button>
-                  <span className="cfg-stat__unit">שעות</span>
-                </div>
-                <div className="cfg-stat__hint">
-                  מורה עם עד X שעות בכיתה — השעות יפוזרו ליותר מיום אחד
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="assign-config__footer">
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-2)' }}>
-              ערכים אלה ישפיעו על תהליך השיבוץ האוטומטי
-            </div>
-            <button
-              type="button"
-              className="assign-config__btn assign-config__btn--primary"
-              onClick={handleSave}
-              disabled={saving}
-            >
-              <i className="fa fa-save" />
-              {saving ? 'שומר...' : 'שמור הגדרות'}
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* Floating Logo FAB */}

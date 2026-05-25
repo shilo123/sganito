@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { ajax } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import OnboardingWizard from '../onboarding/OnboardingWizard';
 
 interface ClassStatusRow {
   ClassId: number | null;
@@ -19,12 +20,28 @@ const NAV_ITEMS = [
   { to: '/Assign/Assign', icon: 'fa fa-calendar', label: 'מערכת בית הספר' },
   { to: '/Assign/AssignMatrix', icon: 'fa fa-th', label: 'מערכת בית הספר מטריצה' },
   { to: '/Assign/AssignConfig', icon: 'fa fa-bolt', label: 'שיבוץ אוטומטי' },
+  { to: '/Issues/MyIssues', icon: 'fa fa-bug', label: 'דיווח תקלה' },
 ];
 
 export default function MasterLayout() {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [classes, setClasses] = useState<ClassStatusRow[]>([]);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  // טען את מצב ה-onboarding מהשרת בכל login - אם זו הכניסה הראשונה, נציג את האשף
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    ajax<Array<{ IsFirstLogin?: number | string; OnboardingStep?: number | string }>>('User_GetOnboardingState')
+      .then((rows) => {
+        if (cancelled) return;
+        const first = Array.isArray(rows) && rows[0] ? Number(rows[0].IsFirstLogin) : 0;
+        if (first === 1) setShowOnboarding(true);
+      })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [user]);
   // Effective demand (Hakbatza counted as MAX, others as SUM). When this
   // is greater than total HourSchool capacity, the schedule physically
   // cannot reach 100% — we use it as denominator so the pill reflects
@@ -277,6 +294,10 @@ export default function MasterLayout() {
           </div>
         </section>
       </section>
+
+      {showOnboarding && (
+        <OnboardingWizard onComplete={() => setShowOnboarding(false)} />
+      )}
     </div>
   );
 }

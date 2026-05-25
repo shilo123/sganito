@@ -1318,16 +1318,14 @@ export default function AssignAuto() {
                       {inGapMode ? 'תיקון חוסרים אוטומטי' : 'שיבוץ אוטומטי'}
                     </h2>
                   </div>
-                  <div className="assign-auto__warning">
-                    <i
-                      className={`fa fa-${inGapMode ? 'info-circle' : 'exclamation-triangle'}`}
-                    />
-                    <span>
-                      {inGapMode
-                        ? `נותרו ${currentGapCount} משבצות ריקות. הפעולה תשבץ מורים פנויים בחוסרים מבלי לפגוע במה שכבר משובץ.`
-                        : 'שיבוץ אוטומטי מוחק את כל השיבוצים שנעשו עד כה.'}
-                    </span>
-                  </div>
+                  {inGapMode && (
+                    <div className="assign-auto__warning">
+                      <i className="fa fa-info-circle" />
+                      <span>
+                        נותרו {currentGapCount} משבצות ריקות. הפעולה תשבץ מורים פנויים בחוסרים מבלי לפגוע במה שכבר משובץ.
+                      </span>
+                    </div>
+                  )}
                   {preCheckIssues.length > 0 && (
                     <div className="assign-auto__pre-check">
                       <i className="fa fa-info-circle" />
@@ -1622,11 +1620,12 @@ export default function AssignAuto() {
             // resolution on the same new day, which the previous delta-based
             // approach missed because that day wasn't tracked initially.
             type Status = 'pending' | 'ok' | 'fail';
-            const computeStatus = (): Status => {
-              if (actionableConflicts.length === 0) return 'pending';
+            type Wall = { classId: number; className: string; day: number; count: number };
+            const computeStatusAndWalls = (): { status: Status; walls: Wall[] } => {
+              if (actionableConflicts.length === 0) return { status: 'pending', walls: [] };
               for (const c of actionableConflicts) {
                 const r = conflictResolutions.get(`${c.ClassId}_${c.FreeDay}`);
-                if (!r || r.teacherId <= 0) return 'pending';
+                if (!r || r.teacherId <= 0) return { status: 'pending', walls: [] };
               }
 
               const finalFreeDay = new Map<number, number>();
@@ -1653,12 +1652,26 @@ export default function AssignAuto() {
                 }
               }
 
-              for (const count of postCounts.values()) {
-                if (count >= 3) return 'fail';
+              // אסוף את כל ה-walls שנשארו (count >= 3) עם שם הכיתה והיום
+              const classNameById = new Map<number, string>();
+              for (const c of freeDayConflicts) classNameById.set(c.ClassId, c.ClassName);
+
+              const walls: Wall[] = [];
+              for (const [k, count] of postCounts) {
+                if (count >= 3) {
+                  const [cid, d] = k.split('_').map(Number);
+                  walls.push({
+                    classId: cid,
+                    className: classNameById.get(cid) || `כיתה ${cid}`,
+                    day: d,
+                    count,
+                  });
+                }
               }
-              return 'ok';
+              walls.sort((a, b) => b.count - a.count);
+              return { status: walls.length > 0 ? 'fail' : 'ok', walls };
             };
-            const status: Status = computeStatus();
+            const { status, walls: remainingWalls } = computeStatusAndWalls();
             const allReady = status === 'ok';
             // Show the auto-resolve button only after the user has touched
             // a select. We compare the current resolutions to the snapshot
@@ -1695,7 +1708,14 @@ export default function AssignAuto() {
                     </span>
                     <span className="assign-conflicts-modal__header-sub">
                       {status === 'ok' && 'כל הקונפליקטים פתורים בצורה שלא תיצור קיר חדש בכיתה.'}
-                      {status === 'fail' && 'עדיין נשאר קיר של 3+ מורים על אותו יום באחת מהכיתות. נסה יום אחר או "ללא יום חופשי".'}
+                      {status === 'fail' && remainingWalls.length > 0 && (() => {
+                        const top = remainingWalls.slice(0, 2);
+                        const more = remainingWalls.length - top.length;
+                        const list = top.map(w =>
+                          `${w.className} ביום ${DAY_NAMES[w.day - 1] || w.day} (${w.count} מורים)`
+                        ).join(', ');
+                        return `נשאר קיר ב-${list}${more > 0 ? ` ועוד ${more}` : ''}. בחר יום אחר או "ללא יום חופשי" כדי לפזר.`;
+                      })()}
                       {status === 'pending' && 'הימים החלופיים נבחרו אוטומטית. ניתן לעדכן ידנית.'}
                     </span>
                   </span>
@@ -1731,7 +1751,25 @@ export default function AssignAuto() {
                   </span>
                 </div>
                 <div className="assign-conflicts-modal__body">
-                  {freeDayConflicts.map((c) => {
+                  {/* Hint banner - הסבר ברור על הבעיה */}
+                  <div className="assign-conflicts-modal__hint">
+                    <i className="fa fa-lightbulb-o" />
+                    <div>
+                      <strong>איך פותרים?</strong>{' '}
+                      בכל כיתה שמסומנת באדום/כתום, ה<strong>מורה הראשון ברשימה</strong>{' '}
+                      (מסומן ב-<i className="fa fa-star" style={{ color: '#22c55e', fontSize: 11 }} /> "מומלץ")
+                      הוא ההצעה הטובה ביותר להעברה ליום אחר.
+                      ההצעה נבחרה כדי להסיר את הקיר עם הכי פחות נזק לכיתות אחרות.
+                      <br />
+                      <strong>סדר הטיפול:</strong> הכיתות מסודרות מהקריטיות ביותר (אדום) למינוריות.
+                      תן עדיפות לפתרון של הקריטיות.
+                    </div>
+                  </div>
+
+                  {/* רשימת קונפליקטים מסודרת לפי חומרה (TeacherCount יורד) */}
+                  {[...freeDayConflicts]
+                    .sort((a, b) => b.TeacherCount - a.TeacherCount)
+                    .map((c) => {
                     const key = `${c.ClassId}_${c.FreeDay}`;
                     const teachers = parseTeachersCsv(c.TeachersCsv);
                     const res = conflictResolutions.get(key);
@@ -1755,18 +1793,45 @@ export default function AssignAuto() {
                         </div>
                       );
                     }
+                    // דירוג חומרה: 7+ קריטי, 5-6 גבוה, 3-4 בינוני
+                    const severity = c.TeacherCount >= 7 ? 'critical'
+                                  : c.TeacherCount >= 5 ? 'high'
+                                  : 'medium';
+                    const severityLabel = severity === 'critical' ? 'קריטי'
+                                       : severity === 'high' ? 'דחוף'
+                                       : 'בינוני';
+                    const severityClass = severity === 'critical' ? 'high'
+                                       : severity === 'high' ? 'high'
+                                       : 'medium';
+                    const recommendedTeacherId = res?.teacherId ?? teachers[0]?.id ?? 0;
+                    const recommendedTeacher = teachers.find((t) => t.id === recommendedTeacherId);
                     return (
-                      <div key={key} className="assign-conflict-row">
+                      <div key={key} className={`assign-conflict-row${severity === 'critical' ? ' assign-conflict-row--critical' : ''}`}>
                         <div className="assign-conflict-row__title">
-                          ליותר מדי מורים בכיתה <strong>{c.ClassName}</strong>{' '}
-                          יש יום חופשי ביום <strong>{DAY_NAMES[c.FreeDay - 1] || c.FreeDay}</strong>{' '}
-                          ({c.TeacherCount} מורים).
+                          <span>
+                            כיתה <strong>{c.ClassName}</strong> — יש{' '}
+                            <strong>{c.TeacherCount} מורים</strong> עם יום חופשי ב
+                            <strong>יום {DAY_NAMES[c.FreeDay - 1] || c.FreeDay}</strong>
+                          </span>
+                          <span className={`assign-conflict-row__severity assign-conflict-row__severity--${severityClass}`}>
+                            <i className={`fa ${severity === 'critical' ? 'fa-exclamation-circle' : 'fa-exclamation-triangle'}`} />
+                            {severityLabel}
+                          </span>
                         </div>
+
+                        {recommendedTeacher && (
+                          <div className="assign-conflict-row__hint">
+                            <i className="fa fa-info-circle" />
+                            <strong>{recommendedTeacher.name}</strong> הוא המורה הקריטי כאן —
+                            העברתו ליום אחר תוריד את העומס ב-{c.ClassName} מ-{c.TeacherCount} ל-{c.TeacherCount - 1} מורים חופשיים באותו יום.
+                          </div>
+                        )}
+
                         <div className="assign-conflict-row__form">
                           <span>נעביר את:</span>
                           <select
                             className="form-control"
-                            value={res?.teacherId ?? 0}
+                            value={res?.teacherId ?? recommendedTeacherId}
                             onChange={(e) => {
                               const tid = Number(e.target.value);
                               const next = new Map(conflictResolutions);
@@ -1775,7 +1840,9 @@ export default function AssignAuto() {
                             }}
                           >
                             {teachers.map((t) => (
-                              <option key={t.id} value={t.id}>{t.name}</option>
+                              <option key={t.id} value={t.id}>
+                                {t.name}{t.id === recommendedTeacherId ? ' ⭐ מומלץ' : ''}
+                              </option>
                             ))}
                           </select>
                           <span>ליום:</span>
@@ -1785,7 +1852,7 @@ export default function AssignAuto() {
                             onChange={(e) => {
                               const d = Number(e.target.value);
                               const next = new Map(conflictResolutions);
-                              next.set(key, { teacherId: res?.teacherId ?? 0, newFreeDay: d });
+                              next.set(key, { teacherId: res?.teacherId ?? recommendedTeacherId, newFreeDay: d });
                               setConflictResolutions(next);
                             }}
                           >
@@ -1800,6 +1867,9 @@ export default function AssignAuto() {
                   })}
                 </div>
                 <div className="assign-conflicts-modal__footer">
+                  <span className="assign-conflicts-modal__footer-info">
+                    {freeDayConflicts.length} {freeDayConflicts.length === 1 ? 'התנגשות' : 'התנגשויות'} לפתרון
+                  </span>
                   <button
                     type="button"
                     className="btn btn-default"
@@ -1832,6 +1902,14 @@ export default function AssignAuto() {
                   <button
                     type="button"
                     className="btn btn-primary"
+                    disabled={status === 'fail' || status === 'pending'}
+                    title={
+                      status === 'fail'
+                        ? 'הבחירה הנוכחית עוד לא פותרת — תקן את ההתנגשויות שמסומנות באדום'
+                        : status === 'pending'
+                        ? 'נא לבחור פתרון לכל ההתנגשויות'
+                        : ''
+                    }
                     onClick={async () => {
                       // Validate: every actionable conflict (i.e. one that has
                       // at least one teacher in the CSV) must have a chosen
