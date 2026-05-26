@@ -563,25 +563,13 @@ public class Shibutz
                 }
             }
             
-            // FALLBACK: If no ManageClassId match, find TafkidId=1 with most hours
-            // CRITICAL: Exclude teachers who are homeroom of ANOTHER class (ManageClassId or _homeClassByTeacher)
-            if (homeroom == null)
-            {
-                int maxHours = -1;
-                for (int j = 0; j < slot.Candidates.Count; j++)
-                {
-                    ClassTeacher ct = slot.Candidates[j];
-                    if (ct.ManageClassId > 0 && ct.ManageClassId != slot.ClassId) continue; // ManageClassId points elsewhere
-                    int homeClass;
-                    if (_homeClassByTeacher.TryGetValue(ct.TeacherId, out homeClass) && homeClass != slot.ClassId) continue; // Homeroom elsewhere
-                    if (ct.TafkidId == 1 && ct.TeacherHoursInClass > maxHours)
-                    {
-                        maxHours = ct.TeacherHoursInClass;
-                        homeroom = ct;
-                    }
-                }
-            }
-            
+            // STRICT: No fallback to other TafkidId=1 teachers — the homeroom
+            // who opens the day MUST be the registered ManageClassId teacher
+            // for that class. A different "מורת כיתה" who happens to teach
+            // here can still take other slots, but they cannot stand in as
+            // the day-opener — that role is reserved for the actual
+            // homeroom (pedagogical requirement enforced by precheck).
+
             if (homeroom != null)
             {
                 string cname = _classNames.ContainsKey(slot.ClassId) ? _classNames[slot.ClassId] : ("Class" + slot.ClassId);
@@ -1157,37 +1145,11 @@ public class Shibutz
             _allSlots.Add(slot);
         }
 
-        // FALLBACK: For classes without ManageClassId match, use TafkidId==1 with max hours
-        Dictionary<int, int> tafkid1Best = new Dictionary<int, int>();       // classId -> best teacherId
-        Dictionary<int, int> tafkid1MaxHours = new Dictionary<int, int>();   // classId -> max hours
-        for (int i = 0; i < _allSlots.Count; i++)
-        {
-            HourSlot sl = _allSlots[i];
-            if (_homeroomByClass.ContainsKey(sl.ClassId)) continue;
-            if (sl.Candidates == null) continue;
-            for (int j = 0; j < sl.Candidates.Count; j++)
-            {
-                ClassTeacher ct = sl.Candidates[j];
-                if (ct == null || ct.TafkidId != 1) continue;
-                if (_homeClassByTeacher.ContainsKey(ct.TeacherId)) continue;
-                int curMax;
-                if (!tafkid1MaxHours.TryGetValue(sl.ClassId, out curMax)) curMax = -1;
-                if (ct.TeacherHoursInClass > curMax)
-                {
-                    tafkid1MaxHours[sl.ClassId] = ct.TeacherHoursInClass;
-                    tafkid1Best[sl.ClassId] = ct.TeacherId;
-                }
-            }
-        }
-        foreach (int cid in tafkid1Best.Keys)
-        {
-            if (!_homeroomByClass.ContainsKey(cid))
-            {
-                _homeroomByClass[cid] = tafkid1Best[cid];
-                if (!_homeClassByTeacher.ContainsKey(tafkid1Best[cid]))
-                    _homeClassByTeacher[tafkid1Best[cid]] = cid;
-            }
-        }
+        // No fallback: classes without a ManageClassId homeroom are blocked
+        // upstream by Assign_ShibutzAuto's pre-check. If we got here with a
+        // class missing a homeroom, leave the mapping empty rather than
+        // promoting a random TafkidId=1 teacher — that's what produced the
+        // "homeroom-of-another-class teaches first lesson here" bug.
 
         BuildHakbatzaIhudGroups();
     }
@@ -2940,30 +2902,18 @@ public class Shibutz
             if (slot.AssignedTeacherId > 0) continue;
             if (slot.Candidates == null || slot.Candidates.Count == 0) continue;
 
-            // Find homeroom teacher DIRECTLY in candidates (TafkidId == 1)
+            // STRICT: only the registered ManageClassId homeroom can open
+            // this class's day. Other TafkidId=1 teachers who happen to
+            // teach here cannot stand in (that produced the
+            // "wrong homeroom opening another class" bug).
             ClassTeacher homeroomCt = null;
             for (int j = 0; j < slot.Candidates.Count; j++)
             {
                 ClassTeacher ct = slot.Candidates[j];
-                if (ct != null && ct.TafkidId == 1)
+                if (ct != null && ct.TafkidId == 1 && ct.ManageClassId == slot.ClassId)
                 {
-                    // This teacher is a homeroom teacher (TafkidId == 1)
-                    // Check if their home class is THIS class
-                    int homeClass;
-                    if (_homeClassByTeacher.TryGetValue(ct.TeacherId, out homeClass) && homeClass == slot.ClassId)
-                    {
-                        homeroomCt = ct;
-                        break;
-                    }
-                    // OR if _homeClassByTeacher doesn't have them, assume they're homeroom for this class
-                    // since TafkidId == 1 means they're a homeroom teacher teaching in this slot
-                    if (!_homeClassByTeacher.ContainsKey(ct.TeacherId))
-                    {
-                        homeroomCt = ct;
-                        // Also add them to the dictionary for future reference
-                        _homeClassByTeacher[ct.TeacherId] = slot.ClassId;
-                        break;
-                    }
+                    homeroomCt = ct;
+                    break;
                 }
             }
 
@@ -3049,6 +2999,14 @@ public class Shibutz
         {
             ClassTeacher ct = slot.Candidates[i];
             if (ct == null) continue;
+
+            // STRICT: hour 1 is "day opener" — reserved for the registered
+            // homeroom (ManageClassId == ClassId). If no homeroom is available,
+            // a subject teacher (TafkidId != 1) may open the day, but never a
+            // homeroom-of-another-class — that would steal a class opening
+            // from a teacher who isn't connected pedagogically.
+            if (slot.Hour == 1 && ct.TafkidId == 1 && ct.ManageClassId != slot.ClassId)
+                continue;
 
             // STRICT: Only assign if teacher has remaining hours for THIS class.
             // No fallback to "borrow" hours from another class — that produces over-fill
@@ -4595,24 +4553,16 @@ public class Shibutz
 
     private bool IsHomeroomForSlot(HourSlot slot, int teacherId)
     {
+        // Day-opener (Hour 1) is reserved for the registered homeroom only.
+        // ManageClassId == ClassId is the single source of truth; we no
+        // longer fall back to "the TafkidId=1 teacher with the most hours".
         if (slot.Hour != 1 || slot.Candidates == null) return false;
         for (int i = 0; i < slot.Candidates.Count; i++)
         {
             ClassTeacher ct = slot.Candidates[i];
             if (ct != null && ct.TeacherId == teacherId)
             {
-                if (ct.ManageClassId == slot.ClassId) return true;
-                int homeClass;
-                if (_homeClassByTeacher.TryGetValue(teacherId, out homeClass) && homeClass == slot.ClassId) return true;
-                ClassTeacher bestTafkid1 = null;
-                int maxHours = -1;
-                for (int j = 0; j < slot.Candidates.Count; j++)
-                {
-                    ClassTeacher c = slot.Candidates[j];
-                    if (c != null && c.TafkidId == 1 && c.TeacherHoursInClass > maxHours) { maxHours = c.TeacherHoursInClass; bestTafkid1 = c; }
-                }
-                if (bestTafkid1 != null && bestTafkid1.TeacherId == teacherId) return true;
-                return false;
+                return ct.ManageClassId == slot.ClassId;
             }
         }
         return false;
@@ -4626,6 +4576,16 @@ public class Shibutz
         if (slot.Hour == 1 && slot.AssignedTeacherId > 0 && IsHomeroomForSlot(slot, slot.AssignedTeacherId))
         {
             LogHomeroom(string.Format("ApplyAssign BLOCKED: Class {0} Day {1} - would overwrite homeroom T{2} with T{3}", slot.ClassId, slot.Day, slot.AssignedTeacherId, ct.TeacherId));
+            return;
+        }
+
+        // STRICT: hour 1 is the day opener — reserved for the registered
+        // homeroom (or a subject teacher if the homeroom has no remaining
+        // hours). NEVER let a homeroom-of-another-class open this class —
+        // that's the pedagogical violation the user asked us to prevent.
+        if (slot.Hour == 1 && ct.TafkidId == 1 && ct.ManageClassId != slot.ClassId)
+        {
+            LogHomeroom(string.Format("ApplyAssign BLOCKED (hour1): T{0} manages class {1}, not {2}", ct.TeacherId, ct.ManageClassId, slot.ClassId));
             return;
         }
 

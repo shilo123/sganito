@@ -3,6 +3,26 @@ import { useNavigate } from 'react-router-dom';
 import { ajax } from '../../api/client';
 import { useToast } from '../../lib/toast';
 
+// Resolves the active ConfigurationId from the server's UserData cookie.
+// Cached after the first lookup so repeat diagnostic refreshes don't
+// hammer the endpoint. Falls back to 1 only if the call truly fails —
+// historically Cfg=1 was hardcoded throughout these queries, which
+// silently broke every multi-config workflow (the diagnostic showed
+// "37 missing per class" because it was looking at the wrong config's
+// rows). Always use this — never embed `ConfigurationId=1` literal.
+let _activeConfigIdCache: number | null = null;
+async function getActiveConfigId(): Promise<number> {
+  if (_activeConfigIdCache != null) return _activeConfigIdCache;
+  try {
+    const res = await ajax<{ ConfigurationId?: number }>('Config_GetActive');
+    const id = Number(res?.ConfigurationId ?? 0);
+    _activeConfigIdCache = id > 0 ? id : 1;
+  } catch {
+    _activeConfigIdCache = 1;
+  }
+  return _activeConfigIdCache;
+}
+
 // ---- Types ----
 
 interface ShibutzErrorRow {
@@ -204,12 +224,13 @@ export default function AssignAuto() {
       type CTRow = { ClassId: number | string; TeacherId: number | string; Hour: number | string | null; ClassTeacherId: number | string; Hakbatza?: number | string | null; Ihud?: number | string | null };
       type AssignRow = { TeacherId: number | string; ClassId: number | string; HourId: number | string };
       type SHRow = { HourId: number | string; IsOnlyShehya?: number | string | boolean | null };
+      const cfgId = await getActiveConfigId();
       const [tRows, cRows, ctRows, taRows, shRows] = await Promise.all([
         ajax<TRow[]>('Teacher_GetTeacherList', { TeacherId: '' }).catch(() => []),
         ajax<CRow[]>('Class_GetAllClass').catch(() => []),
-        ajax<CTRow[]>('Gen_GetTable', { TableName: 'ClassTeacher', Condition: 'ConfigurationId=1' }).catch(() => []),
-        ajax<AssignRow[]>('Gen_GetTable', { TableName: 'TeacherAssignment', Condition: 'ConfigurationId=1 AND HourTypeId=1' }).catch(() => []),
-        ajax<SHRow[]>('Gen_GetTable', { TableName: 'SchoolHours', Condition: 'ConfigurationId=1' }).catch(() => []),
+        ajax<CTRow[]>('Gen_GetTable', { TableName: 'ClassTeacher', Condition: `ConfigurationId=${cfgId}` }).catch(() => []),
+        ajax<AssignRow[]>('Gen_GetTable', { TableName: 'TeacherAssignment', Condition: `ConfigurationId=${cfgId} AND HourTypeId=1` }).catch(() => []),
+        ajax<SHRow[]>('Gen_GetTable', { TableName: 'SchoolHours', Condition: `ConfigurationId=${cfgId}` }).catch(() => []),
       ]);
       const teachers: TeacherLite[] = (Array.isArray(tRows) ? tRows : []).map((t) => ({
         TeacherId: Number(t.TeacherId),
@@ -343,9 +364,10 @@ export default function AssignAuto() {
     type AssignRow = { ClassId: number | string; HourId: number | string };
     type SHRow = { HourId: number | string; IsOnlyShehya?: number | string | boolean | null };
     type CRow = { ClassId: number | string };
+    const cfgId = await getActiveConfigId();
     const [taRows, shRows, cRows] = await Promise.all([
-      ajax<AssignRow[]>('Gen_GetTable', { TableName: 'TeacherAssignment', Condition: 'ConfigurationId=1 AND HourTypeId=1' }).catch(() => [] as AssignRow[]),
-      ajax<SHRow[]>('Gen_GetTable', { TableName: 'SchoolHours', Condition: 'ConfigurationId=1' }).catch(() => [] as SHRow[]),
+      ajax<AssignRow[]>('Gen_GetTable', { TableName: 'TeacherAssignment', Condition: `ConfigurationId=${cfgId} AND HourTypeId=1` }).catch(() => [] as AssignRow[]),
+      ajax<SHRow[]>('Gen_GetTable', { TableName: 'SchoolHours', Condition: `ConfigurationId=${cfgId}` }).catch(() => [] as SHRow[]),
       ajax<CRow[]>('Class_GetAllClass').catch(() => [] as CRow[]),
     ]);
     const filled = new Set<string>();
@@ -951,7 +973,41 @@ export default function AssignAuto() {
         console.error('Assign_DeleteAssignAuto failed', e);
       }
       setLoadingTitle('מבצע שיבוץ אוטומטי');
-      await ajax('Assign_ShibutzAuto');
+      const shibutzResult = await ajax<unknown>('Assign_ShibutzAuto');
+
+      // Pre-check failure short-circuits the run. The server returns a
+      // ValidationFailed envelope instead of the assignment data table when
+      // structural data (homeroom per class with minimum hours) is missing.
+      // Treat it as a hard stop — surface the errors to the user and DO NOT
+      // proceed to FillEmptySlots, otherwise we'd save a misleading
+      // "partially assigned" state on top of broken data.
+      if (shibutzResult && typeof shibutzResult === 'object' && (shibutzResult as { ValidationFailed?: boolean }).ValidationFailed === true) {
+        const errs = ((shibutzResult as { Errors?: Array<{ Message?: string; ClassName?: string }> }).Errors) ?? [];
+        setIsLoading(false);
+        setSuccessAlert(false);
+        setShowResults(false);
+        toast.error(
+          errs.length
+            ? `השיבוץ נעצר — דרושה הגדרת מחנך/ת לכל כיתה (${errs.length} כיתות בעייתיות)`
+            : 'השיבוץ נעצר — דרושה הגדרת מחנך/ת לכל כיתה',
+          { title: 'דאטא לא תקין לשיבוץ' }
+        );
+        setErrors(errs.map((e) => ({
+          ClassId: 0,
+          Day: 0,
+          Hour: 0,
+          Message: e.Message ?? '',
+          ClassName: e.ClassName ?? '',
+          TeachersMissingHours: '',
+          SavedCount: 0,
+          ErrorCount: errs.length,
+        })));
+        setResultMode('errors');
+        setErrorCount(errs.length);
+        setShowDiagnostic(false);
+        refreshGapCount();
+        return;
+      }
 
       // Final pass: fill any remaining empty cells with available teachers
       // (homeroom first, then least-loaded teacher with free TeacherHours at
@@ -1494,8 +1550,20 @@ export default function AssignAuto() {
                 icon: 'fa-calendar-times-o',
                 tone: 'freeday',
               },
+              class_no_homeroom: {
+                title: 'כיתות ללא מחנך/ת מוגדר/ת',
+                icon: 'fa-graduation-cap',
+                tone: 'class',
+              },
+              homeroom_low_hours: {
+                title: 'מחנכים/ות עם פחות מ-4 שעות בכיתתם',
+                icon: 'fa-graduation-cap',
+                tone: 'class',
+              },
             };
             const grouped = ([
+              'class_no_homeroom',
+              'homeroom_low_hours',
               'class_over_demand',
               'class_under_demand',
               'hakbatza_imbalance',

@@ -28,6 +28,7 @@ interface TeacherRow {
   Shehya: string;
   Partani: string;
   ProfessionalId: number | null;
+  ManageClassId?: number | null;
   TotalRequired?: number;
 }
 interface ClassRow {
@@ -2122,6 +2123,93 @@ export default function TeacherClass() {
                                   </span>
                                 </div>
                               )}
+                              {/* Homeroom selector — required for the auto-scheduler. The day-opener
+                                  (hour 1) MUST be this class's homeroom, so the UI surfaces a dropdown
+                                  populated with TafkidId=1 teachers currently in the class. Saving renames
+                                  the class to "<layer><seq> <FirstName>" via Class_SetHomeroom. */}
+                              {(() => {
+                                const eligibleManagers = panel.teachers
+                                  .filter((tt) => String(tt.TafkidId ?? '') === '1' && (tt.Hakbatza == null || tt.Hakbatza === '') && (tt.Ihud == null || tt.Ihud === ''))
+                                  // dedupe by TeacherId — same teacher can appear multiple times
+                                  .reduce((acc, tt) => {
+                                    if (!acc.some((x) => x.TeacherId === tt.TeacherId)) acc.push(tt);
+                                    return acc;
+                                  }, [] as typeof panel.teachers);
+                                const currentManager = teachers.find((t) => Number(t.ManageClassId ?? 0) === panel.ClassId);
+                                const currentId = currentManager?.TeacherId ?? 0;
+                                return (
+                                  <div style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'auto 1fr',
+                                    alignItems: 'center',
+                                    columnGap: 8,
+                                    padding: '6px 10px',
+                                    background: currentId ? 'linear-gradient(135deg, #ecfdf5, #d1fae5)' : 'linear-gradient(135deg, #fef2f2, #fee2e2)',
+                                    border: `1.5px solid ${currentId ? '#10b981' : '#ef4444'}`,
+                                    borderRadius: 8,
+                                    marginTop: 6,
+                                    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                                  }}>
+                                    <span style={{
+                                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                                      fontSize: 12, fontWeight: 800,
+                                      color: currentId ? '#065f46' : '#991b1b',
+                                      whiteSpace: 'nowrap',
+                                    }}>
+                                      <i className={`fa ${currentId ? 'fa-graduation-cap' : 'fa-exclamation-triangle'}`} />
+                                      מחנך/ת
+                                    </span>
+                                    <select
+                                      value={String(currentId)}
+                                      onChange={async (e) => {
+                                        const tid = Number(e.currentTarget.value);
+                                        if (!tid) return;
+                                        try {
+                                          await ajax('Class_SetHomeroom', { ClassId: panel.ClassId, TeacherId: tid });
+                                          toast.success('המחנך/ת עודכן/ה', { title: 'בוצע' });
+                                          await Promise.all([loadTeachers(), loadClasses(layerId)]);
+                                        } catch (err) {
+                                          console.error('Class_SetHomeroom failed', err);
+                                          toast.error('שגיאה בעדכון מחנך/ת');
+                                        }
+                                      }}
+                                      style={{
+                                        width: '100%',
+                                        minWidth: 0,
+                                        padding: '5px 8px',
+                                        fontSize: 13,
+                                        fontWeight: 600,
+                                        color: '#0f172a',
+                                        border: '1px solid #94a3b8',
+                                        borderRadius: 6,
+                                        background: '#fff',
+                                        cursor: 'pointer',
+                                        textOverflow: 'ellipsis',
+                                      }}
+                                      title="בחר את מחנך/ת הכיתה — שמ/ה ילווה את שם הכיתה לדוגמה 'ו2 אודיה'"
+                                    >
+                                      {!currentId && <option value="0">— בחר מחנך/ת —</option>}
+                                      {eligibleManagers.length === 0 && currentId === 0 && (
+                                        <option value="0" disabled>אין מורי כיתה זמינים</option>
+                                      )}
+                                      {eligibleManagers.map((tt) => {
+                                        const tr = teachers.find((x) => x.TeacherId === tt.TeacherId);
+                                        const fullName = tr ? `${tr.FirstName} ${tr.LastName}`.trim() : `מורה #${tt.TeacherId}`;
+                                        const alreadyManagesOther = tr && Number(tr.ManageClassId ?? 0) > 0 && Number(tr.ManageClassId) !== panel.ClassId;
+                                        const label = `${fullName} · ${tt.Hour}ש${alreadyManagesOther ? ' (מחנכ/ת כיתה אחרת)' : ''}`;
+                                        return (
+                                          <option key={tt.TeacherId} value={String(tt.TeacherId)} disabled={alreadyManagesOther}>{label}</option>
+                                        );
+                                      })}
+                                      {currentManager && !eligibleManagers.some((x) => x.TeacherId === currentManager.TeacherId) && (
+                                        <option value={String(currentManager.TeacherId)}>
+                                          {`${currentManager.FirstName} ${currentManager.LastName}`.trim()}
+                                        </option>
+                                      )}
+                                    </select>
+                                  </div>
+                                );
+                              })()}
                             </div>
                           );
                         })()}

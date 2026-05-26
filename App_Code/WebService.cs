@@ -467,6 +467,60 @@ public class WebService : System.Web.Services.WebService
 
     }
 
+    // Switches the active ConfigurationId in the UserData cookie — used by
+    // QA/admin tooling to test the scheduler across all schools (Cfg 1, 3, 5)
+    // without re-logging in as a different user. Updates the cookie only;
+    // any session-scoped state (progress log, errors) is left alone and will
+    // be refreshed on the next per-config operation.
+    [WebMethod]
+    public void Config_SetActive()
+    {
+        try
+        {
+            string newCfg = GetParams("ConfigurationId");
+            HttpCookie existing = HttpContext.Current.Request.Cookies["UserData"];
+            HttpCookie cookie = new HttpCookie("UserData");
+            if (existing != null)
+            {
+                foreach (string k in existing.Values.AllKeys)
+                {
+                    cookie[k] = existing[k];
+                }
+            }
+            cookie["ConfigurationId"] = newCfg;
+            cookie.Expires = DateTime.Now.AddYears(90);
+            HttpContext.Current.Response.Cookies.Add(cookie);
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"ConfigurationId\":" + Helper.ConvertToInt(newCfg) + "}");
+        }
+        catch (Exception ex)
+        {
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"","\\\"") + "\"}");
+        }
+    }
+
+    // Returns the active ConfigurationId from the UserData cookie so the
+    // frontend can build queries that target the right school/year — Cfg=1
+    // was historically hardcoded everywhere, which now breaks all the
+    // multi-config workflows (TeacherClass dropdown, error diagnostic, etc.).
+    [WebMethod]
+    public void Config_GetActive()
+    {
+        try
+        {
+            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+            int cfgId = Helper.ConvertToInt(cId);
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"ConfigurationId\":" + cfgId + "}");
+        }
+        catch
+        {
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("{\"ConfigurationId\":0}");
+        }
+    }
+
     //[WebMethod]
     //public void Gen_DeleteTable()
     //{
@@ -1087,7 +1141,34 @@ WHERE c.ConfigurationId=" + cfgId + @"
   AND t.ConfigurationId=" + cfgId + @"
   AND t.FreeDay IS NOT NULL AND t.FreeDay > 0
 GROUP BY c.ClassId, c.Name, t.FreeDay
-HAVING COUNT(DISTINCT t.TeacherId) >= 3";
+HAVING COUNT(DISTINCT t.TeacherId) >= 3
+
+UNION ALL
+
+-- כיתות ללא מחנך/ת מוגדר (חוסם שיבוץ — חובה לתקן ב'הגדרות כיתות ומורים')
+SELECT N'class_no_homeroom' AS Kind,
+  c.ClassId AS Id1, 0 AS Id2,
+  c.Name AS Label,
+  N'אין מחנך/ת מוגדר/ת — חובה לבחור מורה כיתה דרך ה-dropdown בכרטיס הכיתה' AS Detail
+FROM Class c
+WHERE c.ConfigurationId=" + cfgId + @"
+  AND NOT EXISTS (SELECT 1 FROM Teacher t WHERE t.ManageClassId = c.ClassId AND t.ConfigurationId = c.ConfigurationId)
+
+UNION ALL
+
+-- מחנך/ת עם פחות מ-4 שעות בכיתה (חוסם שיבוץ — צריך מינימום 4 שעות)
+SELECT N'homeroom_low_hours' AS Kind,
+  c.ClassId AS Id1, t.TeacherId AS Id2,
+  c.Name AS Label,
+  N'למחנך/ת ' + ISNULL(t.FirstName, N'') + N' ' + ISNULL(t.LastName, N'')
+    + N' מוקצות ' + CAST(ISNULL(MAX(ct.Hour),0) AS NVARCHAR(10))
+    + N' שעות בכיתה (מינימום נדרש: 4)' AS Detail
+FROM Class c
+INNER JOIN Teacher t ON t.ManageClassId = c.ClassId AND t.ConfigurationId = c.ConfigurationId
+LEFT JOIN ClassTeacher ct ON ct.TeacherId = t.TeacherId AND ct.ClassId = c.ClassId AND ct.ConfigurationId = c.ConfigurationId
+WHERE c.ConfigurationId=" + cfgId + @"
+GROUP BY c.ClassId, c.Name, t.TeacherId, t.FirstName, t.LastName
+HAVING ISNULL(MAX(ct.Hour),0) < 4";
             DataTable dt = Dal.GetDataTable(sql);
             HttpContext.Current.Response.Clear();
             HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
@@ -1396,6 +1477,19 @@ ORDER BY c.LayerId";
 
         DataTable dt = Dal.ExeSp("Class_SetClassData", ClassId, LayerId,
               ClassName, Seq, mode,
+            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    // Assigns a homeroom teacher to a class. The SP also clears the prior
+    // homeroom (if any) and renames the class to the teacher's first name —
+    // so the user sees "ו2 אודיה" rather than just "ו2".
+    [WebMethod]
+    public void Class_SetHomeroom()
+    {
+        string ClassId = GetParams("ClassId");
+        string TeacherId = GetParams("TeacherId");
+        DataTable dt = Dal.ExeSp("Class_SetHomeroom", ClassId, TeacherId,
             HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
         HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
     }
@@ -2508,6 +2602,72 @@ WHERE ct.ConfigurationId = " + cfgId + @"
     {
         // Reset live progress status at the very beginning
         Shibutz.ResetLiveStatus(configurationId);
+
+        // PRECHECK: Every class must have a homeroom teacher (ManageClassId)
+        // with a minimum number of contracted hours in that class. The
+        // scheduler relies on the homeroom for back-fill and structural
+        // constraints; running without it produces silently broken results.
+        // Block the run and surface the missing rows so the user can fix the
+        // data instead of getting a misleading "partial" assignment.
+        const int MIN_HOMEROOM_HOURS = 4;
+        DataTable dtHomeroomCheck = Dal.GetDataTable(@"
+SELECT c.ClassId,
+       ClassName = ISNULL(l.Name, '') + ' ' + CAST(c.Seq AS NVARCHAR) + ' ' + ISNULL(c.Name, ''),
+       ManagerCount = (SELECT COUNT(*) FROM Teacher t WHERE t.ManageClassId = c.ClassId AND t.ConfigurationId = " + configurationId + @"),
+       ManagerHours = ISNULL((SELECT MAX(ct.Hour) FROM ClassTeacher ct INNER JOIN Teacher t ON t.TeacherId = ct.TeacherId AND t.ConfigurationId = " + configurationId + @" WHERE t.ManageClassId = c.ClassId AND ct.ClassId = c.ClassId AND ct.ConfigurationId = " + configurationId + @"), 0)
+FROM Class c
+LEFT JOIN Layer l ON l.LayerId = c.LayerId
+WHERE c.ConfigurationId = " + configurationId);
+
+        var preCheckErrors = new List<ShibutzError>();
+        foreach (DataRow row in dtHomeroomCheck.Rows)
+        {
+            int mgrCount = Helper.ConvertToInt(row["ManagerCount"].ToString());
+            int mgrHours = Helper.ConvertToInt(row["ManagerHours"].ToString());
+            string clsName = row["ClassName"].ToString().Trim();
+            int clsId = Helper.ConvertToInt(row["ClassId"].ToString());
+            if (mgrCount == 0)
+            {
+                preCheckErrors.Add(new ShibutzError {
+                    ClassId = clsId, ClassName = clsName, Day = 0, Hour = 0,
+                    Message = "כיתה \"" + clsName + "\": לא הוגדר מחנך/ת כיתה (ManageClassId)"
+                });
+            }
+            else if (mgrHours < MIN_HOMEROOM_HOURS)
+            {
+                preCheckErrors.Add(new ShibutzError {
+                    ClassId = clsId, ClassName = clsName, Day = 0, Hour = 0,
+                    Message = "כיתה \"" + clsName + "\": למחנך/ת מוקצות רק " + mgrHours + " שעות (מינימום " + MIN_HOMEROOM_HOURS + ")"
+                });
+            }
+        }
+
+        if (preCheckErrors.Count > 0)
+        {
+            if (HttpContext.Current != null && HttpContext.Current.Session != null)
+            {
+                HttpContext.Current.Session["ShibutzErrors"] = preCheckErrors;
+                HttpContext.Current.Session["ShibutzSavedCount"] = 0;
+                HttpContext.Current.Session["ShibutzErrorCount"] = preCheckErrors.Count;
+            }
+            Shibutz.MarkLiveDone(configurationId);
+            if (HttpContext.Current != null && HttpContext.Current.Response != null)
+            {
+                HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+                var sb = new System.Text.StringBuilder();
+                sb.Append("{\"ValidationFailed\":true,\"Errors\":[");
+                for (int i = 0; i < preCheckErrors.Count; i++)
+                {
+                    if (i > 0) sb.Append(",");
+                    sb.Append("{\"ClassId\":").Append(preCheckErrors[i].ClassId)
+                      .Append(",\"ClassName\":\"").Append(preCheckErrors[i].ClassName.Replace("\\", "\\\\").Replace("\"", "\\\""))
+                      .Append("\",\"Message\":\"").Append(preCheckErrors[i].Message.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\"}");
+                }
+                sb.Append("]}");
+                HttpContext.Current.Response.Write(sb.ToString());
+            }
+            return;
+        }
 
         // CRITICAL: Delete existing auto-assignments BEFORE running - prevents duplicates
         Dal.ExeSp("Assign_DeleteAssignAuto", "1", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
