@@ -4018,6 +4018,12 @@ ORDER BY c.ClassId, sh.HourId";
                     // 100% schedules that violated ClassTeacher quotas. With
                     // this guard, the cell stays empty rather than being
                     // filled with a wrong teacher — surfacing real failure.
+                    // ATOMICITY GUARD (2026-05-27): פיל-אמפטי משתמש רק ב-CT
+                    // sols solo (HakbatzaId IS NULL). שיעורי הקבצה משובצים אך
+                    // ורק ע"י PreScheduleHakbatzas באטומיות. אם נכשל שם,
+                    // לא נחליף ב-solo — זה יוצר "הקבצה על הנייר" (כיתה אחת
+                    // מסומנת והשותפה לא באותה שעה). חובה שהתא יישאר ריק
+                    // וה-UI יציג את הבעיה.
                     string sqlPick = @"
 SELECT TOP 1 t.TeacherId, t.ProfessionalId,
   CASE WHEN t.ManageClassId = " + classId + @" THEN 0 ELSE 1 END AS HomeroomRank,
@@ -4035,6 +4041,7 @@ INNER JOIN ClassTeacher ct
   AND ct.ClassId = " + classId + @"
   AND ct.ConfigurationId = " + cId + @"
   AND ct.Hour > 0
+  AND ct.HakbatzaId IS NULL
 WHERE t.ConfigurationId = " + cId + @"
   AND NOT EXISTS (SELECT 1 FROM TeacherHours th WHERE th.TeacherId = t.TeacherId AND th.HourId = " + hourId + @" AND th.ConfigurationId = " + cId + @")
   AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (" + hourId + @" / 10) <> t.FreeDay)
@@ -4108,6 +4115,7 @@ CROSS APPLY (
   WHERE ct2.ClassId = tb.ClassId
     AND ct2.ConfigurationId = " + cId + @"
     AND ct2.Hour > 0
+    AND ct2.HakbatzaId IS NULL
     AND ct2.TeacherId <> tb.TeacherId
     AND (t2.FreeDay IS NULL OR t2.FreeDay = 0 OR (" + hourA + @" / 10) <> t2.FreeDay)
     AND NOT EXISTS (SELECT 1 FROM TeacherHours th
@@ -4128,6 +4136,7 @@ CROSS APPLY (
 WHERE ctA.ClassId = " + classA + @"
   AND ctA.ConfigurationId = " + cId + @"
   AND ctA.Hour > 0
+  AND ctA.HakbatzaId IS NULL
   AND (t.FreeDay IS NULL OR t.FreeDay = 0 OR (" + hourA + @" / 10) <> t.FreeDay)
   AND ISNULL((SELECT COUNT(*) FROM TeacherAssignment taA
               WHERE taA.ConfigurationId = " + cId + @"

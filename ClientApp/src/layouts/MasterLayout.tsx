@@ -83,21 +83,24 @@ export default function MasterLayout() {
 
   // Auto-collapse the side navigation ONLY on the transition INTO the
   // school schedule page (/Assign/Assign exactly — not AssignMatrix or
-  // AssignConfig), and re-expand ONLY on the transition OUT of it.
-  // Moving between any other tabs leaves the sidebar untouched so the
-  // user's manual choice is respected.
+  // AssignConfig) or into the class/teacher settings page
+  // (/Config/TeacherClass), and re-expand ONLY on the transition OUT of
+  // those pages. Moving between any other tabs leaves the sidebar
+  // untouched so the user's manual choice is respected.
   const isSchedulePath = (p: string) => p === '/Assign/Assign' || p === '/Assign/Assign/';
+  const isAutoCollapsePath = (p: string) =>
+    isSchedulePath(p) || p === '/Config/TeacherClass' || p === '/Config/TeacherClass/';
   const prevPathRef = useRef<string>('__init__');
   useEffect(() => {
     const prev = prevPathRef.current;
     const now = location.pathname;
-    const isAssign = isSchedulePath(now);
+    const isCollapseTarget = isAutoCollapsePath(now);
     if (prev === '__init__') {
-      if (isAssign) setSidebarExpanded(false);
+      if (isCollapseTarget) setSidebarExpanded(false);
     } else {
-      const wasAssign = isSchedulePath(prev);
-      if (!wasAssign && isAssign) setSidebarExpanded(false);
-      else if (wasAssign && !isAssign) setSidebarExpanded(true);
+      const wasCollapseTarget = isAutoCollapsePath(prev);
+      if (!wasCollapseTarget && isCollapseTarget) setSidebarExpanded(false);
+      else if (wasCollapseTarget && !isCollapseTarget) setSidebarExpanded(true);
     }
     prevPathRef.current = now;
   }, [location.pathname]);

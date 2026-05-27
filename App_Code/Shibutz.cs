@@ -3848,6 +3848,14 @@ public class Shibutz
         // A teacher cannot be assigned to a class if he is not in that class's TeachList
         if (slot.Candidates == null || slot.Candidates.Count == 0) return false;
 
+        // ATOMICITY PROTECTION (2026-05-27): If the slot already holds a
+        // Hakbatza-tagged placement from PreScheduleHakbatzas, refuse to
+        // overwrite. PreSchedule places the hakbatza atomically with partner
+        // classes at the SAME hour — overwriting one class would break the
+        // atomic group, leaving "כיתה אחת בהקבצה והשנייה בשיעור רגיל".
+        // Swap chains hit this guard and try other slots instead.
+        if (slot.AssignedTeacherId > 0 && slot.AssignedHakbatza > 0) return false;
+
         // לאחר PreScheduleHakbatzas, ה-Hak כבר תוזמן ב-X שעות אטומיות. אסור
         // ל-greedy לבחור CT עם Hakbatza > 0 — זה ירחיב את ה-Hak מעבר ל-Hours
         // הנדרשים. ה-greedy ישתמש רק ב-CT solo (Hakbatza=0/null).
@@ -3964,13 +3972,16 @@ public class Shibutz
                 else gotInClass[k] = 1;
             }
         }
-        // חישוב req_in_class פר (T,C) מ-CT
+        // חישוב req_in_class פר (T,C) מ-CT — *רק* שעות solo (לא הקבצה).
+        // שעות הקבצה משובצות אטומית ע"י PreScheduleHakbatzas בלבד. אם הן
+        // נכשלו שם, אסור ל-fill-empty להחליף אותן ב-solo — אחרת נוצר
+        // false-100% עם הקבצה "על הנייר".
         Dictionary<string, int> reqInClass = new Dictionary<string, int>();
         try
         {
             DataTable dtReqC = Dal.GetDataTable(
                 "SELECT TeacherId, ClassId, ISNULL(SUM(Hour),0) AS Req FROM ClassTeacher " +
-                "WHERE ConfigurationId=" + _configurationId + " AND Hour > 0 GROUP BY TeacherId, ClassId");
+                "WHERE ConfigurationId=" + _configurationId + " AND Hour > 0 AND HakbatzaId IS NULL GROUP BY TeacherId, ClassId");
             for (int i = 0; i < dtReqC.Rows.Count; i++)
             {
                 int tid = ToInt(dtReqC.Rows[i]["TeacherId"]);
@@ -3993,6 +4004,11 @@ public class Shibutz
             {
                 ClassTeacher cand = s.Candidates[k];
                 if (cand == null) continue;
+                // אסור לשבץ CT-של-הקבצה כסולו. אם הקבצה לא נשלמה ע"י
+                // PreScheduleHakbatzas — חובה שהתא יישאר ריק וה-UI יציג
+                // את הבעיה. אחרת המורה מסומן כסולו על שעת הקבצה ויוצר
+                // "הקבצה על הנייר" שלא מסונכרנת בין כיתות שותפות.
+                if (cand.Hakbatza > 0) continue;
                 // got_in_class < req_in_class
                 string rkLocal = Key(s.ClassId, cand.TeacherId);
                 int gotC = 0;
@@ -4161,13 +4177,23 @@ public class Shibutz
                         if (!found) { canSchedule = false; break; }
                     }
                 }
-                // pre-flight אינו חוסם — שיבוץ אופטימי. כל מה שלא יסתדר
-                // יישאר ל-greedy או ל-extras בpartial.
-                scheduled++;
+                // ATOMICITY FIX (2026-05-27): pre-flight חייב לחסום. אם לא ניתן
+                // לבצע bijection מלא בשעה זו, אסור לשבץ אפילו חלקית. אחרת
+                // נוצרות רשומות hakbatza חלקיות — כיתה אחת מסומנת כהקבצה
+                // ושותפתה בשיעור רגיל באותה שעה. במציאות מורה ההקבצה לא
+                // יכול "לקבץ" רק כיתה אחת, אז זו "הקבצה על הנייר" שלא יכולה
+                // לרוץ. מעבר לכך, גם אם pre-flight עובר, ייתכן שbenchmark של
+                // contrib יחסום מורה בשלב ה-commit — לכן אנו עוקבים אחר
+                // commits פר-שעה וregressing אותם אם איזושהי כיתה נכשלה.
+                if (!canSchedule) continue;
                 HashSet<int> usedTeachers = new HashSet<int>();
+                // hourCommits: רשימת הקצאות שבוצעו השעה הזו לצורך rollback אטומי.
+                List<HourSlot> hourCommits = new List<HourSlot>();
+                List<int> hourCommitsTeacher = new List<int>();
+                bool hourFullySucceeded = true;
                 foreach (HourSlot s in list)
                 {
-                    if (s.AssignedTeacherId > 0) continue;
+                    if (s.AssignedTeacherId > 0) { hourFullySucceeded = false; break; }
                     // round-robin אמיתי: בחירת מורה עם הכי מעט שיבוצי Hak (מ-meta.TeacherHours) שכבר קיבל בHak זה.
                     ClassTeacher chosen = null;
                     int bestPriority = Int32.MaxValue;
@@ -4200,7 +4226,7 @@ public class Shibutz
                             if (priority < bestPriority) { chosen = cand; bestPriority = priority; }
                         }
                     }
-                    if (chosen == null) continue;
+                    if (chosen == null) { hourFullySucceeded = false; break; }
                     // שיבוץ ישיר (לא דרך ApplyAssign — נעקוף את ApplyHakbatzaPropagation
                     // כי כאן אנחנו ה-scheduler עצמו)
                     s.AssignedTeacherId = chosen.TeacherId;
@@ -4217,8 +4243,37 @@ public class Shibutz
                     // עדכון counter rotation
                     if (hakAssignedCount.ContainsKey(chosen.TeacherId)) hakAssignedCount[chosen.TeacherId]++;
                     else hakAssignedCount[chosen.TeacherId] = 1;
+                    // tracking לrollback אטומי במקרה של כשל בשלב מאוחר יותר.
+                    hourCommits.Add(s);
+                    hourCommitsTeacher.Add(chosen.TeacherId);
                 }
 
+                if (!hourFullySucceeded)
+                {
+                    // ATOMICITY ROLLBACK: לא הצלחנו לשבץ את כל הכיתות באטומיות.
+                    // נחזיר את כל ה-commits של השעה הזו כדי שלא תיווצר הקבצה
+                    // חלקית (כיתה אחת בהקבצה, השנייה בשיעור רגיל באותה שעה).
+                    for (int ri = 0; ri < hourCommits.Count; ri++)
+                    {
+                        HourSlot rs = hourCommits[ri];
+                        int rtid = hourCommitsTeacher[ri];
+                        rs.AssignedTeacherId = 0;
+                        rs.AssignedProfessionalId = 0;
+                        rs.AssignedHakbatza = 0;
+                        rs.AssignedIhud = 0;
+                        string rrk = Key(rs.ClassId, rtid);
+                        if (_remaining.ContainsKey(rrk)) _remaining[rrk] = _remaining[rrk] + 1;
+                        HashSet<int> daySet = GetDaySet(rtid, day);
+                        if (daySet != null) daySet.Remove(hour);
+                        ClearBusy(rtid, day, hour);
+                        IncClassDayCount(rtid, rs.ClassId, day, -1);
+                        if (hakAssignedCount.ContainsKey(rtid) && hakAssignedCount[rtid] > 0)
+                            hakAssignedCount[rtid] = hakAssignedCount[rtid] - 1;
+                    }
+                    continue; // נסה את validHourId הבא, אל תספור את השעה הזו
+                }
+
+                scheduled++;
                 // הערה: הוסר extras code — היה גורם ל-over-assignment של מורים
                 // ב-bijection mode וגם איטי. בpartial mode, חוסר-מורים שאינם
                 // ב-bijection הוא "פיצול אמיתי" של ה-data model (3 מורים, 2
@@ -4677,6 +4732,20 @@ public class Shibutz
 
         // PROTECTION: Never undo homeroom at hour 1!
         if (IsHomeroomForSlot(slot, t))
+        {
+            return;
+        }
+
+        // ATOMICITY PROTECTION (2026-05-27): Hakbatza-tagged slots are immutable.
+        // They were placed atomically by PreScheduleHakbatzas with partner classes
+        // at the SAME hour. Undoing one without the partners breaks the atomic
+        // group — "כיתה אחת בהקבצה והשנייה בשיעור רגיל באותה שעה". Swap callers
+        // that hit this guard will fail to complete their swap (ApplyAssign will
+        // not be reached because the immediate CanAssign chain expects the slot
+        // to be free first); they continue trying other candidates without
+        // mutating state. Net effect: fewer optimistic swaps, atomic hakbatzas
+        // preserved.
+        if (slot.AssignedHakbatza > 0)
         {
             return;
         }
