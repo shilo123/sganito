@@ -1805,12 +1805,19 @@ export default function TeacherHours() {
           <div className="col-md-1 dvRequireTitle">שהייה</div>
           <div className="col-md-1 dvRequireTitle">פרטני</div>
           <div className="col-md-1 dvRequireTitle" title="סה״כ שעות מוקצבות בשבוע (סכום שעות כל הכיתות שהמורה מלמד/ת)">מוקצבות</div>
-          <div className="col-md-3 dvRequireTitle" title="הכיתות שהמורה מלמד/ת בהן">כיתות</div>
+          <div className="col-md-1 dvRequireTitle" title="הכיתה שהמורה מחנכ/ת בה (לכל מורה — לכל היותר כיתה אחת)">מחנכ/ת של</div>
+          <div className="col-md-2 dvRequireTitle" title="הכיתות שהמורה מלמד/ת בהן (כולל הקבצות ואיחודים)">כיתות שמלמד/ת</div>
           <div className="col-md-1 dvRequireTitle" style={{ textAlign: 'center' }}>אפשרויות</div>
           <div id="dvReqContainer" className="dvPanelReq clear">
             {tableTeachers.map((t) => {
               const required = Number(t.TotalRequired ?? 0);
               const teacherClassTags = classesByTeacher.get(String(t.TeacherId)) ?? [];
+              // ManageClassId — שדה ב-Teacher שמצביע על הכיתה שהמורה מחנכ/ת בה.
+              // מתורגם לשם הכיתה דרך classOptions שכבר נטענו ל-page (Class_GetAllClass).
+              const manageClassId = Number((t as { ManageClassId?: unknown }).ManageClassId ?? 0);
+              const homeroomClass = manageClassId > 0
+                ? classOptions.find((c) => Number(c.ClassId) === manageClassId)
+                : null;
               return (
                 <div key={String(t.TeacherId)}>
                   <div className="col-md-2 dvRequireDetails">
@@ -1835,7 +1842,31 @@ export default function TeacherHours() {
                   <div className="col-md-1 dvRequireDetails">{isNullDB(t.Shehya)}</div>
                   <div className="col-md-1 dvRequireDetails">{isNullDB(t.Partani)}</div>
                   <div className="col-md-1 dvRequireDetails" style={{ fontWeight: 600 }}>{required}</div>
-                  <div className="col-md-3 dvRequireDetails" style={{ alignContent: 'center' }}>
+                  <div className="col-md-1 dvRequireDetails">
+                    {homeroomClass ? (
+                      <span
+                        title={`מחנכ/ת של ${homeroomClass.ClassName}`}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          padding: '3px 8px',
+                          background: 'linear-gradient(135deg, #dbeafe, #bfdbfe)',
+                          color: '#1e3a8a',
+                          border: '1px solid #60a5fa',
+                          borderRadius: 999,
+                          fontSize: 11,
+                          fontWeight: 700,
+                        }}
+                      >
+                        <i className="fa fa-graduation-cap" style={{ fontSize: 10 }} />
+                        {homeroomClass.ClassName}
+                      </span>
+                    ) : (
+                      <span style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: 11 }}>—</span>
+                    )}
+                  </div>
+                  <div className="col-md-2 dvRequireDetails" style={{ alignContent: 'center' }}>
                     {teacherClassTags.length === 0 ? (
                       <span style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: 11 }}>—</span>
                     ) : (

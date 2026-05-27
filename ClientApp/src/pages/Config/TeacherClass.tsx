@@ -154,15 +154,53 @@ export default function TeacherClass() {
   });
   const [teacherModalTitle, setTeacherModalTitle] = useState('');
 
-  // class modal
+  // class modal — שמירת שם, מספר רץ, ומחנך/ת בפופאפ אחיד.
+  // TeacherIdOriginal משמש להחלטה האם לקרוא ל-Class_SetHomeroom (שינוי) או לדלג.
   const [showClassModal, setShowClassModal] = useState(false);
   const [classModalMode, setClassModalMode] = useState<1 | 2>(1); // 1=new,2=edit
-  const [classForm, setClassForm] = useState<{ ClassId: number | ''; ClassName: string; Seq: string }>({
+  const [classForm, setClassForm] = useState<{
+    ClassId: number | '';
+    ClassName: string;
+    Seq: string;
+    TeacherId: number; // המחנך/ת הנבחר (0 = ללא מחנך/ת)
+    TeacherIdOriginal: number; // מה היה לפני פתיחת הפופאפ — להשוואה לפני שמירה
+  }>({
     ClassId: '',
     ClassName: '',
     Seq: '',
+    TeacherId: 0,
+    TeacherIdOriginal: 0,
   });
   const [classModalTitle, setClassModalTitle] = useState('');
+  const [classModalBusy, setClassModalBusy] = useState(false);
+
+  // ---------- homeroom picker (פופאפ משני, נפתח מתוך פופאפ עריכת כיתה) ----------
+  // חלון יפה עם שדה חיפוש לבחירת מחנך/ת מתוך כל המורים בעלי תפקיד "מחנך/ת".
+  // allClassesById משמש לתרגום ManageClassId לשם הכיתה גם אם הכיתה בשכבה אחרת
+  // מהשכבה הנוכחית — כדי שמורה ש"תפוס" כמחנך כיתה ב/ג יראה את שם הכיתה
+  // המתאימה ב-tag האדום, ולא רק "תפוס/ה".
+  const [homeroomPickerOpen, setHomeroomPickerOpen] = useState(false);
+  const [homeroomSearch, setHomeroomSearch] = useState('');
+  const [allClassesById, setAllClassesById] = useState<Map<number, string>>(new Map());
+
+  // טעינה ראשונית של כל הכיתות (מכל השכבות) — Map קטן של ClassId → ClassName.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await ajax<Array<{ ClassId: number; ClassName: string }>>('Class_GetAllClass');
+        if (cancelled) return;
+        const m = new Map<number, string>();
+        for (const r of rows ?? []) {
+          m.set(Number(r.ClassId), String(r.ClassName ?? ''));
+        }
+        setAllClassesById(m);
+      } catch (err) {
+        console.error('Class_GetAllClass failed', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // teacher hours modal
   const [showHoursModal, setShowHoursModal] = useState(false);
@@ -696,11 +734,25 @@ export default function TeacherClass() {
   // ---------- class modal ----------
   function openClassWindow(classId: number | '', className: string, seq: number | string, mode: 1 | 2) {
     setClassModalMode(mode);
-    setClassForm({ ClassId: classId, ClassName: className, Seq: String(seq ?? '') });
-    setClassModalTitle(mode === 1 ? 'כיתה חדשה' : className);
+    // מצב עריכה: שולפים את המחנך/ת הנוכחי/ת לפי ManageClassId
+    const currentHomeroom = mode === 2 && typeof classId === 'number'
+      ? teachers.find((t) => Number(t.ManageClassId ?? 0) === classId)
+      : null;
+    const homeroomTid = currentHomeroom ? Number(currentHomeroom.TeacherId) : 0;
+    setClassForm({
+      ClassId: classId,
+      ClassName: className,
+      Seq: String(seq ?? ''),
+      TeacherId: homeroomTid,
+      TeacherIdOriginal: homeroomTid,
+    });
+    setClassModalTitle(mode === 1 ? 'כיתה חדשה' : `עריכת כיתה: ${className}`);
     setShowClassModal(true);
   }
 
+  // שמירת הפופאפ — מעדכן שם/מספר כיתה ובמידת הצורך גם את המחנך/ת.
+  // הזרימה: קודם Class_SetClassData (שם/מספר), אחר כך אם השתנה — Class_SetHomeroom.
+  // הפעולה לא נוגעת בשאר המורים בכיתה או במורים מקצועיים — רק במחנך/ת.
   async function saveClass(mode: 1 | 2 | 3, classIdOverride?: number) {
     const classId = classIdOverride ?? (classForm.ClassId === '' ? '' : classForm.ClassId);
     if (mode !== 3) {
@@ -713,7 +765,9 @@ export default function TeacherClass() {
         return;
       }
     }
+    setClassModalBusy(true);
     try {
+      // שלב 1: עדכון פרטי כיתה (שם, Seq) — או מחיקה כשמדובר ב-Type=3.
       await ajax('Class_SetClassData', {
         ClassId: classId,
         LayerId: layerId,
@@ -721,11 +775,37 @@ export default function TeacherClass() {
         Seq: mode === 3 ? '' : classForm.Seq,
         mode,
       });
+
+      // שלב 2: עדכון מחנך/ת רק אם השתנה ולא מדובר במחיקה.
+      // ב-mode=1 (כיתה חדשה) אין classId אמיתי עדיין, אז מדלגים גם כאן.
+      if (mode === 2 && typeof classId === 'number' && classForm.TeacherId !== classForm.TeacherIdOriginal) {
+        const res = await ajax<Array<{ res: number; msg: string }>>('Class_SetHomeroom', {
+          ClassId: classId,
+          TeacherId: classForm.TeacherId, // 0 = ניקוי המחנך/ת
+        });
+        const row = Array.isArray(res) ? res[0] : null;
+        if (!row || Number(row.res) === 0) {
+          const msg = row?.msg ?? '';
+          if (msg === 'ALREADY_HOMEROOM_ELSEWHERE') {
+            toast.error('המורה/ה כבר מחנכ/ת כיתה אחרת — לא ניתן לשייך לשתי כיתות');
+          } else if (msg === 'TAFKID_NOT_HOMEROOM') {
+            toast.error('רק מורים בעלי תפקיד "מחנך/ת" יכולים לחנך כיתה');
+          } else {
+            toast.error('עדכון המחנך/ת נכשל');
+          }
+          // הפופאפ נשאר פתוח כדי שהמשתמש יוכל לתקן
+          return;
+        }
+      }
+
       setShowClassModal(false);
-      loadClasses(layerId);
+      await Promise.all([loadTeachers(), loadClasses(layerId)]);
+      if (mode === 2) toast.success('פרטי הכיתה עודכנו');
     } catch (err) {
-      console.error('Class_SetClassData failed', err);
+      console.error('saveClass failed', err);
       toast.error('שגיאה בשמירת הכיתה');
+    } finally {
+      setClassModalBusy(false);
     }
   }
 
@@ -1561,15 +1641,6 @@ export default function TeacherClass() {
               </button>
               <button
                 type="button"
-                className="btn btn-success btn-sm tc-add-class"
-                style={{ marginInlineStart: 6 }}
-                onClick={openWizard}
-                title="צור הקבצה חדשה — בחר כיתות בשכבה ומורים שילמדו באותה שעה כקבוצות רמה"
-              >
-                <i className="fa fa-object-group" /> הקבצה חדשה
-              </button>
-              <button
-                type="button"
                 className="excel-import-btn"
                 style={{ marginInlineStart: 6 }}
                 onClick={() => setShowImportModal(true)}
@@ -1577,6 +1648,15 @@ export default function TeacherClass() {
               >
                 <i className="fa fa-file-excel-o" />
                 ייבוא מ-Excel
+              </button>
+              <button
+                type="button"
+                className="btn btn-success btn-sm tc-add-class"
+                style={{ marginInlineStart: 6 }}
+                onClick={openWizard}
+                title="צור הקבצה חדשה — בחר כיתות בשכבה ומורים שילמדו באותה שעה כקבוצות רמה"
+              >
+                <i className="fa fa-object-group" /> הקבצה חדשה
               </button>
               {/* Export zone — kept in its own pill on the far side so it never
                   gets confused with action controls like "הוסף כיתה". */}
@@ -2123,91 +2203,65 @@ export default function TeacherClass() {
                                   </span>
                                 </div>
                               )}
-                              {/* Homeroom selector — required for the auto-scheduler. The day-opener
-                                  (hour 1) MUST be this class's homeroom, so the UI surfaces a dropdown
-                                  populated with TafkidId=1 teachers currently in the class. Saving renames
-                                  the class to "<layer><seq> <FirstName>" via Class_SetHomeroom. */}
+                              {/* תווית מחנך/ת קריאה-בלבד. כדי לשנות מחנך/ת — לוחצים על "ערוך"
+                                  בכותרת הכיתה ופותחים את הפופאפ. פתרון זה מבטל את ה-select
+                                  האינלייני המבלבל שהציג כמה מורים TafkidId=1 כאילו כולם
+                                  מועמדים שווי-זכויות. */}
                               {(() => {
-                                const eligibleManagers = panel.teachers
-                                  .filter((tt) => String(tt.TafkidId ?? '') === '1' && (tt.Hakbatza == null || tt.Hakbatza === '') && (tt.Ihud == null || tt.Ihud === ''))
-                                  // dedupe by TeacherId — same teacher can appear multiple times
-                                  .reduce((acc, tt) => {
-                                    if (!acc.some((x) => x.TeacherId === tt.TeacherId)) acc.push(tt);
-                                    return acc;
-                                  }, [] as typeof panel.teachers);
                                 const currentManager = teachers.find((t) => Number(t.ManageClassId ?? 0) === panel.ClassId);
-                                const currentId = currentManager?.TeacherId ?? 0;
+                                const currentName = currentManager
+                                  ? `${currentManager.FirstName ?? ''} ${currentManager.LastName ?? ''}`.trim()
+                                  : '';
+                                const hasHomeroom = !!currentManager;
                                 return (
-                                  <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'auto 1fr',
-                                    alignItems: 'center',
-                                    columnGap: 8,
-                                    padding: '6px 10px',
-                                    background: currentId ? 'linear-gradient(135deg, #ecfdf5, #d1fae5)' : 'linear-gradient(135deg, #fef2f2, #fee2e2)',
-                                    border: `1.5px solid ${currentId ? '#10b981' : '#ef4444'}`,
-                                    borderRadius: 8,
-                                    marginTop: 6,
-                                    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
-                                  }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => openClassWindow(panel.ClassId, panel.ClassFOREdit, panel.Seq, 2)}
+                                    title="לחץ כדי לשנות את המחנך/ת — נפתח חלון העריכה"
+                                    style={{
+                                      width: '100%',
+                                      display: 'grid',
+                                      gridTemplateColumns: 'auto 1fr auto',
+                                      alignItems: 'center',
+                                      columnGap: 8,
+                                      padding: '6px 10px',
+                                      background: hasHomeroom
+                                        ? 'linear-gradient(135deg, #ecfdf5, #d1fae5)'
+                                        : 'linear-gradient(135deg, #fef2f2, #fee2e2)',
+                                      border: `1.5px solid ${hasHomeroom ? '#10b981' : '#ef4444'}`,
+                                      borderRadius: 8,
+                                      marginTop: 6,
+                                      cursor: 'pointer',
+                                      textAlign: 'right',
+                                      direction: 'rtl',
+                                      boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                                    }}
+                                  >
                                     <span style={{
                                       display: 'inline-flex', alignItems: 'center', gap: 4,
                                       fontSize: 12, fontWeight: 800,
-                                      color: currentId ? '#065f46' : '#991b1b',
+                                      color: hasHomeroom ? '#065f46' : '#991b1b',
                                       whiteSpace: 'nowrap',
                                     }}>
-                                      <i className={`fa ${currentId ? 'fa-graduation-cap' : 'fa-exclamation-triangle'}`} />
+                                      <i className={`fa ${hasHomeroom ? 'fa-graduation-cap' : 'fa-exclamation-triangle'}`} />
                                       מחנך/ת
                                     </span>
-                                    <select
-                                      value={String(currentId)}
-                                      onChange={async (e) => {
-                                        const tid = Number(e.currentTarget.value);
-                                        if (!tid) return;
-                                        try {
-                                          await ajax('Class_SetHomeroom', { ClassId: panel.ClassId, TeacherId: tid });
-                                          toast.success('המחנך/ת עודכן/ה', { title: 'בוצע' });
-                                          await Promise.all([loadTeachers(), loadClasses(layerId)]);
-                                        } catch (err) {
-                                          console.error('Class_SetHomeroom failed', err);
-                                          toast.error('שגיאה בעדכון מחנך/ת');
-                                        }
-                                      }}
-                                      style={{
-                                        width: '100%',
-                                        minWidth: 0,
-                                        padding: '5px 8px',
-                                        fontSize: 13,
-                                        fontWeight: 600,
-                                        color: '#0f172a',
-                                        border: '1px solid #94a3b8',
-                                        borderRadius: 6,
-                                        background: '#fff',
-                                        cursor: 'pointer',
-                                        textOverflow: 'ellipsis',
-                                      }}
-                                      title="בחר את מחנך/ת הכיתה — שמ/ה ילווה את שם הכיתה לדוגמה 'ו2 אודיה'"
-                                    >
-                                      {!currentId && <option value="0">— בחר מחנך/ת —</option>}
-                                      {eligibleManagers.length === 0 && currentId === 0 && (
-                                        <option value="0" disabled>אין מורי כיתה זמינים</option>
-                                      )}
-                                      {eligibleManagers.map((tt) => {
-                                        const tr = teachers.find((x) => x.TeacherId === tt.TeacherId);
-                                        const fullName = tr ? `${tr.FirstName} ${tr.LastName}`.trim() : `מורה #${tt.TeacherId}`;
-                                        const alreadyManagesOther = tr && Number(tr.ManageClassId ?? 0) > 0 && Number(tr.ManageClassId) !== panel.ClassId;
-                                        const label = `${fullName} · ${tt.Hour}ש${alreadyManagesOther ? ' (מחנכ/ת כיתה אחרת)' : ''}`;
-                                        return (
-                                          <option key={tt.TeacherId} value={String(tt.TeacherId)} disabled={alreadyManagesOther}>{label}</option>
-                                        );
-                                      })}
-                                      {currentManager && !eligibleManagers.some((x) => x.TeacherId === currentManager.TeacherId) && (
-                                        <option value={String(currentManager.TeacherId)}>
-                                          {`${currentManager.FirstName} ${currentManager.LastName}`.trim()}
-                                        </option>
-                                      )}
-                                    </select>
-                                  </div>
+                                    <span style={{
+                                      fontSize: 13,
+                                      fontWeight: 700,
+                                      color: hasHomeroom ? '#065f46' : '#991b1b',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    }}>
+                                      {hasHomeroom ? currentName : 'לא נקבע מחנך/ת'}
+                                    </span>
+                                    <i
+                                      className="fa fa-pencil"
+                                      style={{ fontSize: 11, color: hasHomeroom ? '#065f46' : '#991b1b', opacity: 0.7 }}
+                                      aria-hidden="true"
+                                    />
+                                  </button>
                                 );
                               })()}
                             </div>
@@ -3009,68 +3063,441 @@ export default function TeacherClass() {
         );
       })()}
 
-      {/* Class modal */}
-      {showClassModal && (
-        <div
-          className="modal fade in"
-          role="dialog"
-          style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)' }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowClassModal(false);
-          }}
-        >
-          <div className="modal-dialog">
-            <div className="modal-content">
-              <div className="modal-header label-info">
-                <button type="button" className="close" aria-hidden="true" onClick={() => setShowClassModal(false)}>
-                  &times;
+      {/* Class modal — עיצוב tm-modal אחיד עם מודאל המורה. */}
+      {showClassModal && (() => {
+        const isNew = classModalMode === 1;
+        return (
+          <div
+            className="tm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="class-modal-title"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget && !classModalBusy) setShowClassModal(false);
+            }}
+          >
+            <div className="tm-modal__card" style={{ maxWidth: 560 }}>
+              <header className="tm-modal__header">
+                <div className="tm-modal__header-side">
+                  <span className="tm-modal__avatar" aria-hidden="true">
+                    <i className={`fa ${isNew ? 'fa-plus' : 'fa-pencil'}`} />
+                  </span>
+                  <div>
+                    <h2 id="class-modal-title" className="tm-modal__title">
+                      {isNew ? 'כיתה חדשה' : 'עריכת כיתה'}
+                    </h2>
+                    {!isNew && (
+                      <div className="tm-modal__subtitle">{classModalTitle.replace(/^עריכת כיתה:\s*/, '')}</div>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="tm-modal__close"
+                  onClick={() => setShowClassModal(false)}
+                  aria-label="סגור"
+                  disabled={classModalBusy}
+                >
+                  <i className="fa fa-times" />
                 </button>
-                <h4 className="modal-title">{classModalTitle}</h4>
+              </header>
+
+              <div className="tm-modal__body">
+                <section className="tm-section">
+                  <h3 className="tm-section__title">
+                    <i className="fa fa-id-card-o tm-section__icon" />
+                    פרטי הכיתה
+                  </h3>
+                  <div className="tm-grid tm-grid--2">
+                    <label className="tm-field">
+                      <span className="tm-field__label">
+                        שם כיתה <span className="tm-field__required">*</span>
+                      </span>
+                      <input
+                        type="text"
+                        className="tm-field__input"
+                        value={classForm.ClassName}
+                        onChange={(e) => setClassForm({ ...classForm, ClassName: e.target.value })}
+                        autoFocus
+                      />
+                    </label>
+                    <label className="tm-field">
+                      <span className="tm-field__label">
+                        מספר רץ <span className="tm-field__required">*</span>
+                      </span>
+                      <input
+                        type="number"
+                        className="tm-field__input"
+                        value={classForm.Seq}
+                        onChange={(e) => setClassForm({ ...classForm, Seq: e.target.value })}
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                {/* בכיתה חדשה אין עוד ClassId — סלקטור מחנך/ת לא רלוונטי
+                    עד שהכיתה תיווצר. נציג אותו רק במצב עריכה. */}
+                {!isNew && (() => {
+                  const selectedTeacher = teachers.find((t) => Number(t.TeacherId) === Number(classForm.TeacherId));
+                  const selectedName = selectedTeacher
+                    ? `${selectedTeacher.FirstName ?? ''} ${selectedTeacher.LastName ?? ''}`.trim()
+                    : '';
+                  return (
+                    <section className="tm-section">
+                      <h3 className="tm-section__title">
+                        <i className="fa fa-graduation-cap tm-section__icon" />
+                        מחנך/ת הכיתה
+                      </h3>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'auto 1fr auto',
+                          alignItems: 'center',
+                          gap: 12,
+                          padding: '14px 16px',
+                          background: selectedTeacher
+                            ? 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)'
+                            : 'linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)',
+                          border: `2px solid ${selectedTeacher ? '#818cf8' : '#fca5a5'}`,
+                          borderRadius: 12,
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: '50%',
+                            background: selectedTeacher ? '#4f46e5' : '#ef4444',
+                            color: '#fff',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 18,
+                            boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
+                          }}
+                          aria-hidden="true"
+                        >
+                          <i className={`fa ${selectedTeacher ? 'fa-user' : 'fa-user-times'}`} />
+                        </span>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{
+                            fontSize: 15,
+                            fontWeight: 800,
+                            color: selectedTeacher ? '#1e1b4b' : '#7f1d1d',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}>
+                            {selectedTeacher ? selectedName : 'לא נבחר/ה מחנך/ת'}
+                          </div>
+                          <div style={{ fontSize: 12, color: selectedTeacher ? '#4338ca' : '#991b1b', marginTop: 2 }}>
+                            {selectedTeacher
+                              ? `${selectedTeacher.Frontaly || 0} ש' פרונטליות מוקצבות`
+                              : 'יש לבחור מחנך/ת לכיתה'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setHomeroomSearch(''); setHomeroomPickerOpen(true); }}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '8px 14px',
+                            background: '#4f46e5',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: 8,
+                            fontSize: 13,
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            boxShadow: '0 2px 4px rgba(79,70,229,0.25)',
+                            whiteSpace: 'nowrap',
+                          }}
+                          title="פתח חלון בחירת מחנך/ת"
+                        >
+                          <i className={`fa ${selectedTeacher ? 'fa-exchange' : 'fa-plus'}`} />
+                          {selectedTeacher ? 'החלף/י' : 'בחר/י מחנך/ת'}
+                        </button>
+                      </div>
+                      <div style={{ marginTop: 10, fontSize: 12, color: '#64748b', lineHeight: 1.6 }}>
+                        <i className="fa fa-info-circle" style={{ marginInlineEnd: 4 }} />
+                        רק מורים בעלי תפקיד "מחנך/ת" זמינים. מורים שכבר מחנכים כיתה אחרת מופיעים כלא זמינים — כדי שלא לפגוע בכיתות אחרות.
+                        <br />
+                        <i className="fa fa-lightbulb-o" style={{ marginInlineEnd: 4 }} />
+                        מורים אחרים שמלמדים בכיתה זו ייחשבו כ<b>מורים מקצועיים</b>, ולא כמחנכים.
+                      </div>
+                    </section>
+                  );
+                })()}
               </div>
-              <div className="modal-body">
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>שם כיתה</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={classForm.ClassName}
-                      onChange={(e) => setClassForm({ ...classForm, ClassName: e.target.value })}
-                    />
+
+              <div className="tm-modal__footer">
+                <button
+                  type="button"
+                  className="tm-btn tm-btn--ghost"
+                  onClick={() => setShowClassModal(false)}
+                  disabled={classModalBusy}
+                >
+                  סגור
+                </button>
+                <button
+                  type="button"
+                  className="tm-btn tm-btn--primary"
+                  onClick={() => saveClass(classModalMode)}
+                  disabled={classModalBusy}
+                >
+                  <i className="fa fa-check" />
+                  {classModalBusy ? 'שומר…' : 'שמור שינויים'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Homeroom picker — פופאפ משני, נפתח מתוך פופאפ עריכת כיתה. */}
+      {homeroomPickerOpen && (() => {
+        const currentClassId = typeof classForm.ClassId === 'number' ? classForm.ClassId : 0;
+        // מורים זכאים: TafkidId=1 בלבד.
+        const allHomerooms = teachers
+          .filter((t) => Number(t.TafkidId ?? 0) === 1)
+          .sort((a, b) => {
+            const an = `${a.LastName ?? ''} ${a.FirstName ?? ''}`.trim();
+            const bn = `${b.LastName ?? ''} ${b.FirstName ?? ''}`.trim();
+            return an.localeCompare(bn, 'he');
+          });
+        const q = homeroomSearch.trim().toLowerCase();
+        const filtered = q
+          ? allHomerooms.filter((t) => {
+              const full = `${t.FirstName ?? ''} ${t.LastName ?? ''}`.toLowerCase();
+              return full.includes(q) || String(t.Tz ?? '').includes(q);
+            })
+          : allHomerooms;
+        const currentClassObj = classes.find((c) => Number(c.ClassId) === currentClassId);
+        const currentClassName = currentClassObj?.ClassName ?? classForm.ClassName ?? '';
+
+        return (
+          <div
+            className="tm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="homeroom-picker-title"
+            style={{ zIndex: 1100 }}
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setHomeroomPickerOpen(false);
+            }}
+          >
+            <div className="tm-modal__card" style={{ maxWidth: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+              <header className="tm-modal__header">
+                <div className="tm-modal__header-side">
+                  <span className="tm-modal__avatar" aria-hidden="true" style={{ background: '#4f46e5' }}>
+                    <i className="fa fa-graduation-cap" />
+                  </span>
+                  <div>
+                    <h2 id="homeroom-picker-title" className="tm-modal__title">בחירת מחנך/ת</h2>
+                    <div className="tm-modal__subtitle">לכיתה {currentClassName}</div>
                   </div>
                 </div>
-                <div className="col-md-4">
-                  <div className="form-group">
-                    <label>מספר כיתה</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={classForm.Seq}
-                      onChange={(e) => setClassForm({ ...classForm, Seq: e.target.value })}
-                    />
-                  </div>
+                <button
+                  type="button"
+                  className="tm-modal__close"
+                  onClick={() => setHomeroomPickerOpen(false)}
+                  aria-label="סגור"
+                >
+                  <i className="fa fa-times" />
+                </button>
+              </header>
+
+              <div className="tm-modal__body" style={{ display: 'flex', flexDirection: 'column', gap: 12, overflow: 'hidden' }}>
+                <div style={{ position: 'relative' }}>
+                  <i
+                    className="fa fa-search"
+                    style={{
+                      position: 'absolute',
+                      insetInlineStart: 12,
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      color: '#94a3b8',
+                      fontSize: 14,
+                      pointerEvents: 'none',
+                    }}
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="text"
+                    className="tm-field__input"
+                    placeholder="חפש/י לפי שם או תעודת זהות…"
+                    value={homeroomSearch}
+                    onChange={(e) => setHomeroomSearch(e.target.value)}
+                    autoFocus
+                    style={{ paddingInlineStart: 36 }}
+                  />
                 </div>
-                <div className="col-md-12" style={{ textAlign: 'left' }}>
-                  <br />
-                  <button
-                    type="button"
-                    className="btn btn-info btn-round"
-                    onClick={() => saveClass(classModalMode)}
-                  >
-                    <i className="glyphicon glyphicon-edit"></i>&nbsp; <span>עדכן פרטי כיתה</span>
-                  </button>
+                <div style={{ fontSize: 12, color: '#64748b' }}>
+                  {filtered.length === allHomerooms.length
+                    ? `${allHomerooms.length} מורים זמינים`
+                    : `${filtered.length} מתוך ${allHomerooms.length} מורים`}
                 </div>
-                <div className="clear">&nbsp;</div>
+                <div
+                  style={{
+                    flex: 1,
+                    overflowY: 'auto',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                    paddingInlineEnd: 4,
+                  }}
+                >
+                  {filtered.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: 24, color: '#94a3b8' }}>
+                      <i className="fa fa-inbox" style={{ fontSize: 28, marginBottom: 8, display: 'block' }} />
+                      לא נמצאו מורים תואמים לחיפוש
+                    </div>
+                  ) : filtered.map((t) => {
+                    const manageId = Number(t.ManageClassId ?? 0);
+                    const isCurrentForThis = manageId === currentClassId;
+                    const isElsewhere = manageId > 0 && manageId !== currentClassId;
+                    // מחפשים את שם הכיתה גם בשכבה הנוכחית וגם ב-Map הגלובלי
+                    // — כי המורה יכול להיות מחנך בכיתה משכבה אחרת.
+                    const otherName = isElsewhere
+                      ? (classes.find((c) => Number(c.ClassId) === manageId)?.ClassName
+                         ?? allClassesById.get(manageId)
+                         ?? '')
+                      : '';
+                    const isSelected = Number(t.TeacherId) === Number(classForm.TeacherId);
+                    const fullName = `${t.FirstName ?? ''} ${t.LastName ?? ''}`.trim() || `מורה #${t.TeacherId}`;
+                    return (
+                      <button
+                        key={t.TeacherId}
+                        type="button"
+                        disabled={isElsewhere}
+                        onClick={() => {
+                          if (isElsewhere) return;
+                          setClassForm({ ...classForm, TeacherId: Number(t.TeacherId) });
+                          setHomeroomPickerOpen(false);
+                        }}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'auto 1fr auto',
+                          alignItems: 'center',
+                          gap: 12,
+                          padding: '10px 14px',
+                          background: isSelected
+                            ? 'linear-gradient(135deg, #eef2ff, #e0e7ff)'
+                            : isElsewhere
+                              ? '#f8fafc'
+                              : '#ffffff',
+                          border: `1.5px solid ${isSelected ? '#6366f1' : isElsewhere ? '#e2e8f0' : '#e5e7eb'}`,
+                          borderRadius: 10,
+                          textAlign: 'right',
+                          direction: 'rtl',
+                          cursor: isElsewhere ? 'not-allowed' : 'pointer',
+                          opacity: isElsewhere ? 0.6 : 1,
+                          transition: 'all 0.12s ease',
+                        }}
+                        onMouseOver={(e) => {
+                          if (!isElsewhere && !isSelected) {
+                            (e.currentTarget as HTMLButtonElement).style.background = '#f8fafc';
+                            (e.currentTarget as HTMLButtonElement).style.borderColor = '#cbd5e1';
+                          }
+                        }}
+                        onMouseOut={(e) => {
+                          if (!isElsewhere && !isSelected) {
+                            (e.currentTarget as HTMLButtonElement).style.background = '#ffffff';
+                            (e.currentTarget as HTMLButtonElement).style.borderColor = '#e5e7eb';
+                          }
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 36,
+                            height: 36,
+                            borderRadius: '50%',
+                            background: isSelected ? '#4f46e5' : isElsewhere ? '#94a3b8' : '#6366f1',
+                            color: '#fff',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 14,
+                            fontWeight: 700,
+                          }}
+                          aria-hidden="true"
+                        >
+                          {(t.FirstName?.[0] ?? '?')}
+                        </span>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{
+                            fontSize: 14,
+                            fontWeight: 700,
+                            color: isSelected ? '#1e1b4b' : '#0f172a',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}>
+                            {fullName}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                            {`${t.Frontaly || 0} ש' פרונטלי · ${t.FreeDay ? 'יום חופשי: ' + ['','א','ב','ג','ד','ה','ו'][Number(t.FreeDay)] || '' : 'ללא יום חופשי'}`}
+                          </div>
+                        </div>
+                        {isCurrentForThis ? (
+                          <span style={{
+                            background: '#10b981',
+                            color: '#fff',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: '3px 8px',
+                            borderRadius: 999,
+                            whiteSpace: 'nowrap',
+                          }}>
+                            <i className="fa fa-check" /> נוכחי/ת
+                          </span>
+                        ) : isElsewhere ? (
+                          <span style={{
+                            background: '#fee2e2',
+                            color: '#991b1b',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: '3px 8px',
+                            borderRadius: 999,
+                            whiteSpace: 'nowrap',
+                          }} title={`כבר מחנך/ת של ${otherName}`}>
+                            <i className="fa fa-lock" /> {otherName || 'תפוס/ה'}
+                          </span>
+                        ) : isSelected ? (
+                          <span style={{
+                            background: '#6366f1',
+                            color: '#fff',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: '3px 8px',
+                            borderRadius: 999,
+                            whiteSpace: 'nowrap',
+                          }}>
+                            <i className="fa fa-check-circle" /> נבחר/ה
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="modal-footer">
-                <button type="button" className="btn btn-info btn-xs" onClick={() => setShowClassModal(false)}>
+
+              <div className="tm-modal__footer">
+                <button
+                  type="button"
+                  className="tm-btn tm-btn--ghost"
+                  onClick={() => setHomeroomPickerOpen(false)}
+                >
                   סגור
                 </button>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Teacher modal */}
       {showTeacherModal && (
