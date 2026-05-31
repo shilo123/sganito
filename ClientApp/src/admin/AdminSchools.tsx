@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ajax } from '../api/client';
 import { useToast } from '../lib/toast';
+import { useConfirm } from '../lib/confirm';
 import AddSchoolModal from './AddSchoolModal';
 import './admin.css';
 
@@ -16,6 +17,7 @@ interface SchoolRow {
 
 export default function AdminSchools() {
   const toast = useToast();
+  const confirm = useConfirm();
   const [schools, setSchools] = useState<SchoolRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -47,7 +49,14 @@ export default function AdminSchools() {
   }
 
   async function deleteSchool(schoolId: number, name: string) {
-    if (!window.confirm(`למחוק את בית הספר "${name}" וכל הנתונים שלו? פעולה זו אינה הפיכה.`)) return;
+    const ok = await confirm({
+      title: 'מחיקת בית ספר',
+      message: `למחוק את בית הספר "${name}" וכל הנתונים שלו? פעולה זו אינה הפיכה.`,
+      danger: true,
+      confirmText: 'מחק לצמיתות',
+      cancelText: 'ביטול',
+    });
+    if (!ok) return;
     setDeletingId(schoolId);
     try {
       const data = await ajax<Array<{ Success: number; Message: string }>>('Admin_DeleteSchool', { SchoolId: schoolId });

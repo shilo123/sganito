@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ajax } from '../../api/client';
 import { useToast } from '../../lib/toast';
+import { useConfirm } from '../../lib/confirm';
 
 // Resolves the active ConfigurationId from the server's UserData cookie.
 // Cached after the first lookup so repeat diagnostic refreshes don't
@@ -121,6 +122,7 @@ function splitUnusedHourIds(csv: string): { day: number; hour: number }[] {
 
 export default function AssignAuto() {
   const toast = useToast();
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [loadingTitle, setLoadingTitle] = useState<string>('מבצע שיבוץ אוטומטי');
@@ -1952,9 +1954,13 @@ export default function AssignAuto() {
                       // Skip is destructive — the assign will run with the
                       // conflict in place and almost certainly come back with
                       // empty cells. Force a confirm.
-                      const ok = window.confirm(
-                        'דילוג על ההתנגשויות יוביל כמעט בוודאות לשיבוץ חלקי בלבד.\n\nלהמשיך בכל זאת?',
-                      );
+                      const ok = await confirm({
+                        title: 'דילוג על התנגשויות',
+                        message: 'דילוג על ההתנגשויות יוביל כמעט בוודאות לשיבוץ חלקי בלבד.\n\nלהמשיך בכל זאת?',
+                        danger: true,
+                        confirmText: 'דלג ושבץ בכל זאת',
+                        cancelText: 'ביטול',
+                      });
                       if (!ok) return;
                       setShowConflictsModal(false);
                       if (pendingFlowRef.current === 'fixGaps') {
