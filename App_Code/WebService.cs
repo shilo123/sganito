@@ -488,6 +488,8 @@ public class WebService : System.Web.Services.WebService
                 }
             }
             cookie["ConfigurationId"] = newCfg;
+            // אבטחה: ConfigurationId הוא חלק מהזהות החתומה — חותמים מחדש אחרי השינוי.
+            AuthCookie.SignUserData(cookie);
             cookie.Expires = DateTime.Now.AddYears(90);
             HttpContext.Current.Response.Cookies.Add(cookie);
             HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
@@ -688,10 +690,18 @@ public class WebService : System.Web.Services.WebService
         string UserName = GetParams("UserName");
         string Password = GetParams("Password");
 
-
+        // אבטחה: הגנת brute-force. לאחר 5 כשלונות (משתמש+IP) ב-15 דק' — נעילה זמנית.
+        if (LoginThrottle.IsBlocked(UserName))
+        {
+            HttpContext.Current.Response.Write("[{\"Locked\":1,\"Message\":\"יותר מדי ניסיונות התחברות. נסה שוב בעוד מספר דקות.\"}]");
+            return;
+        }
 
         DataTable dt = Dal.ExeSp("User_GetUserEnter", UserName, Password);
 
+        // רישום הצלחה/כישלון למנגנון ה-throttle
+        if (dt.Rows.Count > 0) LoginThrottle.RecordSuccess(UserName);
+        else LoginThrottle.RecordFailure(UserName);
 
         if (dt.Rows.Count > 0)
         {
@@ -706,6 +716,9 @@ public class WebService : System.Web.Services.WebService
 
             // FormsAuthentication.RedirectFromLoginPage(dt.Rows[0]["UserName"].ToString(), true);
 
+            // אבטחה: חותמים את עוגיית הזהות (UserId/RoleId/SchoolId/ConfigurationId)
+            // כדי לחסום זיוף של SchoolId/RoleId בין בתי ספר (multi-tenant IDOR).
+            AuthCookie.SignUserData(cookie);
             cookie.Expires = DateTime.Now.AddYears(90);
             HttpContext.Current.Response.Cookies.Add(cookie);
 
@@ -4955,21 +4968,38 @@ ORDER BY TeacherName";
 
     private const string ADMIN_COOKIE = "AdminData";
 
+    // אבטחה: חתימת/אימות HMAC על עוגיות הזהות מרוכזות במחלקה AuthCookie (App_Code/AuthCookie.cs)
+    // כדי שגם Global.asax ישתמש באותה לוגיקה ומפתח.
+
     [WebMethod]
     public void Admin_Login()
     {
         string UserName = GetParams("UserName");
         string Password = GetParams("Password");
 
+        // אבטחה: הגנת brute-force על חשבון המנהל (משתמש+IP), אותו מנגנון כמו התחברות בית ספר.
+        if (LoginThrottle.IsBlocked(UserName))
+        {
+            HttpContext.Current.Response.Write("[{\"Locked\":1,\"Message\":\"יותר מדי ניסיונות התחברות. נסה שוב בעוד מספר דקות.\"}]");
+            return;
+        }
+
         DataTable dt = Dal.ExeSp("Admin_Login", UserName, Password);
+
+        if (dt.Rows.Count > 0) LoginThrottle.RecordSuccess(UserName);
+        else LoginThrottle.RecordFailure(UserName);
 
         if (dt.Rows.Count > 0)
         {
             HttpCookie cookie = new HttpCookie(ADMIN_COOKIE);
-            cookie["AdminId"]  = dt.Rows[0]["AdminId"].ToString();
+            string adminId = dt.Rows[0]["AdminId"].ToString();
+            cookie["AdminId"]  = adminId;
             cookie["FullName"] = Server.UrlEncode(dt.Rows[0]["FullName"].ToString());
             cookie["UserName"] = Server.UrlEncode(dt.Rows[0]["UserName"].ToString());
             cookie["Email"]    = Server.UrlEncode(dt.Rows[0]["Email"].ToString());
+            // אבטחה: חתימת HMAC על ה-AdminId. ללא חתימה תקפה GetAdminIdFromCookie
+            // לא יזהה את העוגייה כמנהל — חוסם זיוף של AdminData בצד הלקוח.
+            cookie["Sig"] = AuthCookie.Sign(AuthCookie.AdminPayload(adminId));
             cookie.Expires = DateTime.Now.AddDays(7);
             cookie.HttpOnly = false; // Frontend needs to read it
             HttpContext.Current.Response.Cookies.Add(cookie);
@@ -4991,6 +5021,10 @@ ORDER BY TeacherName";
     {
         HttpCookie c = HttpContext.Current.Request.Cookies[ADMIN_COOKIE];
         if (c == null || string.IsNullOrEmpty(c["AdminId"])) return null;
+        // אבטחה: מאמתים את חתימת ה-HMAC. עוגייה שזויפה ידנית (או עוגייה ישנה
+        // מלפני הוספת החתימה) לא תעבור את האימות ולא תיחשב כמנהל — המנהל יתחבר מחדש.
+        string expected = AuthCookie.Sign(AuthCookie.AdminPayload(c["AdminId"]));
+        if (!AuthCookie.Equal(expected, c["Sig"])) return null;
         return c["AdminId"];
     }
 
@@ -5088,17 +5122,21 @@ ORDER BY TeacherName";
         }
         string SchoolId = GetParams("SchoolId");
         // קוראים את המשתמש הראשי של בית הספר
-        string sql = "SELECT TOP 1 u.UserId, u.RoleId, c.ConfigurationId, c.SchoolId, " +
+        // אבטחה: SchoolId נכרך כפרמטר (@SchoolId) במקום שרשור גולמי ל-SQL — סגירת פרצת SQL injection.
+        // SchoolId הוא מפתח מספרי, לכן Helper.ConvertToInt משמר התנהגות זהה עבור ערכים תקינים.
+        SqlCommand impCmd = new SqlCommand(
+                     "SELECT TOP 1 u.UserId, u.RoleId, c.ConfigurationId, c.SchoolId, " +
                      "s.Name, y.YearId, y.Name AS HebDate, " +
                      "(u.FirstName + ' ' + u.LastName) AS UserName " +
                      "FROM Users u " +
                      "INNER JOIN Configuration c ON c.SchoolId = u.SchoolId " +
                      "INNER JOIN Year y ON y.YearId = c.YearId " +
                      "INNER JOIN School s ON s.SchoolId = u.SchoolId " +
-                     "WHERE u.SchoolId = " + SchoolId + " AND u.Active = 1 " +
+                     "WHERE u.SchoolId = @SchoolId AND u.Active = 1 " +
                      "AND GETDATE() BETWEEN y.StartDate AND y.EndDate " +
-                     "ORDER BY u.UserId";
-        DataTable dt = Dal.GetDataTable(sql);
+                     "ORDER BY u.UserId");
+        impCmd.Parameters.AddWithValue("@SchoolId", Helper.ConvertToInt(SchoolId));
+        DataTable dt = Dal.GetDataTable(impCmd);
         if (dt.Rows.Count > 0)
         {
             HttpCookie cookie = new HttpCookie("UserData");
@@ -5109,6 +5147,8 @@ ORDER BY TeacherName";
             cookie["HebDate"] = Server.UrlEncode(dt.Rows[0]["HebDate"].ToString());
             cookie["Name"] = Server.UrlEncode(dt.Rows[0]["Name"].ToString());
             cookie["SchoolId"] = dt.Rows[0]["SchoolId"].ToString();
+            // אבטחה: חותמים את עוגיית ההתחזות כך שתעבור אכיפה (אם מופעלת) כזהות תקפה.
+            AuthCookie.SignUserData(cookie);
             cookie.Expires = DateTime.Now.AddDays(1); // התחזות זמנית בלבד
             HttpContext.Current.Response.Cookies.Add(cookie);
         }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Web;
 using System.Net.Mail;
+using System.Configuration;
 
 /// <summary>
 /// Summary description for SendEmail
@@ -22,12 +23,20 @@ public static class SendEmail
     {
         SmtpClient SmtpServer = new SmtpClient();
         MailMessage actMSG = new MailMessage();
-        SmtpServer.Host = "EX-ASHDOD.paz.local";
-        SmtpServer.Port = 25;
+
+        // הגדרות SMTP נקראות מ-web.config (appSettings). נשמרים ערכי ברירת מחדל זהים למקור
+        // כדי לשמור על התנהגות קיימת גם אם המפתחות חסרים (שליחת המייל אחרת תיכשל בשקט).
+        string smtpHost = ConfigurationManager.AppSettings["Smtp.Host"] ?? "EX-ASHDOD.paz.local";
+        int smtpPort;
+        if (!int.TryParse(ConfigurationManager.AppSettings["Smtp.Port"], out smtpPort)) smtpPort = 25;
+        string mail_user = ConfigurationManager.AppSettings["Smtp.User"] ?? "wrk_mirkam";
+        string mail_pass = ConfigurationManager.AppSettings["Smtp.Password"] ?? "mp123$";
+        string mail_from = ConfigurationManager.AppSettings["Smtp.From"] ?? "wrk_mirkam@pazar.co.il";
+
+        SmtpServer.Host = smtpHost;
+        SmtpServer.Port = smtpPort;
         SmtpServer.UseDefaultCredentials = false;
 
-        string mail_user = "wrk_mirkam";
-        string mail_pass = "mp123$";
         string ManagerName = "";
 
         SmtpServer.Credentials = new System.Net.NetworkCredential(mail_user, mail_pass);
@@ -88,7 +97,7 @@ public static class SendEmail
         // *********************** פרודקשן *****************
 
 
-        actMSG.From = new MailAddress("wrk_mirkam@pazar.co.il");
+        actMSG.From = new MailAddress(mail_from);
 
         SmtpServer.Send(actMSG);
         actMSG.Dispose();

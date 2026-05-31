@@ -1,0 +1,130 @@
+398:        DataTable dt = Dal.ExeSp("Assignment_SetHoursForWorker", AssignmentId, WorkerHours, Seq, HttpContext.Current.Request.Cookies["UserData"]["UserId"]);
+414:        DataTable dt = Dal.ExeSp("Assignment_InsertManualAssign", TargetAssignmentId, SourceAssignmentId, SourceEmpNo, Type, HttpContext.Current.Request.Cookies["UserData"]["UserId"]);
+470:    // Switches the active ConfigurationId in the UserData cookie — used by
+481:            HttpCookie existing = HttpContext.Current.Request.Cookies["UserData"];
+482:            HttpCookie cookie = new HttpCookie("UserData");
+503:    // Returns the active ConfigurationId from the UserData cookie so the
+512:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+698:            HttpCookie cookie = new HttpCookie("UserData");
+705:            cookie["SchoolId"] = dt.Rows[0]["SchoolId"].ToString();
+729:        DataTable dt = Dal.ExeSp("School_UpdateConfigHours", Hours, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"], "", "");
+741:        DataTable dt = Dal.ExeSp("School_UpdateHour", HourId, Mode, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+758:        DataTable dt = Dal.ExeSp("Teacher_GetTeacherList", TeacherId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"], "", "");
+768:        DataTable dt = Dal.ExeSp("Teacher_GetTeacherHours", TeacherId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+780:        DataTable dt = Dal.ExeSp("Teacher_SetTeacherHours", TeacherId, HourId, Type, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+797:        if (!int.TryParse(HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"], out configurationId))
+837:            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"], Type);
+847:        DataTable dt = Dal.ExeSp("Teacher_GetShehyaGroup", HourId, TeacherId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+861:        DataTable dt = Dal.ExeSp("Teacher_SetGroupShehya", HourId, TeachersIds, ShehyaGroupId, NewGroup, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+876:        DataTable dt = Dal.ExeSp("Teacher_SetPartani", HourId, TeacherId, Type, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+900:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+981:        DataTable dt = Dal.ExeSp("Teacher_GetTeachersForShehya", HourId, ShehyaGroupId, TeacherId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+990:        DataTable dt = Dal.ExeSp("Teacher_GetAllTeacherHours", TeacherId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+998:        DataTable dt = Dal.ExeSp("Teacher_GetAllMissClass", TeacherId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+1017:        DataTable dt = Dal.ExeSp("Professional_DML", Type, ProfessionalId, Name, isTwoHour, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+1033:        DataTable dt = Dal.ExeSp("Class_GetAllClass", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+1043:        DataTable dt = Dal.ExeSp("Class_GetClassStatus", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+1060:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1205:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1326:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1351:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1415:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1463:        DataTable dt = Dal.ExeSp("Class_GetClassByLayerId", LayerId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+1480:            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+1493:            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+1517:        string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1581:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1668:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1704:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1755:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1893:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+1976:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2040:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2117:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2160:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2201:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2242:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2282:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2321:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2364:            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2397:        string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2435:        if (HttpContext.Current.Request.Cookies["UserData"] == null)
+2442:        string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+2570:            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+2596:            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]
+2649:                HttpContext.Current.Session["ShibutzErrors"] = preCheckErrors;
+2650:                HttpContext.Current.Session["ShibutzSavedCount"] = 0;
+2651:                HttpContext.Current.Session["ShibutzErrorCount"] = preCheckErrors.Count;
+2673:        Dal.ExeSp("Assign_DeleteAssignAuto", "1", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+2689:                    HttpContext.Current.Session["ShibutzProgressLog"] = sh.ProgressLog;
+2708:                HttpContext.Current.Session["ShibutzErrors"] = errorsToStore;
+2709:                HttpContext.Current.Session["ShibutzSavedCount"] = saved;
+2710:                HttpContext.Current.Session["ShibutzErrorCount"] = reds;
+2725:                    HttpContext.Current.Session["ShibutzErrors"] = new List<ShibutzError>();
+2726:                    HttpContext.Current.Session["ShibutzSavedCount"] = 0;
+2727:                    HttpContext.Current.Session["ShibutzErrorCount"] = 0;
+2728:                    HttpContext.Current.Session["ShibutzLastException"] = ex.GetType().Name + ": " + ex.Message + " | " + ex.StackTrace;
+2750:            string ex = HttpContext.Current.Session["ShibutzLastException"] as string;
+2766:                HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]
+2786:                HttpContext.Current.Session["ShibutzErrors"] = errorsToStore;
+2787:                HttpContext.Current.Session["ShibutzSavedCount"] = saved;
+2788:                HttpContext.Current.Session["ShibutzErrorCount"] = reds;
+2802:                    HttpContext.Current.Session["ShibutzErrors"] = new List<ShibutzError>();
+2803:                    HttpContext.Current.Session["ShibutzSavedCount"] = 0;
+2804:                    HttpContext.Current.Session["ShibutzErrorCount"] = 0;
+2822:            List<ShibutzError> errors = HttpContext.Current.Session["ShibutzErrors"] as List<ShibutzError>;
+2823:            int savedCount = HttpContext.Current.Session["ShibutzSavedCount"] != null ? 
+2824:                (int)HttpContext.Current.Session["ShibutzSavedCount"] : 0;
+2825:            int errorCount = HttpContext.Current.Session["ShibutzErrorCount"] != null ? 
+2826:                (int)HttpContext.Current.Session["ShibutzErrorCount"] : 0;
+2872:                    DataTable dtClasses = Dal.ExeSp("Class_GetAllClass", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+2894:                    DataTable dtTeachers = Dal.ExeSp("Teacher_GetTeacherList", "", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"], "", "");
+3050:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+3127:            int cId = Helper.ConvertToInt(HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+3146:            int cId = Helper.ConvertToInt(HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+3201:            List<string> log = HttpContext.Current.Session["ShibutzProgressLog"] as List<string>;
+3242:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+3321:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+3382:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+3474:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+3624:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+3749:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+3871:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+3973:            string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+4475:        DataSet ds = Dal.ExeDataSetSp("Assign_GetDataForAssignAuto", LayerId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4484:        //    DataTable dt = Dal.ExeSp("Class_GetClassStatus", HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4509:        DataTable dt = Dal.ExeSp("Assign_DeleteAssignAuto", IsAuto, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4528:        DataTable dt = Dal.ExeSp("Assign_GetFreeTeacher", ClassId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4546:        if (HttpContext.Current.Request.Cookies["UserData"] == null)
+4553:        string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+4618:        DataTable dt = Dal.ExeSp("Assign_GetAssignment", LayerId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4629:        DataTable dt = Dal.ExeSp("Assign_SetConfiguration", MaxHourInShibutz, MinForPitzul, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4640:        DataTable dt = Dal.ExeSp("Assign_GetAllTeacherOptional", ClassId, HourId, HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4648:        string configId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+4770:            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4806:            HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"]);
+4819:        string SchoolId = GetParams("SchoolId");
+4825:            if (fileName.Contains(SchoolId + "_"))
+4847:        httpPostedFile.SaveAs(path + SchoolId + "_.png");
+4857:        string SchoolId = GetParams("SchoolId");
+4863:            if (fileName.Contains(SchoolId + "_"))
+4968:            HttpCookie cookie = new HttpCookie(ADMIN_COOKIE);
+4984:        HttpCookie cookie = new HttpCookie(ADMIN_COOKIE);
+4992:        HttpCookie c = HttpContext.Current.Request.Cookies[ADMIN_COOKIE];
+5006:        HttpCookie c = HttpContext.Current.Request.Cookies[ADMIN_COOKIE];
+5075:        string SchoolId = GetParams("SchoolId");
+5076:        DataTable dt = Dal.ExeSp("Admin_DeleteSchool", SchoolId);
+5089:        string SchoolId = GetParams("SchoolId");
+5091:        string sql = "SELECT TOP 1 u.UserId, u.RoleId, c.ConfigurationId, c.SchoolId, " +
+5095:                     "INNER JOIN Configuration c ON c.SchoolId = u.SchoolId " +
+5097:                     "INNER JOIN School s ON s.SchoolId = u.SchoolId " +
+5098:                     "WHERE u.SchoolId = " + SchoolId + " AND u.Active = 1 " +
+5104:            HttpCookie cookie = new HttpCookie("UserData");
+5111:            cookie["SchoolId"] = dt.Rows[0]["SchoolId"].ToString();
+5125:        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
+5144:            ud["ConfigurationId"], ud["SchoolId"], ud["UserId"],
+5154:        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
+5155:        if (ud == null || string.IsNullOrEmpty(ud["SchoolId"]))
+5160:        DataTable dt = Dal.ExeSp("Issue_GetMine", ud["SchoolId"]);
+5202:        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
+5215:        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];

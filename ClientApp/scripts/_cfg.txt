@@ -1,0 +1,52 @@
+﻿475|    // any session-scoped state (progress log, errors) is left alone and will
+476|    // be refreshed on the next per-config operation.
+477|    [WebMethod]
+478|    public void Config_SetActive()
+479|    {
+480|        try
+481|        {
+482|            string newCfg = GetParams("ConfigurationId");
+483|            HttpCookie existing = HttpContext.Current.Request.Cookies["UserData"];
+484|            HttpCookie cookie = new HttpCookie("UserData");
+485|            if (existing != null)
+486|            {
+487|                foreach (string k in existing.Values.AllKeys)
+488|                {
+489|                    cookie[k] = existing[k];
+490|                }
+491|            }
+492|            cookie["ConfigurationId"] = newCfg;
+493|            cookie.Expires = DateTime.Now.AddYears(90);
+494|            HttpContext.Current.Response.Cookies.Add(cookie);
+495|            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+496|            HttpContext.Current.Response.Write("{\"ConfigurationId\":" + Helper.ConvertToInt(newCfg) + "}");
+497|        }
+498|        catch (Exception ex)
+499|        {
+500|            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+501|            HttpContext.Current.Response.Write("{\"Error\":\"" + ex.Message.Replace("\"","\\\"") + "\"}");
+502|        }
+503|    }
+504|
+505|    // Returns the active ConfigurationId from the UserData cookie so the
+506|    // frontend can build queries that target the right school/year ג€” Cfg=1
+507|    // was historically hardcoded everywhere, which now breaks all the
+508|    // multi-config workflows (TeacherClass dropdown, error diagnostic, etc.).
+509|    [WebMethod]
+510|    public void Config_GetActive()
+511|    {
+512|        try
+513|        {
+514|            string cId = HttpContext.Current.Request.Cookies["UserData"]["ConfigurationId"];
+515|            int cfgId = Helper.ConvertToInt(cId);
+516|            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+517|            HttpContext.Current.Response.Write("{\"ConfigurationId\":" + cfgId + "}");
+518|        }
+519|        catch
+520|        {
+521|            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+522|            HttpContext.Current.Response.Write("{\"ConfigurationId\":0}");
+523|        }
+524|    }
+525|
+526|    //[WebMethod]

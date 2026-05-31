@@ -1,0 +1,15 @@
+4990: 
+4991: 
+4992:     // ============================================================
+4993:     // Admin / Issues / Onboarding (׳ ׳•׳¡׳£ 2026-05-25)
+-----
+5004:         string Password = GetParams("Password");
+5005: 
+5006:         DataTable dt = Dal.ExeSp("Admin_Login", UserName, Password);
+5007: 
+-----
+5130:         }
+5131:         string SchoolId = GetParams("SchoolId");
+5132:         // ׳§׳•׳¨׳׳™׳ ׳׳× ׳”׳׳©׳×׳׳© ׳”׳¨׳׳©׳™ ׳©׳ ׳‘׳™׳× ׳”׳¡׳₪׳¨
+5133:         string sql = "SELECT TOP 1 u.UserId, u.RoleId, c.ConfigurationId, c.SchoolId, " +
+-----

@@ -90,16 +90,15 @@ public class Dal
     public int ExecuteNonQuerySPOneParameter(string storedProcedureName, string stringParameterName, string stringParameterValue)
     {
         int rowsAffected = 0;
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection))
+        {
+            MySqlCommand.CommandType = CommandType.StoredProcedure;
+            MySqlCommand.Parameters.AddWithValue(stringParameterName, stringParameterValue);
 
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-        MySqlCommand.Parameters.AddWithValue(stringParameterName, stringParameterValue);
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        mySqlConnection.Open();
-        rowsAffected = MySqlCommand.ExecuteNonQuery();
-        mySqlConnection.Close();
+            mySqlConnection.Open();
+            rowsAffected = MySqlCommand.ExecuteNonQuery();
+        }
 
         return rowsAffected;
     }
@@ -116,23 +115,23 @@ public class Dal
     public int ExecuteNonQuerySPMultipleParameters_intRowEffected(string storedProcedureName, Hashtable Params)
     {
         int rowsAffected = 0;
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-
-        // Add the parameters if the Params holdes parameters to add.
-        if (Params != null && Params.Count > 0)
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection))
         {
-            foreach (string key in Params.Keys)
-            {
-                MySqlCommand.Parameters.AddWithValue(key, Params[key]);
-            }
-        }
+            MySqlCommand.CommandType = CommandType.StoredProcedure;
 
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        mySqlConnection.Open();
-        rowsAffected = MySqlCommand.ExecuteNonQuery();
-        mySqlConnection.Close();
+            // Add the parameters if the Params holdes parameters to add.
+            if (Params != null && Params.Count > 0)
+            {
+                foreach (string key in Params.Keys)
+                {
+                    MySqlCommand.Parameters.AddWithValue(key, Params[key]);
+                }
+            }
+
+            mySqlConnection.Open();
+            rowsAffected = MySqlCommand.ExecuteNonQuery();
+        }
 
         return rowsAffected;
     }
@@ -150,29 +149,29 @@ public class Dal
     public string ExecuteScalarSPMultipleParameters_ReturnsString(string storedProcedureName, Hashtable Params, string outputParamName)
     {
         string output = null;
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-
-        // Add the parameters if the Params holdes parameters to add.
-        if (Params != null && Params.Count > 0)
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection))
         {
-            foreach (string key in Params.Keys)
+            MySqlCommand.CommandType = CommandType.StoredProcedure;
+
+            // Add the parameters if the Params holdes parameters to add.
+            if (Params != null && Params.Count > 0)
             {
-                MySqlCommand.Parameters.AddWithValue(key, Params[key]);
+                foreach (string key in Params.Keys)
+                {
+                    MySqlCommand.Parameters.AddWithValue(key, Params[key]);
+                }
             }
+
+            // Add output parameter
+            SqlParameter outP = new SqlParameter(outputParamName, SqlDbType.NVarChar, 50);
+            outP.Direction = ParameterDirection.Output;
+            MySqlCommand.Parameters.Add(outP);
+
+            mySqlConnection.Open();
+            MySqlCommand.ExecuteScalar();
+            output = outP.Value.ToString();
         }
-
-        // Add output parameter
-        SqlParameter outP = new SqlParameter(outputParamName, SqlDbType.NVarChar, 50);
-        outP.Direction = ParameterDirection.Output;
-        MySqlCommand.Parameters.Add(outP);
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        mySqlConnection.Open();
-        MySqlCommand.ExecuteScalar();
-        output = outP.Value.ToString();
-        mySqlConnection.Close();
 
         return output;
     }
@@ -221,6 +220,45 @@ public class Dal
         }
     }
 
+    // Parameterized SELECT overload (additive — does not change any existing
+    // signature). Mirrors ExecuteNonQuery(SqlCommand): pass a SqlCommand whose
+    // CommandText uses @placeholders and whose Parameters are bound, so callers
+    // can run raw-text SELECTs WITHOUT string concatenation (SQLi-safe path).
+    // The command's Connection is set/owned here and a fresh pooled connection
+    // is opened and disposed around the read. CommandType is left as the caller
+    // set it (defaults to Text).
+    public static DataTable GetDataTable(SqlCommand cmd)
+    {
+        using (SqlConnection myConnection = new SqlConnection(_dbConnectionString))
+        {
+            cmd.Connection = myConnection;
+            myConnection.Open();
+            using (SqlDataReader myReader = cmd.ExecuteReader())
+            {
+                DataTable myTable = new DataTable();
+                myTable.Load(myReader);
+                return myTable;
+            }
+        }
+    }
+
+    // Transaction-aware parameterized SELECT overload: runs a bound SqlCommand
+    // on an existing connection (and optional transaction), e.g. inside the
+    // single-connection/transaction loops in FillEmptySlots / the *Force paths.
+    // Caller owns the connection's lifetime; we only set Connection/Transaction
+    // on the command and read.
+    public static DataTable GetDataTable(SqlConnection con, SqlTransaction tx, SqlCommand cmd)
+    {
+        cmd.Connection = con;
+        if (tx != null) cmd.Transaction = tx;
+        using (SqlDataReader myReader = cmd.ExecuteReader())
+        {
+            DataTable myTable = new DataTable();
+            myTable.Load(myReader);
+            return myTable;
+        }
+    }
+
     // Oren 10/08/2010
     /// <summary>
     /// Returns DataTable from the soutce connection and command text provided.
@@ -250,111 +288,90 @@ public class Dal
 
     public static DataTable GetDataTableFromSPNoParameter(string storedProcedureName)
     {
-        SqlConnection mySqlConnection;
-        try
+        // Wrapped in using{} so the connection is always released back to the
+        // pool even if any step below throws (previously a leak on failure).
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
         {
-            mySqlConnection = new SqlConnection(_dbConnectionString);
-        }
-        catch (Exception ex)
-        {
-            throw new Exception("Failure to initiate SqlConnection. ConnectionString - " + _dbConnectionString + " Error: " + ex.Message);
-        }
+            SqlCommand MySqlCommand;
+            try
+            {
+                MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
+                MySqlCommand.CommandType = CommandType.StoredProcedure;
+                MySqlCommand.CommandTimeout = 120; // 120 seconds.
 
-        SqlCommand MySqlCommand;
-        try
-        {
-            MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-            MySqlCommand.CommandType = CommandType.StoredProcedure;
-            MySqlCommand.CommandTimeout = 120; // 120 seconds.
+            }
+            catch (Exception ex)
+            {
+                throw new Exception("Failure to initiate SqlCommand. Error: " + ex.Message);
+            }
 
-        }
-        catch (Exception ex)
-        {
-            throw new Exception("Failure to initiate SqlCommand. Error: " + ex.Message);
-        }
+            SqlDataAdapter MySqlDataAdapter;
+            try
+            {
+                MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception("Failure to initiate SqlDataAdapter. Sql command text: " + MySqlCommand.CommandText + " Error: " + ex.Message);
+            }
 
-        SqlDataAdapter MySqlDataAdapter;
-        try
-        {
-            MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        }
-        catch (Exception ex)
-        {
-            throw new Exception("Failure to initiate SqlDataAdapter. Sql command text: " + MySqlCommand.CommandText + " Error: " + ex.Message);
-        }
+            DataTable MyDataTable = new DataTable();
 
-        DataTable MyDataTable = new DataTable();
+            try
+            {
+                mySqlConnection.Open();
+            }
+            catch (Exception ex)
+            {
+                throw new Exception("Failure to open the connection to the data base.  ConnectionString - " + _dbConnectionString + " Error: " + ex.Message);
+            }
 
-        try
-        {
-            mySqlConnection.Open();
-        }
-        catch (Exception ex)
-        {
-            throw new Exception("Failure to open the connection to the data base.  ConnectionString - " + _dbConnectionString + " Error: " + ex.Message);
-        }
+            try
+            {
+                MySqlDataAdapter.Fill(MyDataTable);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception("Failure to fill the data table.  ConnectionString - " + _dbConnectionString + " Error: " + ex.Message);
+            }
 
-        try
-        {
-            MySqlDataAdapter.Fill(MyDataTable);
+            return MyDataTable;
         }
-        catch (Exception ex)
-        {
-            throw new Exception("Failure to fill the data table.  ConnectionString - " + _dbConnectionString + " Error: " + ex.Message);
-        }
-
-        try
-        {
-            mySqlConnection.Close();
-        }
-        catch (Exception ex)
-        {
-            throw new Exception("Failure to close the connection to the data base.  ConnectionString - " + _dbConnectionString + " Error: " + ex.Message);
-        }
-        return MyDataTable;
-
     }
 
     public static DataTable GetDataTableFromSPOneParameter(string storedProcedureName, string stringParameterName, string stringParameterValue)
     {
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection))
+        {
+            MySqlCommand.CommandType = CommandType.StoredProcedure;
+            MySqlCommand.Parameters.AddWithValue(stringParameterName, stringParameterValue);
 
+            SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
+            DataTable MyDataTable = new DataTable();
 
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-        MySqlCommand.Parameters.AddWithValue(stringParameterName, stringParameterValue);
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        DataTable MyDataTable = new DataTable();
-
-        mySqlConnection.Open();
-        MySqlDataAdapter.Fill(MyDataTable);
-        mySqlConnection.Close();
-        return MyDataTable;
-
+            mySqlConnection.Open();
+            MySqlDataAdapter.Fill(MyDataTable);
+            return MyDataTable;
+        }
     }
 
     public DataTable GetDataTableFromSPTwoParameter(string storedProcedureName, string stringParameterOneName, string stringParameterOneValue, string stringParameterTwoName, string stringParameterTwoValue)
     {
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection))
+        {
+            MySqlCommand.CommandType = CommandType.StoredProcedure;
+            MySqlCommand.Parameters.AddWithValue(stringParameterOneName, stringParameterOneValue);
+            MySqlCommand.Parameters.AddWithValue(stringParameterTwoName, stringParameterTwoValue);
 
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
+            SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
+            DataTable MyDataTable = new DataTable();
 
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-        MySqlCommand.Parameters.AddWithValue(stringParameterOneName, stringParameterOneValue);
-        MySqlCommand.Parameters.AddWithValue(stringParameterTwoName, stringParameterTwoValue);
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        DataTable MyDataTable = new DataTable();
-
-        mySqlConnection.Open();
-        MySqlDataAdapter.Fill(MyDataTable);
-        mySqlConnection.Close();
-        return MyDataTable;
-
-
-
+            mySqlConnection.Open();
+            MySqlDataAdapter.Fill(MyDataTable);
+            return MyDataTable;
+        }
     }
 
     // Oren 12/10/2010
@@ -366,29 +383,27 @@ public class Dal
     /// <returns></returns>
     public static DataTable GetDataTableFromSPMultiParameters(string storedProcedureName, Hashtable Params)
     {
-
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-
-        // Add the parameters if the Params holdes parameters to add.
-        if (Params != null && Params.Count > 0)
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection))
         {
-            foreach (string key in Params.Keys)
+            MySqlCommand.CommandType = CommandType.StoredProcedure;
+
+            // Add the parameters if the Params holdes parameters to add.
+            if (Params != null && Params.Count > 0)
             {
-                MySqlCommand.Parameters.AddWithValue(key, Params[key]);
+                foreach (string key in Params.Keys)
+                {
+                    MySqlCommand.Parameters.AddWithValue(key, Params[key]);
+                }
             }
+
+            SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
+            DataTable MyDataTable = new DataTable();
+
+            mySqlConnection.Open();
+            MySqlDataAdapter.Fill(MyDataTable);
+            return MyDataTable;
         }
-
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        DataTable MyDataTable = new DataTable();
-
-        mySqlConnection.Open();
-        MySqlDataAdapter.Fill(MyDataTable);
-        mySqlConnection.Close();
-        return MyDataTable;
     }
 
 
@@ -532,62 +547,58 @@ public class Dal
 
     public static DataSet GetDataSetFromSPMultiParameters(string storedProcedureName, Hashtable Params)
     {
-
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-
-        // Add the parameters if the Params holdes parameters to add.
-        if (Params != null && Params.Count > 0)
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection))
         {
-            foreach (string key in Params.Keys)
+            MySqlCommand.CommandType = CommandType.StoredProcedure;
+
+            // Add the parameters if the Params holdes parameters to add.
+            if (Params != null && Params.Count > 0)
             {
+                foreach (string key in Params.Keys)
+                {
 
-                MySqlCommand.Parameters.AddWithValue(key, Params[key].ToString().Replace("%27", "'"));
+                    MySqlCommand.Parameters.AddWithValue(key, Params[key].ToString().Replace("%27", "'"));
+                }
             }
+
+            SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
+            DataSet MyDataSet = new DataSet();
+
+            mySqlConnection.Open();
+            MySqlDataAdapter.Fill(MyDataSet);
+            return MyDataSet;
         }
-
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        DataSet MyDataSet = new DataSet();
-
-        mySqlConnection.Open();
-        MySqlDataAdapter.Fill(MyDataSet);
-        mySqlConnection.Close();
-        return MyDataSet;
     }
 
     public static DataTable GetDataTableFromSPMultiParameters(string storedProcedureName, Hashtable Params, out int TotalRec)
     {
-
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-
-        SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection);
-        MySqlCommand.CommandType = CommandType.StoredProcedure;
-
-        // Add the parameters if the Params holdes parameters to add.
-        if (Params != null && Params.Count > 0)
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand MySqlCommand = new SqlCommand(storedProcedureName, mySqlConnection))
         {
-            foreach (string key in Params.Keys)
+            MySqlCommand.CommandType = CommandType.StoredProcedure;
+
+            // Add the parameters if the Params holdes parameters to add.
+            if (Params != null && Params.Count > 0)
             {
-                MySqlCommand.Parameters.AddWithValue(key, Params[key]);
+                foreach (string key in Params.Keys)
+                {
+                    MySqlCommand.Parameters.AddWithValue(key, Params[key]);
+                }
             }
+
+            SqlParameter prm = new SqlParameter("@TotalRec", SqlDbType.Int);
+            prm.Direction = ParameterDirection.Output;
+            MySqlCommand.Parameters.Add(prm);
+
+            SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
+            DataTable MyDataTable = new DataTable();
+
+            mySqlConnection.Open();
+            MySqlDataAdapter.Fill(MyDataTable);
+            TotalRec = Convert.ToInt32(prm.Value);
+            return MyDataTable;
         }
-
-        SqlParameter prm = new SqlParameter("@TotalRec", SqlDbType.Int);
-        prm.Direction = ParameterDirection.Output;
-        MySqlCommand.Parameters.Add(prm);
-
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(MySqlCommand);
-        DataTable MyDataTable = new DataTable();
-
-        mySqlConnection.Open();
-        MySqlDataAdapter.Fill(MyDataTable);
-        TotalRec = Convert.ToInt32(prm.Value);
-        mySqlConnection.Close();
-        return MyDataTable;
     }
 
     #region Sql and SqlCommand Support Functions ...
@@ -788,25 +799,26 @@ public class Dal
     public string AddNewException(string auditDataGUID, string approver, string expirationDate, string reason)
     {
         string stringList = string.Empty;
-        SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString);
-        SqlCommand mySqlCommand = new SqlCommand();
-        mySqlCommand.Connection = mySqlConnection;
-        mySqlCommand.CommandText = "sx_AddException";
-        mySqlCommand.CommandType = System.Data.CommandType.StoredProcedure;
-        mySqlCommand.Parameters.AddWithValue("@auditDataGUID", auditDataGUID);
-        mySqlCommand.Parameters.AddWithValue("@approver", approver);
-        mySqlCommand.Parameters.AddWithValue("@ExpirationDateVarchar", expirationDate);
-        mySqlCommand.Parameters.AddWithValue("@reason", reason);
-
-        SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(mySqlCommand);
-        mySqlConnection.Open();
-        DataTable myDataTable = new DataTable();
-        MySqlDataAdapter.Fill(myDataTable);
-        mySqlConnection.Close();
-
-        foreach (DataRow row in myDataTable.Rows)
+        using (SqlConnection mySqlConnection = new SqlConnection(_dbConnectionString))
+        using (SqlCommand mySqlCommand = new SqlCommand())
         {
-            stringList += (row[0].ToString() + System.Environment.NewLine);
+            mySqlCommand.Connection = mySqlConnection;
+            mySqlCommand.CommandText = "sx_AddException";
+            mySqlCommand.CommandType = System.Data.CommandType.StoredProcedure;
+            mySqlCommand.Parameters.AddWithValue("@auditDataGUID", auditDataGUID);
+            mySqlCommand.Parameters.AddWithValue("@approver", approver);
+            mySqlCommand.Parameters.AddWithValue("@ExpirationDateVarchar", expirationDate);
+            mySqlCommand.Parameters.AddWithValue("@reason", reason);
+
+            SqlDataAdapter MySqlDataAdapter = new SqlDataAdapter(mySqlCommand);
+            mySqlConnection.Open();
+            DataTable myDataTable = new DataTable();
+            MySqlDataAdapter.Fill(myDataTable);
+
+            foreach (DataRow row in myDataTable.Rows)
+            {
+                stringList += (row[0].ToString() + System.Environment.NewLine);
+            }
         }
 
         return stringList;
