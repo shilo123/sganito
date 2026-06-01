@@ -1081,25 +1081,29 @@ DECLARE @dayNames TABLE (D INT, Name NVARCHAR(20));
 INSERT INTO @dayNames (D, Name) VALUES (1, N'ראשון'), (2, N'שני'), (3, N'שלישי'), (4, N'רביעי'), (5, N'חמישי'), (6, N'שישי');
 
 -- כיתות עם over-demand (סכום השעות הנדרשות > מספר השעות בלוח השבועי)
--- הקבצה נספרת כ-MAX (כל המורים בהקבצה מלמדים באותה שעה), סולו כ-SUM
+-- חישוב RealHours אחיד (תיקון 2026-06-01):
+--   * שורת סולו  = ct.Hakbatza IS NULL  → נספרת כ-SUM(Hour).
+--   * שורת הקבצה = ct.Hakbatza IS NOT NULL → כל הקבצה (לפי ה-Number) נספרת
+--     פעם אחת בלבד כ-MAX(Hour), כי כל מורי ההקבצה מלמדים באותה שעה.
+-- המנגנון מבוסס אך ורק על ClassTeacher.Hakbatza(Number)+Hour, ולכן עקבי
+-- לשתי מערכות ההקבצה (גם הישנה Hakbatza/HakbatzaClass וגם החדשה GroupInfo),
+-- ואינו תלוי בשדה ct.HakbatzaId שלעיתים ריק → מנע ספירה כפולה (55/60 כוזב).
 SELECT N'class_over_demand' AS Kind,
   c.ClassId AS Id1, 0 AS Id2,
   c.Name AS Label,
   CAST(rh.RealHours - @capPerClass AS NVARCHAR(10)) + N' שעות מעבר לקיבולת — נדרשות ' + CAST(rh.RealHours AS NVARCHAR(10)) + N' שעות אך בלוח יש רק ' + CAST(@capPerClass AS NVARCHAR(10)) AS Detail
 FROM Class c
 CROSS APPLY (
-  -- Solo + Hak.Hours פר כיתה + extras (CT.Hour - Hak.Hours שמתפזר כסולו)
   SELECT
-    ISNULL((SELECT SUM(ct.Hour) FROM ClassTeacher ct WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.HakbatzaId IS NULL AND ct.Hour > 0), 0)
-    + ISNULL((SELECT SUM(h.Hours) FROM Hakbatza h INNER JOIN HakbatzaClass hc ON hc.HakbatzaId=h.HakbatzaId WHERE h.ConfigurationId=c.ConfigurationId AND hc.ClassId=c.ClassId), 0)
-    + ISNULL((SELECT SUM(ct.Hour - h.Hours) FROM ClassTeacher ct INNER JOIN Hakbatza h ON h.HakbatzaId=ct.HakbatzaId WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.Hour > h.Hours), 0)
+    ISNULL((SELECT SUM(ct.Hour) FROM ClassTeacher ct WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.Hakbatza IS NULL AND ct.Hour > 0), 0)
+    + ISNULL((SELECT SUM(g.grpHours) FROM (SELECT MAX(ct.Hour) AS grpHours FROM ClassTeacher ct WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.Hakbatza IS NOT NULL GROUP BY ct.Hakbatza) g), 0)
     AS RealHours
 ) rh
 WHERE c.ConfigurationId=" + cfgId + @" AND rh.RealHours > @capPerClass
 
 UNION ALL
 
--- כיתות עם under-demand
+-- כיתות עם under-demand (אותה נוסחת RealHours אחידה)
 SELECT N'class_under_demand' AS Kind,
   c.ClassId AS Id1, 0 AS Id2,
   c.Name AS Label,
@@ -1109,9 +1113,8 @@ SELECT N'class_under_demand' AS Kind,
 FROM Class c
 CROSS APPLY (
   SELECT
-    ISNULL((SELECT SUM(ct.Hour) FROM ClassTeacher ct WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.HakbatzaId IS NULL AND ct.Hour > 0), 0)
-    + ISNULL((SELECT SUM(h.Hours) FROM Hakbatza h INNER JOIN HakbatzaClass hc ON hc.HakbatzaId=h.HakbatzaId WHERE h.ConfigurationId=c.ConfigurationId AND hc.ClassId=c.ClassId), 0)
-    + ISNULL((SELECT SUM(ct.Hour - h.Hours) FROM ClassTeacher ct INNER JOIN Hakbatza h ON h.HakbatzaId=ct.HakbatzaId WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.Hour > h.Hours), 0)
+    ISNULL((SELECT SUM(ct.Hour) FROM ClassTeacher ct WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.Hakbatza IS NULL AND ct.Hour > 0), 0)
+    + ISNULL((SELECT SUM(g.grpHours) FROM (SELECT MAX(ct.Hour) AS grpHours FROM ClassTeacher ct WHERE ct.ConfigurationId=c.ConfigurationId AND ct.ClassId=c.ClassId AND ct.Hakbatza IS NOT NULL GROUP BY ct.Hakbatza) g), 0)
     AS RealHours
 ) rh2
 WHERE c.ConfigurationId=" + cfgId + @" AND rh2.RealHours < @capPerClass
@@ -4829,37 +4832,88 @@ ORDER BY TeacherName";
     [WebMethod]
     public void UploadFile()
     {
-        string SchoolId = GetParams("SchoolId");
-        string path = HttpContext.Current.Server.MapPath("~/assets/images/SchoolLogo/");
-
-        string[] fileEntries = Directory.GetFiles(path);
-        foreach (string fileName in fileEntries)
+        // אבטחה: רק משתמש מחובר (בית ספר) רשאי להעלות לוגו. הזהות נלקחת מהשרת,
+        // לא מפרמטר לקוח, וה-SchoolId חייב להיות מספרי (מונע path traversal).
+        HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+        HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
+        if (ud == null || string.IsNullOrEmpty(ud["SchoolId"]))
         {
-            if (fileName.Contains(SchoolId + "_"))
-            {
-                try
-                {
-                    File.Delete(fileName);
-
-                }
-                catch (Exception ex)
-                {
-
-                }
-            }
-
+            HttpContext.Current.Response.StatusCode = 401;
+            HttpContext.Current.Response.Write("{\"ok\":0,\"err\":\"לא מחובר\"}");
+            return;
         }
-
-
-
-
-
+        int schoolIdNum = Helper.ConvertToInt(ud["SchoolId"]);
+        if (schoolIdNum <= 0)
+        {
+            HttpContext.Current.Response.StatusCode = 401;
+            HttpContext.Current.Response.Write("{\"ok\":0,\"err\":\"זהות בית ספר לא תקינה\"}");
+            return;
+        }
+        string SchoolId = schoolIdNum.ToString();
 
         var httpPostedFile = HttpContext.Current.Request.Files["File"];
+        if (httpPostedFile == null || httpPostedFile.ContentLength <= 0)
+        {
+            HttpContext.Current.Response.StatusCode = 400;
+            HttpContext.Current.Response.Write("{\"ok\":0,\"err\":\"לא התקבל קובץ\"}");
+            return;
+        }
 
+        // אבטחה: הגבלת גודל (2MB) — מונע העלאת קבצים ענקיים / מיצוי דיסק.
+        const int MAX_BYTES = 2 * 1024 * 1024;
+        if (httpPostedFile.ContentLength > MAX_BYTES)
+        {
+            HttpContext.Current.Response.StatusCode = 413;
+            HttpContext.Current.Response.Write("{\"ok\":0,\"err\":\"הקובץ גדול מדי (מקסימום 2MB)\"}");
+            return;
+        }
+
+        // אבטחה: אימות שזו באמת תמונה לפי magic bytes (לא רק לפי סיומת/שם),
+        // כדי לחסום העלאת קבצים זדוניים (HTML/SVG/EXE/סקריפט) שמתחזים לתמונה.
+        byte[] head = new byte[12];
+        int read;
+        using (var s = httpPostedFile.InputStream)
+        {
+            read = s.Read(head, 0, head.Length);
+            s.Position = 0;
+        }
+        if (read < 4 || !IsAllowedImage(head))
+        {
+            HttpContext.Current.Response.StatusCode = 415;
+            HttpContext.Current.Response.Write("{\"ok\":0,\"err\":\"קובץ אינו תמונה תקינה (PNG/JPG/GIF/WebP בלבד)\"}");
+            return;
+        }
+
+        string path = HttpContext.Current.Server.MapPath("~/assets/images/SchoolLogo/");
+        // מוחקים לוגו קודם של אותו בית ספר (התאמה מדויקת לתחילית, לא Contains רופף)
+        string prefix = SchoolId + "_";
+        foreach (string fileName in Directory.GetFiles(path))
+        {
+            if (System.IO.Path.GetFileName(fileName).StartsWith(prefix, StringComparison.Ordinal))
+            {
+                try { File.Delete(fileName); } catch { }
+            }
+        }
+
+        // נשמר תמיד עם סיומת .png קבועה (השם נגזר מ-SchoolId מספרי בלבד).
         httpPostedFile.SaveAs(path + SchoolId + "_.png");
+        HttpContext.Current.Response.Write("{\"ok\":1}");
+    }
 
-
+    // בודק חתימת בתים (magic number) לפורמטי תמונה מותרים בלבד.
+    private static bool IsAllowedImage(byte[] h)
+    {
+        if (h == null || h.Length < 4) return false;
+        // PNG: 89 50 4E 47
+        if (h[0] == 0x89 && h[1] == 0x50 && h[2] == 0x4E && h[3] == 0x47) return true;
+        // JPEG: FF D8 FF
+        if (h[0] == 0xFF && h[1] == 0xD8 && h[2] == 0xFF) return true;
+        // GIF: "GIF8"
+        if (h[0] == 0x47 && h[1] == 0x49 && h[2] == 0x46 && h[3] == 0x38) return true;
+        // WebP: "RIFF"...."WEBP"
+        if (h.Length >= 12 && h[0] == 0x52 && h[1] == 0x49 && h[2] == 0x46 && h[3] == 0x46
+            && h[8] == 0x57 && h[9] == 0x45 && h[10] == 0x42 && h[11] == 0x50) return true;
+        return false;
     }
 
 

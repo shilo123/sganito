@@ -229,6 +229,28 @@ export function ExcelImportModal<T>({
     setAutoDetected(null);
     setAutoAddResult(null);
     lastFileRef.current = file;
+
+    // אבטחה: ולידציה של הקובץ לפני פירוק כדי לא לעבד קבצים זדוניים/ענקיים.
+    // (1) הגבלת גודל ל-10MB — מונע zip-bomb וקריסת הדפדפן על קובץ עצום.
+    const MAX_BYTES = 10 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      setParsed({
+        rows: [], errors: [{ rowIdx: 0, messages: [`הקובץ גדול מדי (${(file.size / 1048576).toFixed(1)}MB). המקסימום הוא 10MB.`] }],
+        totalRaw: 0, fileName: file.name,
+      });
+      return;
+    }
+    // (2) רק סיומות גיליון מותרות — חוסם העלאת קבצים אחרים (exe/html/וכו').
+    const lower = file.name.toLowerCase();
+    const allowed = ['.xlsx', '.xls', '.csv'];
+    if (!allowed.some((ext) => lower.endsWith(ext))) {
+      setParsed({
+        rows: [], errors: [{ rowIdx: 0, messages: ['סוג קובץ לא נתמך. יש להעלות קובץ Excel או CSV בלבד (.xlsx, .xls, .csv).'] }],
+        totalRaw: 0, fileName: file.name,
+      });
+      return;
+    }
+
     try {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });

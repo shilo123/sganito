@@ -153,6 +153,7 @@ export default function TeacherClass() {
     Partani: '',
   });
   const [teacherModalTitle, setTeacherModalTitle] = useState('');
+  void teacherModalTitle;
 
   // class modal — שמירת שם, מספר רץ, ומחנך/ת בפופאפ אחיד.
   // TeacherIdOriginal משמש להחלטה האם לקרוא ל-Class_SetHomeroom (שינוי) או לדלג.
@@ -268,21 +269,6 @@ export default function TeacherClass() {
     });
   }
 
-  async function setGroupName(kind: 'H', layerIdArg: number, number: number, name: string) {
-    try {
-      await ajax('Group_SetName', {
-        LayerId: String(layerIdArg),
-        Number: String(number),
-        Kind: kind,
-        Name: name,
-      });
-      if (kind === 'H') loadHakbatzaList();
-    } catch (err) {
-      console.error('Group_SetName failed', err);
-      toast.error('שמירת שם נכשלה');
-    }
-  }
-
   async function saveWizard() {
     if (!wizardOpen || wizardBusy) return;
     const selected = Array.from(wizardSelectedClasses);
@@ -351,8 +337,6 @@ export default function TeacherClass() {
   const closeIhudWizard = () => {};
   const toggleIhudWizardClass = (_id: number) => { void _id; };
   const saveIhudWizard = () => {};
-  const setIhudTeacher = (_l: number, _n: number, _t: number) => { void _l; void _n; void _t; };
-  const setIhudHour = (_l: number, _n: number, _h: number) => { void _l; void _n; void _h; };
   const deleteIhud = (_l: number, _n: number) => { void _l; void _n; };
   const [maxHours, setMaxHours] = useState<number>(0);
   // סטטוס שיבוץ לכל שכבה: כמה כיתות בכל שכבה ומהן כמה מלאות (Hour == Capacity).
@@ -511,6 +495,7 @@ export default function TeacherClass() {
     Message: string;
   }
   const [groupValidations, setGroupValidations] = useState<Map<string, GroupValidation>>(new Map());
+  void groupValidations;
 
   const loadGroupValidations = useCallback(async () => {
     try {
@@ -1038,7 +1023,6 @@ export default function TeacherClass() {
     memberIds: number[],
     teacherNames: string,
     hakbatza: number,
-    ihud: number,
   ) {
     setGroupModal({
       classId,
@@ -1046,12 +1030,8 @@ export default function TeacherClass() {
       memberClassTeacherIds: memberIds,
       teacherNames,
       currentHakbatza: hakbatza,
-      currentIhud: ihud,
     });
-    if (ihud > 0) {
-      setGroupKind('ihud');
-      setGroupNumber(String(ihud));
-    } else if (hakbatza > 0) {
+    if (hakbatza > 0) {
       setGroupKind('hakbatza');
       setGroupNumber(String(hakbatza));
     } else {
@@ -1065,18 +1045,10 @@ export default function TeacherClass() {
     setGroupBusy(true);
     try {
       let hakVal = 0;
-      let ihudVal = 0;
       if (groupKind === 'hakbatza') {
         hakVal = Number(groupNumber) || 0;
         if (hakVal <= 0) {
           toast.warning('יש להזין מספר הקבצה תקין (>0)');
-          setGroupBusy(false);
-          return;
-        }
-      } else if (groupKind === 'ihud') {
-        ihudVal = Number(groupNumber) || 0;
-        if (ihudVal <= 0) {
-          toast.warning('יש להזין מספר איחוד תקין (>0)');
           setGroupBusy(false);
           return;
         }
@@ -1085,7 +1057,7 @@ export default function TeacherClass() {
         await ajax<DmlResult[]>('Class_SetGroupNumber', {
           ClassTeacherId: ctId,
           Hakbatza: hakVal,
-          Ihud: ihudVal,
+          Ihud: 0,
         });
       }
       setGroupModal(null);
@@ -1101,36 +1073,6 @@ export default function TeacherClass() {
 
   // Build a summary of all groups in the current layer from the loaded
   // class rows (no extra API call needed — the data is already here).
-  interface GroupSummary {
-    kind: 'H' | 'I';
-    number: number;
-    members: Array<{ classId: number; className: string; teacherName: string }>;
-  }
-  function buildGroupsSummary(): GroupSummary[] {
-    const map = new Map<string, GroupSummary>();
-    for (const r of classes) {
-      const hak = Number(r.Hakbatza ?? 0);
-      const ihud = Number(r.Ihud ?? 0);
-      if (!r.TeacherId) continue;
-      if (ihud > 0) {
-        const key = 'I_' + ihud;
-        const entry = map.get(key) ?? { kind: 'I' as const, number: ihud, members: [] };
-        entry.members.push({ classId: r.ClassId, className: r.ClassName, teacherName: r.TeacherName });
-        map.set(key, entry);
-      }
-      if (hak > 0) {
-        const key = 'H_' + r.ClassId + '_' + hak;
-        const entry = map.get(key) ?? { kind: 'H' as const, number: hak, members: [] };
-        entry.members.push({ classId: r.ClassId, className: r.ClassName, teacherName: r.TeacherName });
-        map.set(key, entry);
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === 'I' ? -1 : 1;
-      return a.number - b.number;
-    });
-  }
-
   // Edit hours inline (Type=4). Also runs a frontend pre-check so the
   // user gets immediate warning if the new value would exceed the
   // class's weekly cap (maxHours = active SchoolHours, non-shehya).
@@ -1958,142 +1900,6 @@ export default function TeacherClass() {
                             );
                           })}
 
-                    {/* Ihud cards — single responsible teacher */}
-                    {ihudList.map((b) => {
-                      const col = groupColor('I', b.number);
-                      const isHover = dragHoverIhud === (b.layerId + '_' + b.number);
-                      const classList = Array.from(b.classes.values());
-                      return (
-                        <div className="tc-grid-4__cell" key={'ihud_' + b.layerId + '_' + b.number}>
-                          <div style={{ fontSize: 12, color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: '#ede9fe', border: '1px solid #ddd6fe', borderRadius: 4, marginBottom: 2 }}>
-                            <span>
-                              <i className="fa fa-link" style={{ color: '#7c3aed', marginInlineEnd: 4 }} />
-                              שעות שבועיות
-                            </span>
-                            <input
-                              type="number"
-                              min={0}
-                              defaultValue={b.hour}
-                              onBlur={(e) => {
-                                const v = Math.max(0, Math.floor(Number(e.currentTarget.value) || 0));
-                                if (v !== b.hour) setIhudHour(b.layerId, b.number, v);
-                              }}
-                              style={{ width: 48, padding: '1px 4px', fontWeight: 700, textAlign: 'center', border: '1px solid #7c3aed', borderRadius: 3, background: '#fff' }}
-                            />
-                          </div>
-                          <div className="row dvWeek" style={{ width: '100%' }}>
-                            <div className="panel" style={{ borderColor: col.bg, borderTopWidth: 4 }}>
-                              <div className="panel-heading" style={{ background: col.bg, color: col.fg, borderColor: col.bg, padding: '0.45rem 0.6rem' }}>
-                                <button
-                                  type="button"
-                                  className="tc-class-close"
-                                  onClick={() => setConfirmDeleteGroup({
-                                    kind: 'I',
-                                    layerId: b.layerId,
-                                    number: b.number,
-                                    label: b.name || `איחוד ${b.number}`,
-                                  })}
-                                  title="מחק איחוד"
-                                  aria-label="מחק איחוד"
-                                >
-                                  <i className="fa fa-times" />
-                                </button>
-                                <h3 className="panel-title" style={{ color: col.fg, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <span className="tc-class-name" style={{ flex: '0 0 auto', whiteSpace: 'nowrap' }}>{b.name || `איחוד ${b.number}`}</span>
-                                  <input
-                                    type="text"
-                                    placeholder={`איחוד ${b.number} — תן שם`}
-                                    defaultValue={b.name || ''}
-                                    onBlur={(e) => {
-                                      const v = e.currentTarget.value.trim();
-                                      if (v !== (b.name || '')) setGroupName('I', b.layerId, b.number, v);
-                                    }}
-                                    title="לחץ לשינוי שם האיחוד"
-                                    style={{
-                                      flex: 1,
-                                      minWidth: 0,
-                                      background: 'rgba(255,255,255,0.55)',
-                                      border: '1px solid rgba(0,0,0,0.08)',
-                                      borderRadius: 4,
-                                      padding: '1px 6px',
-                                      fontSize: 12,
-                                      fontWeight: 600,
-                                      color: '#1f2937',
-                                    }}
-                                  />
-                                </h3>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
-                                  {classList.length === 0 ? (
-                                    <span style={{ fontSize: 11, opacity: 0.7 }}>—</span>
-                                  ) : (
-                                    classList.map((cn) => (
-                                      <span
-                                        key={cn}
-                                        style={{
-                                          background: 'rgba(255,255,255,0.65)',
-                                          color: '#1f2937',
-                                          padding: '1px 7px',
-                                          borderRadius: 10,
-                                          fontSize: 11,
-                                          fontWeight: 700,
-                                          lineHeight: 1.5,
-                                          border: '1px solid rgba(0,0,0,0.05)',
-                                        }}
-                                      >
-                                        {cn}
-                                      </span>
-                                    ))
-                                  )}
-                                </div>
-                              </div>
-                              <div
-                                className="panel-body droppable"
-                                style={{
-                                  minHeight: 90,
-                                  padding: '0.5rem',
-                                  background: isHover ? '#f5f3ff' : undefined,
-                                  border: isHover ? '2px dashed #7c3aed' : undefined,
-                                  transition: 'background 120ms',
-                                }}
-                                onDragOver={(e) => {
-                                  allowDrop(e);
-                                  const key = b.layerId + '_' + b.number;
-                                  if (dragHoverIhud !== key) setDragHoverIhud(key);
-                                }}
-                                onDragLeave={() => setDragHoverIhud(null)}
-                                onDrop={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  setDragHoverIhud(null);
-                                  const info = dragInfo.current;
-                                  if (!info) return;
-                                  dragInfo.current = null;
-                                  setIhudTeacher(b.layerId, b.number, info.teacherId);
-                                }}
-                              >
-                                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4, fontWeight: 600 }}>
-                                  מורה אחראי:
-                                </div>
-                                {b.teacherId > 0 ? (
-                                  <div className="draggable" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                    <div
-                                      className="btn btn-primary btn-round"
-                                      style={{ flex: 1, textAlign: 'center', background: col.bg, color: col.fg, borderColor: col.fg + '40' }}
-                                    >
-                                      {b.teacherName}
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div style={{ padding: 6, color: '#9ca3af', fontStyle: 'italic', fontSize: 11, textAlign: 'center', border: '1px dashed #d1d5db', borderRadius: 6 }}>
-                                    גרור מורה לכאן
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
                         </div>
                         </div>
                         <div style={{ borderBottom: '1px dashed #e5e7eb', margin: '14px 0 4px' }} />
@@ -2350,9 +2156,7 @@ export default function TeacherClass() {
                           })}
                           {panel.teachers.map((t) => {
                             const hakNum = Number(t.Hakbatza ?? 0);
-                            const ihudNum = Number(t.Ihud ?? 0);
                             const hakColor = hakNum > 0 ? groupColor('H', hakNum) : null;
-                            const ihudColor = ihudNum > 0 ? groupColor('I', ihudNum) : null;
                             return (
                             <div
                               key={`${panel.ClassId}_${t.TeacherId}_${t.ClassTeacherId ?? ''}`}
@@ -2364,7 +2168,6 @@ export default function TeacherClass() {
                                   TeacherId: t.TeacherId,
                                   ClassId: panel.ClassId,
                                   Hakbatza: t.Hakbatza,
-                                  Ihud: t.Ihud,
                                   ClassTeacherId: t.ClassTeacherId,
                                 })
                               }
@@ -2376,8 +2179,6 @@ export default function TeacherClass() {
                                 style={{
                                   width: '55%',
                                   marginLeft: 2,
-                                  border: ihudColor ? `2px solid ${ihudColor.bg}` : undefined,
-                                  boxShadow: ihudColor ? `0 0 0 1px ${ihudColor.bg} inset` : undefined,
                                 }}
                                 dangerouslySetInnerHTML={{ __html: t.displayRaw }}
                               />
@@ -2396,7 +2197,6 @@ export default function TeacherClass() {
                                         t.memberClassTeacherIds,
                                         t.TeacherName.replace(/<br>/g, ' + '),
                                         hakNum,
-                                        ihudNum,
                                       )
                                     }
                                     style={{
@@ -2412,34 +2212,6 @@ export default function TeacherClass() {
                                     }}
                                   >
                                     ה{hakNum}
-                                  </span>
-                                )}
-                                {ihudNum > 0 && ihudColor && (
-                                  <span
-                                    title={`איחוד ${ihudNum} — לחץ לעריכה`}
-                                    onClick={() =>
-                                      openGroupModal(
-                                        panel.ClassId,
-                                        panel.ClassName,
-                                        t.memberClassTeacherIds,
-                                        t.TeacherName.replace(/<br>/g, ' + '),
-                                        hakNum,
-                                        ihudNum,
-                                      )
-                                    }
-                                    style={{
-                                      cursor: 'pointer',
-                                      background: ihudColor.bg,
-                                      color: ihudColor.fg,
-                                      padding: '2px 6px',
-                                      borderRadius: 4,
-                                      fontSize: 11,
-                                      fontWeight: 700,
-                                      lineHeight: 1.2,
-                                      userSelect: 'none',
-                                    }}
-                                  >
-                                    א{ihudNum}
                                   </span>
                                 )}
                                 {/* הכפתור "+" להוספה להקבצה הוסר —
@@ -2681,37 +2453,22 @@ export default function TeacherClass() {
                       />
                       הקבצה (חלוקה בכיתה לקבוצות רמה)
                     </label>
-                    <label style={{ cursor: 'pointer', padding: '6px 10px', background: groupKind === 'ihud' ? '#ddd6fe' : '#f3f4f6', borderRadius: 6, fontSize: 13 }}>
-                      <input
-                        type="radio"
-                        name="gkind"
-                        checked={groupKind === 'ihud'}
-                        onChange={() => setGroupKind('ihud')}
-                        style={{ marginInlineEnd: 6 }}
-                      />
-                      איחוד (בין כיתות)
-                    </label>
                   </div>
                 </div>
 
-                {(groupKind === 'hakbatza' || groupKind === 'ihud') && (() => {
+                {groupKind === 'hakbatza' && (() => {
                   // Suggest existing numbers of the chosen kind for quick pick
                   const existing = new Set<number>();
                   for (const r of classes) {
-                    if (groupKind === 'hakbatza') {
-                      const n = Number(r.Hakbatza ?? 0);
-                      if (n > 0 && r.ClassId === groupModal.classId) existing.add(n);
-                    } else {
-                      const n = Number(r.Ihud ?? 0);
-                      if (n > 0) existing.add(n);
-                    }
+                    const n = Number(r.Hakbatza ?? 0);
+                    if (n > 0 && r.ClassId === groupModal.classId) existing.add(n);
                   }
                   const sorted = Array.from(existing).sort((a, b) => a - b);
                   const nextFree = (sorted[sorted.length - 1] ?? 0) + 1;
                   return (
                     <div style={{ marginBottom: 14 }}>
                       <label style={{ fontWeight: 600, marginBottom: 6, display: 'block' }}>
-                        מספר {groupKind === 'hakbatza' ? 'הקבצה' : 'איחוד'}:
+                        מספר הקבצה:
                       </label>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                         <input
@@ -2734,7 +2491,7 @@ export default function TeacherClass() {
                           <>
                             <span style={{ color: '#6b7280', fontSize: 12 }}>קיימים:</span>
                             {sorted.map((n) => {
-                              const col = groupColor(groupKind === 'hakbatza' ? 'H' : 'I', n);
+                              const col = groupColor('H', n);
                               return (
                                 <button
                                   key={n}
@@ -2751,7 +2508,7 @@ export default function TeacherClass() {
                                     cursor: 'pointer',
                                   }}
                                 >
-                                  {groupKind === 'hakbatza' ? 'ה' : 'א'}{n}
+                                  ה{n}
                                 </button>
                               );
                             })}
@@ -2759,9 +2516,7 @@ export default function TeacherClass() {
                         )}
                       </div>
                       <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6, lineHeight: 1.5 }}>
-                        {groupKind === 'hakbatza'
-                          ? 'מורים באותה כיתה שישתמשו באותו מספר הקבצה — ילמדו באותה שעה, כל אחד לקבוצת רמה אחרת.'
-                          : 'מורים בכיתות שונות שישתמשו באותו מספר איחוד — ילמדו באותה שעה, כל אחד בכיתתו.'}
+                        מורים באותה כיתה שישתמשו באותו מספר הקבצה — ילמדו באותה שעה, כל אחד לקבוצת רמה אחרת.
                       </div>
                     </div>
                   );
@@ -4733,7 +4488,7 @@ function parseFlatClassTeacherWorkbook(
 function buildMultiSheetBlocksTemplate(): XLSX.WorkBook {
   const wb = XLSX.utils.book_new();
 
-  const makeClassSheet = (header1: [string, string, string], header2: [string, string, string], rows1: Array<[string, number, string]>, rows2: Array<[string, number, string]>) => {
+  const makeClassSheet = (header1: [string, string, string], header2: [string, string, string], rows1: Array<[string, number | '', string]>, rows2: Array<[string, number | '', string]>) => {
     // עמודות 0-2 בלוק 1, עמודה 3 מפריד, עמודות 4-6 בלוק 2
     const aoa: unknown[][] = [];
     aoa.push([header1[0], header1[1], header1[2], '', header2[0], header2[1], header2[2]]);

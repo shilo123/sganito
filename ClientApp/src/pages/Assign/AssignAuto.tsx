@@ -205,7 +205,6 @@ export default function AssignAuto() {
   // Per-class teacher selection for the inline recommendation rows. Keyed
   // by classId so each missing class has its own independent dropdown.
   const [classRecTeacher, setClassRecTeacher] = useState<Map<number, number>>(new Map());
-  const [classRecBusy, setClassRecBusy] = useState<number>(0);
   const [batchApplyBusy, setBatchApplyBusy] = useState(false);
   // Per-class "show all teachers" toggle. By default the dropdown for each
   // missing class only shows teachers already contracted to that class
@@ -1198,37 +1197,6 @@ export default function AssignAuto() {
     }
   }
 
-  async function doForceAssign() {
-    setLoadingTitle('משבץ בכפייה את החוסרים');
-    setIsLoading(true);
-    try {
-      // Smart force first: tries to displace other teachers from conflicting slots
-      await ajax('Assign_ShibutzForceSmart');
-      await new Promise((r) => setTimeout(r, 300));
-      // Fallback: simple force for whatever couldn't be displaced
-      await ajax('Assign_ShibutzForce');
-      await new Promise((r) => setTimeout(r, 300));
-      const diag = await fetchDiagnostic();
-      setDiagnostic(diag);
-      if (diag.length === 0) {
-        setShowDiagnostic(false);
-        setResultMode('success');
-        setShowResults(true);
-        setSuccessAlert(true);
-        toast.success('כל החוסרים שובצו בכפייה בהצלחה');
-      } else {
-        toast.success('שובצו בכפייה. נותרו ' + diag.length + ' חוסרים שאי אפשר לשבץ פיזית');
-        setShowDiagnostic(true);
-      }
-    } catch (e) {
-      console.error('Assign_ShibutzForce failed', e);
-      toast.error('שגיאה בשיבוץ בכפייה');
-    } finally {
-      setIsLoading(false);
-      refreshGapCount();
-    }
-  }
-
   async function doFixMissing() {
     setSuccessAlert(false);
     setShowResults(false);
@@ -1742,7 +1710,6 @@ export default function AssignAuto() {
               return { status: walls.length > 0 ? 'fail' : 'ok', walls };
             };
             const { status, walls: remainingWalls } = computeStatusAndWalls();
-            const allReady = status === 'ok';
             // Show the auto-resolve button only after the user has touched
             // a select. We compare the current resolutions to the snapshot
             // taken when the modal opened.
@@ -2443,11 +2410,6 @@ export default function AssignAuto() {
                       {classCards.map((cc) => {
                         const tid = classRecTeacher.get(cc.classId) ?? 0;
                         const fillable = tid ? computeFillableHours(tid, cc.classId) : 0;
-                        const existingCt = classTeacherRows.find(
-                          (r) => r.TeacherId === tid && r.ClassId === cc.classId && r.ClassTeacherId > 0,
-                        );
-                        const currentHour = existingCt?.Hour ?? 0;
-                        const newHour = currentHour + fillable;
                         const teacherInfo = allTeachers.find((t) => t.TeacherId === tid);
                         // teacherInfo unused after batch-apply consolidation but
                         // kept around in case the toast text needs it in the
@@ -2836,8 +2798,8 @@ export default function AssignAuto() {
                       {fillable > 0 && teacherInfo && classInfo && (
                         <div className="rec-widget__preview">
                           <i className="fa fa-info-circle" />
-                          הוספת <strong>{fillable}</strong> שעות ל-<strong>{teacherInfo.FullName}</strong>
-                          {' '}בכיתה <strong>{classInfo.ClassName}</strong>
+                          הוספת <strong>{fillable}</strong> שעות ל-<strong>{teacherInfo?.FullName}</strong>
+                          {' '}בכיתה <strong>{classInfo?.ClassName}</strong>
                           {' — '}
                           {currentHour > 0 ? <>חוזה יעלה מ-{currentHour} ל-{newHour}</> : <>יוצר חוזה חדש</>}
                         </div>
@@ -3175,8 +3137,8 @@ export default function AssignAuto() {
                       const hakDays = new Map<number, Set<number>>();
                       for (const dr of diagnostic) {
                         if (dr.Hakbatza > 0) {
-                          let s = hakDays.get(dr.Hakbatza);
-                          if (!s) { s = new Set(); hakDays.set(dr.Hakbatza, s); }
+                          const s = hakDays.get(dr.Hakbatza) ?? new Set<number>();
+                          hakDays.set(dr.Hakbatza, s);
                           s.add(dr.FreeDay || 0);
                         }
                       }
@@ -3306,26 +3268,11 @@ export default function AssignAuto() {
                   &times;
                 </button>
                 <h4 className="modal-title">
-                  {resultMode === 'success' ? (
-                    <>
-                      <i className="fa fa-check-circle" /> שיבוץ אוטומטי
-                    </>
-                  ) : (
-                    <>
-                      <i className="fa fa-exclamation-triangle" /> דוח שגיאות שיבוץ
-                    </>
-                  )}
+                  <i className="fa fa-exclamation-triangle" /> דוח שגיאות שיבוץ
                 </h4>
               </div>
               <div className="modal-body">
-                {resultMode === 'success' ? (
-                  <div className="alert alert-success" style={{ textAlign: 'center', fontSize: 18 }}>
-                    <strong>שיבוץ הושלם בהצלחה!</strong>
-                    <br />
-                    שובצו {savedCount} שעות
-                  </div>
-                ) : (
-                  <>
+                <>
                     <div className="alert alert-info" style={{ marginBottom: 15 }}>
                       <strong>סיכום:</strong> שובצו {savedCount} שעות,{' '}
                       {errorCount || errors.length} שגיאות
@@ -3379,14 +3326,11 @@ export default function AssignAuto() {
                       </tbody>
                     </table>
                   </>
-                )}
               </div>
               <div className="modal-footer">
                 <button
                   type="button"
-                  className={
-                    resultMode === 'success' ? 'btn btn-success' : 'btn btn-info'
-                  }
+                  className="btn btn-info"
                   onClick={() => setShowResults(false)}
                 >
                   סגור

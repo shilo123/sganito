@@ -168,10 +168,6 @@ const HOUR_SLOTS = [
   { seq: 9, time: '15:16 - 16:00' },
 ];
 
-function hoursForDay(day: number) {
-  return day === 6 ? HOUR_SLOTS.slice(0, 6) : HOUR_SLOTS;
-}
-
 function getDayId(hourId: string | number | null | undefined): number {
   if (hourId === null || hourId === undefined) return 0;
   return Number(String(hourId).charAt(0)) || 0;
@@ -634,7 +630,7 @@ function AssignBadgeImpl({
   }
   for (const ex of extras) {
     teacherSpans.push(
-      <span key={`sep-${ex.TeacherId}`}>/</span>,
+      <span key={`sep-${ex.TeacherId}`} style={{ margin: '0 2px', color: '#6b7280' }}>|</span>,
       <span
         key={`e-${ex.TeacherId}`}
         className="selected"
@@ -717,9 +713,12 @@ function AssignBadgeImpl({
             </span>
           </span>
         )}
-        <span style={{ fontWeight: 'bold' }}>
-          {primary.Professional ? `${primary.Professional} -` : ''}
-        </span>{' '}
+        {/* שם המקצוע מוצג רק בהקבצה (hakNum>0). בשיעור רגיל מציגים רק את שם
+            המורה. בהקבצה: "מקצוע - מורה1|מורה2|..." (לפי מספר המורים). */}
+        {hakNum > 0 && primary.Professional ? (
+          <span style={{ fontWeight: 'bold' }}>{primary.Professional} -</span>
+        ) : null}
+        {hakNum > 0 && primary.Professional ? ' ' : null}
         {teacherDisplay}
       </div>
       {cellTipPos && primary.TeacherName && (

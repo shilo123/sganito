@@ -205,6 +205,7 @@ export default function TeacherHours() {
   // Classes the currently-selected teacher is linked to in TeacherClass
   // (regular, hakbatza, or ihud). Picker uses this to constrain options.
   const [teacherClasses, setTeacherClasses] = useState<Array<{ ClassId: number; ClassName: string; Hakbatza: number; Ihud: number; LayerId: number }>>([]);
+  void teacherClasses;
   // All teacher→class assignments, keyed by TeacherId. Loaded once for the
   // table tag column so each row can list its classes without N round-trips.
   const [classesByTeacher, setClassesByTeacher] = useState<Map<string, Array<{
@@ -547,15 +548,6 @@ export default function TeacherHours() {
     }
     return count;
   }, [teacherHours, schoolHourIds, shehyaOnlyHourIds, selectedTeacher]);
-
-  // מספר השיבוצים הקיימים (לתצוגה אינפורמטיבית; לא בשימוש פעיל יותר)
-  const frontalCount = useMemo(() => {
-    const ids = new Set<string>();
-    for (const r of teacherHours) {
-      if (Number(r.HourTypeId) === 1) ids.add(String(r.HourId));
-    }
-    return ids.size;
-  }, [teacherHours]);
 
   // ספירת שעות לא זמינות — שורות ב-TeacherHours בלי HourTypeId אבל עם TeacherId.
   // הערה: ה-SP מחזיר גם שורות placeholder עם TeacherId=null עבור שעות פנויות
@@ -2018,7 +2010,6 @@ export default function TeacherHours() {
       {menu.visible && (() => {
         // 0 = empty, 1 = class assignment (frontaly), 2 = partani, 3 = shehya
         const ht = Number(menu.HourTypeId ?? 0);
-        const isEmpty = ht === 0;
         const isClass = ht === 1;
         const isShehya = ht === 3;
         const isPartani = ht === 2;
@@ -2501,7 +2492,7 @@ interface TeacherImportPayload {
 
 function parseTeacherRow(
   raw: Record<string, unknown>,
-  rowIdx: number,
+  _rowIdx: number,
   tafkidOptions: Array<{ TafkidId: number; Name: string }>,
   professionals: Array<{ ProfessionalId: number | string; Name: string }>,
 ): ParseRowResult<TeacherImportPayload> {

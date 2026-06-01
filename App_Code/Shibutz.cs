@@ -2748,17 +2748,30 @@ public class Shibutz
     }
 
     // Find a slot by classId, day, hour
+    // אינדקס O(1) ל-FindSlot לפי מפתח (ClassId,Day,Hour). נבנה עצלן בפעם
+    // הראשונה ש-FindSlot נקרא אחרי שכל ה-slots נוספו. מפתח: ClassId*10000 +
+    // Day*100 + Hour (Day 1-6, Hour 1-9 — בטוח בטווח). מבטל את החיפוש הלינארי
+    // שהפך את לולאות הליבה (CanAssign→WouldExceedSameSubjectRun) ל-O(n^2).
+    private Dictionary<int, HourSlot> _slotIndex;
+    private int _slotIndexCount = -1;
+
     private HourSlot FindSlot(int classId, int day, int hour)
     {
-        for (int i = 0; i < _allSlots.Count; i++)
+        // בנייה/בנייה-מחדש אם מספר ה-slots השתנה (נוספו slots חדשים).
+        if (_slotIndex == null || _slotIndexCount != _allSlots.Count)
         {
-            HourSlot slot = _allSlots[i];
-            if (slot.ClassId == classId && slot.Day == day && slot.Hour == hour)
+            _slotIndex = new Dictionary<int, HourSlot>(_allSlots.Count);
+            for (int i = 0; i < _allSlots.Count; i++)
             {
-                return slot;
+                HourSlot s = _allSlots[i];
+                int k = s.ClassId * 10000 + s.Day * 100 + s.Hour;
+                _slotIndex[k] = s; // אם יש כפילות מפתח — נשמרת האחרונה (כמו בלינארי שמחזיר ראשון; כאן זניח)
             }
+            _slotIndexCount = _allSlots.Count;
         }
-        return null;
+        int key = classId * 10000 + day * 100 + hour;
+        HourSlot slot;
+        return _slotIndex.TryGetValue(key, out slot) ? slot : null;
     }
 
     // Try to move a teacher from a slot to another slot in the same class
@@ -4130,10 +4143,30 @@ public class Shibutz
                 if (avail >= Cset.Count) validHourIds.Add(hourId);
             }
             if (validHourIds.Count < X) continue; // לא ניתן לתזמן את ההקבצה אטומית
-            // לוקחים את X השעות הראשונות (סדר עולה ⇒ עדיפות לבוקר), אבל מדלגים
-            // על שעות ש-bijection חלקי בהן יקרה. אטומיות: או מתזמנים את כל
-            // הכיתות בשעה הזו, או אף אחת.
-            validHourIds.Sort();
+            // מיון לפיזור ההקבצה על פני ימים שונים במקום בלוק רצוף: ראשית לפי
+            // "אינדקס השעה ביום" (כמה שעות מאותו יום כבר נבחרו), אז יום, אז שעה.
+            // נבחרת שעה אחת מכל יום לפני שתי שעות מאותו יום → ההקבצה מתפרסת על
+            // ימים. נשמרת אטומיות מלאה (כל שעה עדיין bijection מלא או דילוג מלא).
+            {
+                Dictionary<int, int> perDaySeen = new Dictionary<int, int>();
+                List<int[]> ranked = new List<int[]>();
+                List<int> sortedByTime = new List<int>(validHourIds);
+                sortedByTime.Sort();
+                foreach (int hid in sortedByTime)
+                {
+                    int d = hid / 10, hr = hid % 10;
+                    int seen; perDaySeen.TryGetValue(d, out seen);
+                    perDaySeen[d] = seen + 1;
+                    ranked.Add(new int[] { seen, d, hr, hid });
+                }
+                ranked.Sort((a, b) => {
+                    if (a[0] != b[0]) return a[0].CompareTo(b[0]);
+                    if (a[1] != b[1]) return a[1].CompareTo(b[1]);
+                    return a[2].CompareTo(b[2]);
+                });
+                validHourIds = new List<int>();
+                foreach (int[] r in ranked) validHourIds.Add(r[3]);
+            }
             int scheduled = 0;
             // counter שעוקב אחר כמות השיבוצים שכל מורה כבר קיבל ב-Hak הזה.
             // משמש לrotation מאוזן (לא לתת תמיד לאותו ראשון).

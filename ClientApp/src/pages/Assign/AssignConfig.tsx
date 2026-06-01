@@ -138,6 +138,7 @@ export default function AssignConfig() {
     setShowExtra(true);
     await loadExtraData();
   }
+  void openExtra;
 
   async function addExtra() {
     if (!selTeacher || !selClass || !selDay || !extraValue) {
@@ -230,14 +231,20 @@ export default function AssignConfig() {
         body: fd,
         credentials: 'include',
       });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      // השרת מחזיר JSON עם {ok:0/1,err}. דחיית אבטחה (סוג/גודל/אימות) מגיעה
+      // עם סטטוס שגיאה — מציגים את הסיבה המדויקת שהשרת החזיר.
+      let body: { ok?: number; err?: string } = {};
+      try { body = await res.json(); } catch { /* ignore non-json */ }
+      if (!res.ok || body.ok === 0) {
+        throw new Error(body.err || ('HTTP ' + res.status));
+      }
       toast.success('הלוגו הועלה בהצלחה');
       cancelPendingLogo();
       setLogoOk(true);
       setLogoKey(Date.now());
     } catch (e) {
       console.error('UploadFile failed', e);
-      toast.error('שגיאה בהעלאת הלוגו');
+      toast.error(e instanceof Error && e.message ? e.message : 'שגיאה בהעלאת הלוגו');
     } finally {
       setUploading(false);
     }
