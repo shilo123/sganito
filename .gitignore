@@ -338,3 +338,14 @@ ASALocalRun/
 
 # BeatPulse healthcheck temp database
 healthchecksdb
+# קבצי עזר/דיבוג זמניים (פלטי grep, snapshots, גיבויים חד-פעמיים)
+ClientApp/scripts/_*.txt
+ClientApp/scripts/_*.csv
+/_*.txt
+/_*.sql
+/_*.diff
+sganit_backup_operational_*.json
+shibutz_loop_snapshot.sql
+*.output
+iis-launch.log
+vite-launch.log

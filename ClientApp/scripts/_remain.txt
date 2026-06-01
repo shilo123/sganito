@@ -1,6 +1,0 @@
-2477	if (HttpContext.Current.Request.Cookies["UserData"] == null)
-4588	if (HttpContext.Current.Request.Cookies["UserData"] == null)
-5167	HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
-5196	HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
-5244	HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
-5257	HttpCookie ud = HttpContext.Current.Request.Cookies["UserData"];
