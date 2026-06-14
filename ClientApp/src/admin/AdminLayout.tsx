@@ -7,6 +7,7 @@ import './admin.css';
 export default function AdminLayout() {
   const { admin, logout } = useAdminAuth();
   const [openIssuesCount, setOpenIssuesCount] = useState<number>(0);
+  const [newContactsCount, setNewContactsCount] = useState<number>(0);
 
   useEffect(() => {
     if (!admin) return;
@@ -19,6 +20,16 @@ export default function AdminLayout() {
         setOpenIssuesCount(open);
       })
       .catch(() => setOpenIssuesCount(0));
+
+    type ContactRow = { Status?: string };
+    ajax<ContactRow[]>('Admin_GetContacts', { StatusFilter: '' })
+      .then((rows) => {
+        const fresh = Array.isArray(rows)
+          ? rows.filter((r) => r?.Status === 'חדש').length
+          : 0;
+        setNewContactsCount(fresh);
+      })
+      .catch(() => setNewContactsCount(0));
   }, [admin]);
 
   if (!admin) return <Navigate to="/admin/login" replace />;
@@ -46,6 +57,10 @@ export default function AdminLayout() {
           <NavLink to="/admin/issues" className={({ isActive }) => `admin-tab${isActive ? ' is-active' : ''}`}>
             <i className="fa fa-exclamation-circle"></i> תקלות
             {openIssuesCount > 0 && <span className="admin-tab-badge">{openIssuesCount}</span>}
+          </NavLink>
+          <NavLink to="/admin/contacts" className={({ isActive }) => `admin-tab${isActive ? ' is-active' : ''}`}>
+            <i className="fa fa-envelope"></i> פניות
+            {newContactsCount > 0 && <span className="admin-tab-badge">{newContactsCount}</span>}
           </NavLink>
         </nav>
 

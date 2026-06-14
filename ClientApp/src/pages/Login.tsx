@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ajax } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import PoweredByBizit from '../lib/PoweredByBizit';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -38,6 +39,7 @@ export default function Login() {
           <div>
             <div className="login-brand-name">סגנית</div>
             <div className="login-brand-sub">מערכת ניהול שיבוץ</div>
+            <PoweredByBizit style={{ marginTop: 4 }} />
           </div>
         </div>
 

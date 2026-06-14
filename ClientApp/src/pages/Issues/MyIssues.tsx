@@ -96,7 +96,7 @@ export default function MyIssues() {
           <div className="admin-page-sub">שלח תקלה, הצעה לשיפור או שאלה - האדמין יקבל ויגיב</div>
         </div>
         {!showForm && (
-          <button type="button" className="admin-btn admin-btn-primary" onClick={() => setShowForm(true)}>
+          <button type="button" className="admin-btn admin-btn-primary" data-coach="issue-new" onClick={() => setShowForm(true)}>
             <i className="fa fa-plus"></i> דיווח חדש
           </button>
         )}

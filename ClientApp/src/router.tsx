@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import MasterLayout from './layouts/MasterLayout';
+import LandingPage from './pages/Landing/LandingPage';
 import Login from './pages/Login';
 import Welcome from './pages/Main/Welcome';
 import SchoolHours from './pages/Config/SchoolHours';
@@ -19,9 +20,11 @@ import AdminLayout from './admin/AdminLayout';
 import AdminDashboard from './admin/AdminDashboard';
 import AdminSchools from './admin/AdminSchools';
 import AdminIssues from './admin/AdminIssues';
+import AdminContacts from './admin/AdminContacts';
 import { AdminAuthProvider } from './admin/AdminAuthContext';
 
 export const router = createBrowserRouter([
+  { path: '/landing', element: <LandingPage /> },
   { path: '/Login', element: <Login /> },
 
   // Admin routes — wrapped in AdminAuthProvider
@@ -32,6 +35,7 @@ export const router = createBrowserRouter([
       { index: true, element: <AdminDashboard /> },
       { path: 'schools', element: <AdminSchools /> },
       { path: 'issues',  element: <AdminIssues /> },
+      { path: 'contacts', element: <AdminContacts /> },
     ],
   },
   { path: '/admin/login', element: <AdminAuthProvider><AdminLogin /></AdminAuthProvider> },

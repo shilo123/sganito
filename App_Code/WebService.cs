@@ -5288,6 +5288,82 @@ ORDER BY TeacherName";
 
     #endregion
 
+    #region Contact
+
+    // פנייה מדף הנחיתה הציבורי — אין כאן אימות משתמש בכוונה (גולש אנונימי).
+    [WebMethod]
+    public void Contact_Insert()
+    {
+        string FullName   = GetParamsValueIfExist("FullName");
+        string Phone      = GetParamsValueIfExist("Phone");
+        string Email      = GetParamsValueIfExist("Email");
+        string SchoolName = GetParamsValueIfExist("SchoolName");
+        string Message    = GetParamsValueIfExist("Message");
+
+        // ולידציה בסיסית: שם חובה + לפחות דרך התקשרות אחת.
+        if (string.IsNullOrWhiteSpace(FullName) ||
+            (string.IsNullOrWhiteSpace(Phone) && string.IsNullOrWhiteSpace(Email)))
+        {
+            HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+            HttpContext.Current.Response.Write("[{\"ok\":0,\"Message\":\"נא למלא שם ולפחות טלפון או אימייל\"}]");
+            return;
+        }
+
+        // הגבלת אורך הגנתית — מונע הצפה של ה-DB מטפסים זדוניים.
+        if (FullName.Length   > 120) FullName   = FullName.Substring(0, 120);
+        if (Phone.Length      > 40)  Phone      = Phone.Substring(0, 40);
+        if (Email.Length      > 120) Email      = Email.Substring(0, 120);
+        if (SchoolName.Length > 150) SchoolName = SchoolName.Substring(0, 150);
+        if (Message.Length    > 4000) Message   = Message.Substring(0, 4000);
+
+        string ip = "";
+        string ua = "";
+        try { ip = HttpContext.Current.Request.UserHostAddress ?? ""; } catch { }
+        try { ua = HttpContext.Current.Request.UserAgent ?? ""; } catch { }
+        if (ua.Length > 400) ua = ua.Substring(0, 400);
+
+        DataTable dt = Dal.ExeSp("Contact_Insert",
+            FullName, Phone, Email, SchoolName, Message, ip, ua);
+
+        HttpContext.Current.Response.ContentType = "application/json; charset=utf-8";
+        if (dt != null && dt.Rows.Count > 0)
+            HttpContext.Current.Response.Write("[{\"ok\":1,\"Message\":\"הפנייה נשלחה בהצלחה\"}]");
+        else
+            HttpContext.Current.Response.Write("[{\"ok\":0,\"Message\":\"שגיאה בשמירת הפנייה\"}]");
+    }
+
+    [WebMethod]
+    public void Admin_GetContacts()
+    {
+        if (GetAdminIdFromCookie() == null)
+        {
+            HttpContext.Current.Response.Write("[]");
+            return;
+        }
+        string StatusFilter = GetParamsValueIfExist("StatusFilter");
+        DataTable dt = Dal.ExeSp("Admin_GetContacts", StatusFilter ?? "");
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    [WebMethod]
+    public void Admin_UpdateContactStatus()
+    {
+        if (GetAdminIdFromCookie() == null)
+        {
+            HttpContext.Current.Response.Write("[{\"ok\":0}]");
+            return;
+        }
+        string ContactId = GetParams("ContactId");
+        string Status    = GetParams("Status");
+        string AdminNote = GetParamsValueIfExist("AdminNote");
+
+        DataTable dt = Dal.ExeSp("Admin_UpdateContactStatus", ContactId, Status,
+            string.IsNullOrEmpty(AdminNote) ? null : (object)AdminNote);
+        HttpContext.Current.Response.Write(ConvertDataTabletoString(dt));
+    }
+
+    #endregion
+
     #region Onboarding
 
     [WebMethod]

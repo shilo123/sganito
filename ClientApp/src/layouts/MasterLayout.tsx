@@ -3,6 +3,8 @@ import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { ajax } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import OnboardingWizard from '../onboarding/OnboardingWizard';
+import GuidedTour from '../onboarding/GuidedTour';
+import PoweredByBizit from '../lib/PoweredByBizit';
 
 interface ClassStatusRow {
   ClassId: number | null;
@@ -13,14 +15,14 @@ interface ClassStatusRow {
 }
 
 const NAV_ITEMS = [
-  { to: '/Config/SchoolHours', icon: 'fa fa-clock-o', label: 'הגדרות שעות בית ספר' },
-  { to: '/Config/TeacherHours', icon: 'fa fa-users', label: 'ניהול מורים' },
-  { to: '/Config/TeacherClass', icon: 'fa fa-sitemap', label: 'הגדרות כיתות ומורים' },
-  { to: '/Config/Professional', icon: 'fa fa-book', label: 'הגדרות מקצועות בית ספר' },
-  { to: '/Assign/Assign', icon: 'fa fa-calendar', label: 'מערכת בית הספר' },
-  { to: '/Assign/AssignMatrix', icon: 'fa fa-th', label: 'מערכת בית הספר מטריצה' },
-  { to: '/Assign/AssignConfig', icon: 'fa fa-bolt', label: 'שיבוץ אוטומטי' },
-  { to: '/Issues/MyIssues', icon: 'fa fa-bug', label: 'דיווח תקלה' },
+  { to: '/Config/SchoolHours', icon: 'fa fa-clock-o', label: 'הגדרות שעות בית ספר', tour: 'nav-schoolhours' },
+  { to: '/Config/TeacherHours', icon: 'fa fa-users', label: 'ניהול מורים', tour: 'nav-teacherhours' },
+  { to: '/Config/TeacherClass', icon: 'fa fa-sitemap', label: 'הגדרות כיתות ומורים', tour: 'nav-teacherclass' },
+  { to: '/Config/Professional', icon: 'fa fa-book', label: 'הגדרות מקצועות בית ספר', tour: 'nav-professional' },
+  { to: '/Assign/Assign', icon: 'fa fa-calendar', label: 'מערכת בית הספר', tour: 'nav-assign' },
+  { to: '/Assign/AssignMatrix', icon: 'fa fa-th', label: 'מערכת בית הספר מטריצה', tour: 'nav-matrix' },
+  { to: '/Assign/AssignConfig', icon: 'fa fa-bolt', label: 'שיבוץ אוטומטי', tour: 'nav-auto' },
+  { to: '/Issues/MyIssues', icon: 'fa fa-bug', label: 'דיווח תקלה', tour: 'nav-issues' },
 ];
 
 export default function MasterLayout() {
@@ -28,6 +30,7 @@ export default function MasterLayout() {
   const location = useLocation();
   const [classes, setClasses] = useState<ClassStatusRow[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showTour, setShowTour] = useState(false);
 
   // טען את מצב ה-onboarding מהשרת בכל login - אם זו הכניסה הראשונה, נציג את האשף
   useEffect(() => {
@@ -122,13 +125,25 @@ export default function MasterLayout() {
       <nav className="navigation">
         <div className="container-fluid">
           <div className="header-logo">
-            <span style={{ fontWeight: 'bold' }}>סגנית </span>
+            <span style={{ fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              סגנית
+              <PoweredByBizit />
+            </span>
             <div>שלום, <span>{user.UserName}</span></div>
           </div>
           <div className="top-navigation">
             <div className="menu-control hidden-xs">
               <a href="javascript:void(0)"><i className="fa fa-bars"></i></a>
             </div>
+            <button
+              type="button"
+              className="guide-launch-btn"
+              onClick={() => { setSidebarExpanded(true); setShowTour(true); }}
+              title="מדריך אינטראקטיבי למערכת"
+            >
+              <i className="fa fa-graduation-cap"></i>
+              <span>מדריך</span>
+            </button>
             {/* Class status summary — hidden on the main schedule page
                 where the built-in coverage pill already shows this info.
                 On other screens, show a compact per-layer summary rather
@@ -174,7 +189,7 @@ export default function MasterLayout() {
                 a[0].localeCompare(b[0], 'he'),
               );
               return (
-                <div className="class-status-strip" aria-label="סטטוס שיבוץ כיתות">
+                <div className="class-status-strip" aria-label="סטטוס שיבוץ כיתות" data-tour="status-pill">
                   <button
                     type="button"
                     className="class-status-strip__summary"
@@ -246,6 +261,7 @@ export default function MasterLayout() {
           <button
             type="button"
             className="sidebar-toggle"
+            data-tour="sidebar-toggle"
             onClick={toggleSidebar}
             aria-label={sidebarExpanded ? 'כווץ תפריט' : 'הרחב תפריט'}
             title={sidebarExpanded ? 'כווץ תפריט' : 'הרחב תפריט'}
@@ -273,7 +289,7 @@ export default function MasterLayout() {
           </ul>
           <ul className="mainNav">
             {NAV_ITEMS.map((item) => (
-              <li key={item.to} className="active">
+              <li key={item.to} className="active" data-tour={item.tour}>
                 <NavLink to={item.to}>
                   <i className={item.icon}></i><span>{item.label}</span>
                 </NavLink>
@@ -300,6 +316,13 @@ export default function MasterLayout() {
 
       {showOnboarding && (
         <OnboardingWizard onComplete={() => setShowOnboarding(false)} />
+      )}
+
+      {showTour && (
+        <GuidedTour
+          onClose={() => setShowTour(false)}
+          onExpandSidebar={() => setSidebarExpanded(true)}
+        />
       )}
     </div>
   );
