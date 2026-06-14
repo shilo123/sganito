@@ -21,6 +21,7 @@ import PageLoader from '../../lib/PageLoader';
 import ExportButtons from '../../lib/ExportButtons';
 import { buildScheduleHandlers } from '../../lib/export';
 import { readUserData } from '../../auth/userData';
+import './hakbatza.css';
 
 // ============================================================================
 // Types
@@ -90,6 +91,9 @@ interface OptionalTeacherRow {
 interface AssignSlot {
   primary: AssignmentRow;
   extras: AssignmentRow[]; // additional teachers in the same hour (same ClassId+HourId)
+  // כשהתא שייך להקבצה: שמות כל מורי ההקבצה (מכל הכיתות שמשתתפות בה באותה
+  // שעה), כדי שכל כיתה בהקבצה תציג "פלוני|אלמוני|שמואל" ולא מורה בודד.
+  hakNames?: string[];
 }
 
 // Drag payload definitions -------------------------------------------------
@@ -194,6 +198,20 @@ function buildGrid(rows: AssignmentRow[]): {
   const seenClasses = new Set<string>();
   const cells = new Map<string, AssignSlot[]>();
 
+  // צבירת מורי הקבצה: לכל (LayerId, Hakbatza, HourId) -> רשימת שמות המורים
+  // הייחודיים בהקבצה. הקבצה היא יחידה לוגית בתוך שכבה, ואותו מספר הקבצה
+  // יכול לחזור בשכבות שונות באותה שעה עם מורים שונים — לכן המפתח כולל LayerId.
+  const hakMap = new Map<string, { ids: Set<string>; names: string[] }>();
+  for (const r of rows) {
+    const hak = Number(r.Hakbatza ?? 0);
+    if (hak <= 0 || !r.TeacherName) continue;
+    const key = `${r.LayerId ?? ''}|${hak}|${r.HourId}`;
+    let e = hakMap.get(key);
+    if (!e) { e = { ids: new Set(), names: [] }; hakMap.set(key, e); }
+    const tid = String(r.TeacherId ?? '');
+    if (tid && !e.ids.has(tid)) { e.ids.add(tid); e.names.push(r.TeacherName); }
+  }
+
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const cid = String(row.ClassId);
@@ -213,10 +231,14 @@ function buildGrid(rows: AssignmentRow[]): {
       j++;
     }
 
+    const hak = Number(row.Hakbatza ?? 0);
+    const hakNames =
+      hak > 0 ? hakMap.get(`${row.LayerId ?? ''}|${hak}|${row.HourId}`)?.names : undefined;
+
     const dayId = getDayId(row.HourId);
     const key = `${cid}_${dayId}`;
     const arr = cells.get(key) ?? [];
-    arr.push({ primary: row, extras });
+    arr.push({ primary: row, extras, hakNames });
     cells.set(key, arr);
     i = j;
   }
@@ -260,6 +282,13 @@ function emptySrcTgt(): SrcTgtObj {
 function dayName(n: number | string | null | undefined): string {
   const v = Number(n);
   return ['', 'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי'][v] || '';
+}
+
+// צבע מזהה לכל הקבצה — משמש לנקודות הצ'יפ בתא ולנקודות ברשימת ה-tooltip,
+// כדי שמורי אותה הקבצה יזוהו חזותית באותו גוון בכל המסך.
+function hakDotColor(n: number): string {
+  const p = ['#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#f97316', '#8b5cf6', '#14b8a6', '#ef4444'];
+  return p[(n - 1) % p.length] || '#8b5cf6';
 }
 
 interface FreeTeacherTooltipInfo {
@@ -601,7 +630,29 @@ function AssignBadgeImpl({
 
   // Build teacher-name display with spans (so right-click menu can identify teacher)
   const teacherSpans: React.ReactNode[] = [];
-  if (primary.TeacherName) {
+  // תא הקבצה: מציגים את כל מורי ההקבצה ("פלוני|אלמוני|שמואל") בכל הכיתות
+  // המשתתפות, במקום מורה בודד. ה-right-click עדיין ממוקד למורה של תא זה.
+  const hakNames = slot.hakNames;
+  if (hakNames && hakNames.length > 0) {
+    const hakN = Number(primary.Hakbatza ?? 0);
+    const dotColor = hakDotColor(hakN);
+    teacherSpans.push(
+      <span
+        key={`hak-${primary.ClassId}-${primary.HourId}`}
+        className="hak-chips"
+        onContextMenu={(e) =>
+          onTeacherRightClick(e, primary.TeacherId ?? '', primary.ClassId)
+        }
+      >
+        {hakNames.map((nm, idx) => (
+          <span className="hak-chip" key={`hc-${idx}`}>
+            <span className="hak-chip__dot" style={{ background: dotColor }} />
+            {nm}
+          </span>
+        ))}
+      </span>,
+    );
+  } else if (primary.TeacherName) {
     teacherSpans.push(
       <span
         key={`p-${primary.TeacherId}`}
@@ -628,17 +679,21 @@ function AssignBadgeImpl({
       </span>,
     );
   }
-  for (const ex of extras) {
-    teacherSpans.push(
-      <span key={`sep-${ex.TeacherId}`} style={{ margin: '0 2px', color: '#6b7280' }}>|</span>,
-      <span
-        key={`e-${ex.TeacherId}`}
-        className="selected"
-        onContextMenu={(e) => onTeacherRightClick(e, ex.TeacherId ?? '', ex.ClassId)}
-      >
-        {ex.TeacherName}
-      </span>,
-    );
+  // extras = מורים מקבילים באותה כיתה+שעה (לא הקבצה). בתא הקבצה כבר הצגנו
+  // את כל מורי ההקבצה, אז מדלגים על extras כדי לא לשכפל.
+  if (!(hakNames && hakNames.length > 0)) {
+    for (const ex of extras) {
+      teacherSpans.push(
+        <span key={`sep-${ex.TeacherId}`} style={{ margin: '0 2px', color: '#6b7280' }}>|</span>,
+        <span
+          key={`e-${ex.TeacherId}`}
+          className="selected"
+          onContextMenu={(e) => onTeacherRightClick(e, ex.TeacherId ?? '', ex.ClassId)}
+        >
+          {ex.TeacherName}
+        </span>,
+      );
+    }
   }
 
   const teacherDisplay = <>{teacherSpans}</>;
@@ -732,34 +787,53 @@ function AssignBadgeImpl({
             transform: 'translate(-50%, -100%) translateY(-10px)',
           }}
         >
-          <div className="ft-tip__name">{primary.TeacherName}</div>
-          <div className="ft-tip__rows">
-            {teacherInfo?.Tafkid && (
-              <div className="ft-tip__row">
-                <i className="fa fa-id-badge ft-tip__ic" /> תפקיד: <strong>{teacherInfo.Tafkid}</strong>
+          {hakNum > 0 && slot.hakNames && slot.hakNames.length > 0 ? (
+            <>
+              <div className="ft-tip__name">
+                <i className="fa fa-object-group" style={{ marginInlineEnd: 6, color: hakDotColor(hakNum) }} />
+                {primary.Professional ? primary.Professional : `הקבצה ${hakNum}`}
               </div>
-            )}
-            {(primary.Professional || teacherInfo?.Professional) && (
-              <div className="ft-tip__row">
-                <i className="fa fa-book ft-tip__ic" /> מקצוע: <strong>{primary.Professional || teacherInfo?.Professional}</strong>
+              <div className="hak-tip__sub">
+                הקבצה {hakNum} · {slot.hakNames.length} מורים מלמדים יחד
               </div>
-            )}
-            {teacherInfo?.Frontaly != null && teacherInfo.Frontaly !== '' && (
-              <div className="ft-tip__row">
-                <i className="fa fa-clock-o ft-tip__ic" /> שעות שבועיות: <strong>{teacherInfo.Frontaly}</strong>
+              <div className="ft-tip__rows">
+                <div className="hak-tip__teachers">
+                  {slot.hakNames.map((nm, i) => (
+                    <div className="hak-tip__teacher" key={`tt-${i}`}>
+                      <span className="hak-tip__bullet" style={{ background: hakDotColor(hakNum) }} />
+                      <strong>{nm}</strong>
+                    </div>
+                  ))}
+                </div>
               </div>
-            )}
-            {teacherInfo?.FreeDay != null && Number(teacherInfo.FreeDay) > 0 && (
-              <div className="ft-tip__row">
-                <i className="fa fa-calendar ft-tip__ic" /> יום חופשי: <strong>{dayName(teacherInfo.FreeDay)}</strong>
+            </>
+          ) : (
+            <>
+              <div className="ft-tip__name">{primary.TeacherName}</div>
+              <div className="ft-tip__rows">
+                {teacherInfo?.Tafkid && (
+                  <div className="ft-tip__row">
+                    <i className="fa fa-id-badge ft-tip__ic" /> תפקיד: <strong>{teacherInfo.Tafkid}</strong>
+                  </div>
+                )}
+                {(primary.Professional || teacherInfo?.Professional) && (
+                  <div className="ft-tip__row">
+                    <i className="fa fa-book ft-tip__ic" /> מקצוע: <strong>{primary.Professional || teacherInfo?.Professional}</strong>
+                  </div>
+                )}
+                {teacherInfo?.Frontaly != null && teacherInfo.Frontaly !== '' && (
+                  <div className="ft-tip__row">
+                    <i className="fa fa-clock-o ft-tip__ic" /> שעות שבועיות: <strong>{teacherInfo.Frontaly}</strong>
+                  </div>
+                )}
+                {teacherInfo?.FreeDay != null && Number(teacherInfo.FreeDay) > 0 && (
+                  <div className="ft-tip__row">
+                    <i className="fa fa-calendar ft-tip__ic" /> יום חופשי: <strong>{dayName(teacherInfo.FreeDay)}</strong>
+                  </div>
+                )}
               </div>
-            )}
-            {hakNum > 0 && (
-              <div className="ft-tip__row">
-                <i className="fa fa-object-group ft-tip__ic" /> הקבצה: <strong>{hakNum}</strong>
-              </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       )}
     </>

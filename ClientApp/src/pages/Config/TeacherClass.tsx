@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useToast } from '../../lib/toast';
+import { useConfirm } from '../../lib/confirm';
+import './TeacherClass.lock.css';
 import ExportButtons from '../../lib/ExportButtons';
 import { buildExportHandlers } from '../../lib/export';
 import ExcelImportModal, { type ExcelColumnSpec, type ParseRowResult, type ExcelImportTemplate, type ParsedRowsResult, type ExcelPreviewSheet } from '../../lib/ExcelImportModal';
@@ -89,6 +91,62 @@ function tafkidTheme(tafkidId: number | string | null | undefined): string {
 
 export default function TeacherClass() {
   const toast = useToast();
+  const confirm = useConfirm();
+  // ---------- מנגנון מנעול: כשהמערכת משובצת אי-אפשר לערוך שעות/כיתות/מורים ----------
+  // assignedSlots = מספר המשבצות המשובצות בפועל. כל עוד > 0 → המערכת נעולה.
+  // הנעילה משוחררת רק כשהשיבוץ הוא 0 לחלוטין (אז הדף עובד כרגיל ללא מנעול).
+  const [assignedSlots, setAssignedSlots] = useState<number>(0);
+  const locked = assignedSlots > 0;
+  // האם מתבצעת כרגע מחיקת השיבוץ (משבית את כפתור המחיקה למניעת לחיצה כפולה).
+  const [deletingAssign, setDeletingAssign] = useState(false);
+  // פופאפון חוסם קטן ושקוף-יחסית: state פשוט עם setTimeout. נעלם לבד.
+  const [lockToast, setLockToast] = useState<{ id: number; out: boolean } | null>(null);
+  const lockToastTimers = useRef<{ hide?: number; clear?: number }>({});
+
+  // טעינת מצב השיבוץ — קובע אם הדף נעול.
+  const loadAssignState = useCallback(async () => {
+    try {
+      const res = await ajax<{ EmptySlots?: number; AssignedSlots?: number }>('Assign_GetEmptySlotsCount');
+      setAssignedSlots(Number(res?.AssignedSlots ?? 0));
+    } catch (err) {
+      console.error('Assign_GetEmptySlotsCount failed', err);
+      setAssignedSlots(0);
+    }
+  }, []);
+
+  // טעינה ראשונית + רענון בכל אירוע class-status-changed (למשל אחרי שיבוץ/מחיקה במסך אחר).
+  useEffect(() => {
+    loadAssignState();
+    const onStatus = () => { loadAssignState(); };
+    window.addEventListener('class-status-changed', onStatus);
+    return () => window.removeEventListener('class-status-changed', onStatus);
+  }, [loadAssignState]);
+
+  // ניקוי טיימרים של הפופאפון בעת unmount.
+  useEffect(() => {
+    return () => {
+      if (lockToastTimers.current.hide) window.clearTimeout(lockToastTimers.current.hide);
+      if (lockToastTimers.current.clear) window.clearTimeout(lockToastTimers.current.clear);
+    };
+  }, []);
+
+  // מציג את הפופאפון החוסם (~2.5 שניות) ומחזיר true — כדי שהקורא יעצור את הפעולה.
+  // קוראים לזה מכל אזור-עריכה כשהמערכת נעולה: אם נעול → מציג פופאפון ומחזיר true.
+  const guardLocked = useCallback((): boolean => {
+    if (!locked) return false;
+    if (lockToastTimers.current.hide) window.clearTimeout(lockToastTimers.current.hide);
+    if (lockToastTimers.current.clear) window.clearTimeout(lockToastTimers.current.clear);
+    const id = Date.now();
+    setLockToast({ id, out: false });
+    lockToastTimers.current.hide = window.setTimeout(() => {
+      setLockToast((cur) => (cur && cur.id === id ? { ...cur, out: true } : cur));
+      lockToastTimers.current.clear = window.setTimeout(() => {
+        setLockToast((cur) => (cur && cur.id === id ? null : cur));
+      }, 300);
+    }, 2200);
+    return true;
+  }, [locked]);
+
   const [layerId, setLayerId] = useState<number>(1);
   const [tafkidOpts, setTafkidOpts] = useState<TafkidRow[]>([]);
   const [professionalOpts, setProfessionalOpts] = useState<ProfessionalOption[]>([]);
@@ -251,6 +309,7 @@ export default function TeacherClass() {
   const [wizardBusy, setWizardBusy] = useState(false);
 
   function openWizard() {
+    if (guardLocked()) return;
     setWizardOpen(true);
     setWizardSelectedClasses(new Set());
     setWizardName('');
@@ -600,6 +659,34 @@ export default function TeacherClass() {
     }
   }, []);
 
+  // מחיקת שיבוץ המערכת לאחר אישור כפול. בהצלחה משחרר את הנעילה,
+  // מרענן את נתוני הדף, מעדכן את מדדי השיבוץ בלייאאוט ומציג toast.
+  const handleDeleteAssignment = useCallback(async () => {
+    if (deletingAssign) return;
+    const ok = await confirm({
+      title: 'מחיקת שיבוץ המערכת',
+      message: 'האם אתה בטוח? פעולה זו תמחק את כל שיבוץ המערכת ותחזיר אפשרות עריכה.',
+      confirmText: 'כן, מחק שיבוץ',
+      cancelText: 'ביטול',
+      danger: true,
+      icon: 'fa-trash',
+    });
+    if (!ok) return;
+    setDeletingAssign(true);
+    try {
+      await ajax('Assign_DeleteAssignAuto', { IsAuto: '1' });
+      setAssignedSlots(0);
+      await Promise.all([loadTeachers(), loadClasses(layerId), loadLayerStatus()]);
+      window.dispatchEvent(new CustomEvent('class-status-changed'));
+      toast.success('שיבוץ המערכת נמחק. ניתן כעת לערוך שעות, כיתות ומורים.');
+    } catch (e) {
+      console.error('Assign_DeleteAssignAuto failed', e);
+      toast.error('שגיאה במחיקת השיבוץ. אנא נסה שוב.');
+    } finally {
+      setDeletingAssign(false);
+    }
+  }, [confirm, deletingAssign, layerId, loadClasses, loadLayerStatus, loadTeachers, toast]);
+
   useEffect(() => {
     let cancelled = false;
     setInitialLoading(true);
@@ -635,6 +722,7 @@ export default function TeacherClass() {
 
   // ---------- teacher modal ----------
   async function openTeacherModal(type: 1 | 2, teacherId?: number) {
+    if (guardLocked()) return;
     setTeacherModalType(type);
     if (type === 1 && teacherId != null) {
       try {
@@ -718,6 +806,7 @@ export default function TeacherClass() {
 
   // ---------- class modal ----------
   function openClassWindow(classId: number | '', className: string, seq: number | string, mode: 1 | 2) {
+    if (guardLocked()) return;
     setClassModalMode(mode);
     // מצב עריכה: שולפים את המחנך/ת הנוכחי/ת לפי ManageClassId
     const currentHomeroom = mode === 2 && typeof classId === 'number'
@@ -795,6 +884,7 @@ export default function TeacherClass() {
   }
 
   function requestDeleteClass(classId: number, className: string) {
+    if (guardLocked()) return;
     setConfirmDelete({ classId, className });
   }
   function confirmDeleteClass() {
@@ -856,6 +946,7 @@ export default function TeacherClass() {
 
   // ---------- drag and drop ----------
   function onDragStartTeacher(e: React.DragEvent, teacherId: number) {
+    if (locked) { e.preventDefault(); guardLocked(); return; }
     dragInfo.current = { sourceType: 'teacher', teacherId };
     e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData('text/plain', `teacher_${teacherId}`);
@@ -865,6 +956,7 @@ export default function TeacherClass() {
     e: React.DragEvent,
     row: { TeacherId: number; ClassId: number; Hakbatza: string | null; ClassTeacherId: number | null }
   ) {
+    if (locked) { e.preventDefault(); e.stopPropagation(); guardLocked(); return; }
     dragInfo.current = {
       sourceType: 'teacherInClass',
       teacherId: row.TeacherId,
@@ -889,6 +981,7 @@ export default function TeacherClass() {
     e.preventDefault();
     e.stopPropagation();
     setDragHoverClassId(null);
+    if (guardLocked()) { dragInfo.current = null; return; }
     const info = dragInfo.current;
     if (!info) return;
     dragInfo.current = null;
@@ -959,6 +1052,7 @@ export default function TeacherClass() {
     e.preventDefault();
     e.stopPropagation();
     setDragHoverClassId(null);
+    if (guardLocked()) { dragInfo.current = null; return; }
     const info = dragInfo.current;
     if (!info) return;
     dragInfo.current = null;
@@ -1024,6 +1118,7 @@ export default function TeacherClass() {
     teacherNames: string,
     hakbatza: number,
   ) {
+    if (guardLocked()) return;
     setGroupModal({
       classId,
       className,
@@ -1084,6 +1179,7 @@ export default function TeacherClass() {
     classTeacherId: number | null,
     hakbatza: string | null
   ) {
+    if (guardLocked()) return;
     if (!/^-?\d+(\.\d+)?$/.test(hour)) {
       toast.warning('יש להזין מספרים בלבד', { title: 'קלט לא תקין' });
       return;
@@ -1492,6 +1588,28 @@ export default function TeacherClass() {
           </div>
         </div>
       )}
+      {locked && (
+        <div className="tc-lock-banner" style={{ gridColumn: '1 / -1' }}>
+          <div className="tc-lock-banner__icon">
+            <i className="fa fa-lock" aria-hidden="true" />
+          </div>
+          <div className="tc-lock-banner__text">
+            <span className="tc-lock-banner__title">המערכת משובצת — לא ניתן לערוך שעות, כיתות או מורים.</span>
+            <span className="tc-lock-banner__sub">
+              למחיקת השיבוץ ושחזור אפשרות העריכה לחץ "מחיקת שיבוץ המערכת". כל שאר הפעולות נשארות לצפייה בלבד.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="tc-lock-banner__delete"
+            onClick={handleDeleteAssignment}
+            disabled={deletingAssign}
+          >
+            <i className={`fa ${deletingAssign ? 'fa-spinner fa-spin' : 'fa-trash'}`} aria-hidden="true" />
+            {deletingAssign ? 'מוחק...' : 'מחיקת שיבוץ המערכת'}
+          </button>
+        </div>
+      )}
       <div className="col-md-9 tc-page__classes">
         {preCheckIssues.length > 0 && (
           <div style={{ background: '#fef3c7', border: '1px solid #f59e0b', borderRadius: 8, padding: '10px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, fontSize: 14 }}>
@@ -1576,16 +1694,16 @@ export default function TeacherClass() {
               </div>
               <button
                 type="button"
-                className="btn btn-success btn-sm tc-add-class"
+                className={`btn btn-success btn-sm tc-add-class${locked ? ' tc-locked-zone' : ''}`}
                 onClick={() => openClassWindow('', '', '', 1)}
               >
                 <i className="fa fa-plus" /> הוסף כיתה לשכבה המסומנת
               </button>
               <button
                 type="button"
-                className="excel-import-btn"
+                className={`excel-import-btn${locked ? ' tc-locked-zone' : ''}`}
                 style={{ marginInlineStart: 6 }}
-                onClick={() => setShowImportModal(true)}
+                onClick={() => { if (guardLocked()) return; setShowImportModal(true); }}
                 title="ייבוא הקצאות מורים לכיתות מקובץ Excel"
               >
                 <i className="fa fa-file-excel-o" />
@@ -1593,7 +1711,7 @@ export default function TeacherClass() {
               </button>
               <button
                 type="button"
-                className="btn btn-success btn-sm tc-add-class"
+                className={`btn btn-success btn-sm tc-add-class${locked ? ' tc-locked-zone' : ''}`}
                 style={{ marginInlineStart: 6 }}
                 onClick={openWizard}
                 title="צור הקבצה חדשה — בחר כיתות בשכבה ומורים שילמדו באותה שעה כקבוצות רמה"
@@ -1977,11 +2095,11 @@ export default function TeacherClass() {
                               <div className="tc-class-heading__topbar">
                                 <button
                                   type="button"
-                                  className="btn btn-xs tc-class-edit-pill"
+                                  className={`btn btn-xs tc-class-edit-pill${locked ? ' tc-locked-zone' : ''}`}
                                   onClick={() =>
                                     openClassWindow(panel.ClassId, panel.ClassFOREdit, panel.Seq, 2)
                                   }
-                                  title="ערוך פרטי כיתה"
+                                  title={locked ? 'המערכת משובצת — לא ניתן לערוך כיתה' : 'ערוך פרטי כיתה'}
                                 >
                                   <i className="fa fa-pencil" /> ערוך
                                 </button>
@@ -1990,9 +2108,9 @@ export default function TeacherClass() {
                                 </h3>
                                 <button
                                   type="button"
-                                  className="tc-class-close"
+                                  className={`tc-class-close${locked ? ' tc-locked-zone' : ''}`}
                                   onClick={() => requestDeleteClass(panel.ClassId, panel.ClassName)}
-                                  title="מחק כיתה"
+                                  title={locked ? 'המערכת משובצת — לא ניתן למחוק כיתה' : 'מחק כיתה'}
                                   aria-label="מחק כיתה"
                                 >
                                   <i className="fa fa-times" />
@@ -2022,8 +2140,9 @@ export default function TeacherClass() {
                                 return (
                                   <button
                                     type="button"
+                                    className={locked ? 'tc-locked-zone' : undefined}
                                     onClick={() => openClassWindow(panel.ClassId, panel.ClassFOREdit, panel.Seq, 2)}
-                                    title="לחץ כדי לשנות את המחנך/ת — נפתח חלון העריכה"
+                                    title={locked ? 'המערכת משובצת — לא ניתן לשנות מחנך/ת' : 'לחץ כדי לשנות את המחנך/ת — נפתח חלון העריכה'}
                                     style={{
                                       width: '100%',
                                       display: 'grid',
@@ -2160,9 +2279,9 @@ export default function TeacherClass() {
                             return (
                             <div
                               key={`${panel.ClassId}_${t.TeacherId}_${t.ClassTeacherId ?? ''}`}
-                              className="draggable droppable"
+                              className={`draggable droppable${locked ? ' tc-locked-zone' : ''}`}
                               style={{ marginBottom: 3, position: 'relative' }}
-                              draggable
+                              draggable={!locked}
                               onDragStart={(e) =>
                                 onDragStartTeacherInClass(e, {
                                   TeacherId: t.TeacherId,
@@ -2221,11 +2340,13 @@ export default function TeacherClass() {
                               <input
                                 key={`hr_${t.ClassTeacherId ?? 0}_${t.Hour ?? 0}`}
                                 type="text"
-                                style={{ width: '25%', float: 'left' }}
+                                readOnly={locked}
+                                style={{ width: '25%', float: 'left', ...(locked ? { cursor: 'not-allowed', background: '#f3f4f6' } : null) }}
                                 className="form-control tc-hour-input"
                                 placeholder={t.Hour != null ? String(t.Hour) : '0'}
-                                title="לחץ כדי לערוך — הערך הנוכחי מוצג כרקע"
-                                onFocus={(e) => e.currentTarget.select()}
+                                title={locked ? 'המערכת משובצת — לא ניתן לערוך שעות' : 'לחץ כדי לערוך — הערך הנוכחי מוצג כרקע'}
+                                onMouseDown={(e) => { if (locked) { e.preventDefault(); guardLocked(); } }}
+                                onFocus={(e) => { if (locked) { guardLocked(); e.currentTarget.blur(); return; } e.currentTarget.select(); }}
                                 onBlur={(e) => {
                                   const raw = e.currentTarget.value.trim();
                                   if (raw === '') return; // empty → keep current value
@@ -2265,9 +2386,9 @@ export default function TeacherClass() {
                 <span className="tc-teachers-panel__title-text">מורים</span>
                 <button
                   type="button"
-                  className="tc-teachers-panel__add"
+                  className={`tc-teachers-panel__add${locked ? ' tc-locked-zone' : ''}`}
                   onClick={() => openTeacherModal(2)}
-                  title="הוסף מורה חדש"
+                  title={locked ? 'המערכת משובצת — לא ניתן להוסיף מורה' : 'הוסף מורה חדש'}
                   aria-label="הוסף מורה"
                 >
                   <i className="fa fa-plus" />
@@ -2333,9 +2454,9 @@ export default function TeacherClass() {
                         return (
                           <div
                             key={`dvTeacher_${t.TeacherId}`}
-                            className={`btn btn-${tafkidTheme(t.TafkidId)} draggable`}
-                            draggable
-                            title={`${t.FullText} — סך שעות שבועיות: ${total}`}
+                            className={`btn btn-${tafkidTheme(t.TafkidId)} draggable${locked ? ' tc-locked-zone' : ''}`}
+                            draggable={!locked}
+                            title={locked ? `${t.FullText} — המערכת משובצת, לא ניתן לערוך` : `${t.FullText} — סך שעות שבועיות: ${total}`}
                             onDragStart={(e) => onDragStartTeacher(e, t.TeacherId)}
                             onClick={() => openTeacherModal(1, t.TeacherId)}
                             onContextMenu={(e) => onTeacherContextMenu(e, t.TeacherId)}
@@ -3847,6 +3968,19 @@ export default function TeacherClass() {
           performImport={async (rows, onProgress) => importClassTeachers(rows, onProgress)}
           onCompleted={() => { loadTeachers(); loadClasses(layerId); }}
         />
+      )}
+
+      {/* פופאפון חוסם קטן ושקוף-יחסית — מופיע בלחיצה על אזור-עריכה כשהמערכת נעולה.
+          לא מודאל חוסם-מסך; pointer-events:none כדי לא להפריע; נעלם לבד אחרי ~2.5 שניות. */}
+      {lockToast && (
+        <div
+          className={`tc-lock-toast${lockToast.out ? ' tc-lock-toast--out' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          <i className="fa fa-lock tc-lock-toast__icon" aria-hidden="true" />
+          <span>המערכת משובצת — מחק את השיבוץ כדי לערוך.</span>
+        </div>
       )}
     </div>
   );

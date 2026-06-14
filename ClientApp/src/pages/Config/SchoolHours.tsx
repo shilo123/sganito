@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ajax } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
 import PageLoader from '../../lib/PageLoader';
+import { useConfirm } from '../../lib/confirm';
+import { useToast } from '../../lib/toast';
 
 interface SchoolHourRow {
   HourId: string | number;
@@ -56,6 +58,8 @@ type ContextMenuState = {
 export default function SchoolHours() {
   const { user } = useAuth();
   const configurationId = user?.ConfigurationId ?? '';
+  const confirm = useConfirm();
+  const toast = useToast();
 
   const [rows, setRows] = useState<SchoolHourRow[]>([]);
   // מפה: HourId -> האם נבחר, האם פרטני/שהייה בלבד
@@ -64,6 +68,13 @@ export default function SchoolHours() {
   // מפה: HourId -> כמה שיבוצים תלויים בשעה הזו. שעה במפה דורשת אישור לפני
   // הסרה כי המחיקה תפיל את כל ה-TeacherAssignment שמצביע על HourId זה.
   const [assignedHourCounts, setAssignedHourCounts] = useState<Record<string, number>>({});
+  // כמות המשבצות המשובצות בכלל המערכת (הסמכות הכוללת). כל עוד הערך > 0
+  // אסור לשנות שעות בית ספר — כל ניסיון נחסם ומציג פופאפ נעילה.
+  const [assignedSlots, setAssignedSlots] = useState(0);
+  // האם הפופאפ החוסם פתוח (המערכת משובצת ולכן אי-אפשר לשנות שעות).
+  const [lockOpen, setLockOpen] = useState(false);
+  // האם מתבצעת כרגע מחיקת השיבוץ (משבית את כפתור המחיקה למניעת לחיצה כפולה).
+  const [deletingAssign, setDeletingAssign] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [menu, setMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, hourId: '' });
   // פופאפ אישור — מופיע כש-מסירים שעה שמשובצת בה כיתה
@@ -91,7 +102,7 @@ export default function SchoolHours() {
     try {
       // Load schedule definition + assignment counts in parallel — the
       // assignment counts feed the "this hour is in use" warning popup.
-      const [hoursData, assignmentsData] = await Promise.all([
+      const [hoursData, assignmentsData, slotsData] = await Promise.all([
         ajax<SchoolHourRow[]>('Gen_GetTable', {
           TableName: 'SchoolHours',
           Condition: `ConfigurationId=${configurationId}`,
@@ -100,9 +111,14 @@ export default function SchoolHours() {
           TableName: 'TeacherAssignment',
           Condition: `ConfigurationId=${configurationId}`,
         }).catch(() => [] as AssignmentLite[]),
+        // הסמכות הכוללת לשאלה "האם המערכת משובצת" — מספר המשבצות
+        // המשובצות בפועל. אם > 0, נועלים את עריכת שעות בית הספר.
+        ajax<{ EmptySlots?: number; AssignedSlots?: number }>('Assign_GetEmptySlotsCount')
+          .catch(() => null),
       ]);
 
       setRows(Array.isArray(hoursData) ? hoursData : []);
+      setAssignedSlots(Number(slotsData?.AssignedSlots ?? 0));
 
       const active: Record<string, boolean> = {};
       const shehya: Record<string, boolean> = {};
@@ -137,6 +153,49 @@ export default function SchoolHours() {
     () => Object.values(activeMap).filter(Boolean).length,
     [activeMap],
   );
+
+  // המערכת נעולה לעריכה כל עוד קיים שיבוץ כלשהו בפועל. במצב זה כל ניסיון
+  // לשנות/להוסיף/להסיר שעה נחסם ומציג את פופאפ הנעילה.
+  const isLocked = assignedSlots > 0;
+
+  // נקודת כניסה מרכזית לחסימה: אם המערכת משובצת — מבטל גרירה פעילה, פותח
+  // את פופאפ הנעילה ומחזיר true (כדי שהקורא לא ימשיך בפעולה).
+  const guardLocked = useCallback((): boolean => {
+    if (!isLocked) return false;
+    dragStarted.current = false;
+    dragMode.current = null;
+    setLockOpen(true);
+    return true;
+  }, [isLocked]);
+
+  // מחיקת שיבוץ המערכת לאחר אישור כפול. בהצלחה — מרענן את הנתונים (כולל
+  // assignedSlots, מה שמשחרר את הנעילה), מעדכן את מדדי השיבוץ בלייאאוט,
+  // ומציג toast הצלחה.
+  const handleDeleteAssignment = useCallback(async () => {
+    const ok = await confirm({
+      title: 'מחיקת שיבוץ המערכת',
+      message: 'האם אתה בטוח? פעולה זו תמחק את כל שיבוץ המערכת ותאפשר לשנות שוב את שעות בית הספר.',
+      confirmText: 'מחק שיבוץ',
+      cancelText: 'ביטול',
+      danger: true,
+      icon: 'fa-trash',
+    });
+    if (!ok) return;
+    setDeletingAssign(true);
+    try {
+      await ajax('Assign_DeleteAssignAuto', { IsAuto: '1' });
+      setLockOpen(false);
+      await loadData();
+      // עדכון מדדי השיבוץ בלייאאוט (אחוז הכיסוי וכו').
+      window.dispatchEvent(new CustomEvent('class-status-changed'));
+      toast.success('שיבוץ המערכת נמחק. ניתן כעת לשנות את שעות בית הספר.');
+    } catch (e) {
+      console.error('Assign_DeleteAssignAuto failed', e);
+      toast.error('שגיאה במחיקת השיבוץ. אנא נסה שוב.');
+    } finally {
+      setDeletingAssign(false);
+    }
+  }, [confirm, loadData, toast]);
 
   // Mode=3 = הוסף, Mode=4 = הסר, Mode=1 = הפוך לפרטני/שהייה, Mode=2 = ביטול פרטני/שהייה
   const updateHour = useCallback(async (hourId: string, mode: 1 | 2 | 3 | 4) => {
@@ -201,6 +260,9 @@ export default function SchoolHours() {
 
   const onCellMouseDown = (e: React.MouseEvent, hourId: string) => {
     if (e.button !== 0) return; // רק לחיצה שמאלית
+    // נעילה כוללת: כשהמערכת משובצת אסור לשנות שום שעה — לא להוסיף ולא
+    // להסיר. מציגים פופאפ חוסם במקום כל פעולה.
+    if (guardLocked()) return;
     const isActive = !!activeMap[hourId];
     if (isActive && guardRemoveAssigned(hourId)) return;
     // הפופאפ הזה נועד להזהיר שהוספת שעה תפתח משבצות ריקות שידרשו שיבוץ.
@@ -220,6 +282,7 @@ export default function SchoolHours() {
   };
 
   const onCellMouseEnter = (hourId: string) => {
+    if (isLocked) return; // הגנה — גרירה לא אמורה להתחיל בכלל כשנעול
     if (!dragStarted.current || !dragMode.current) return;
     const isActive = !!activeMap[hourId];
     if (dragMode.current === 'add' && !isActive) {
@@ -247,6 +310,8 @@ export default function SchoolHours() {
   // תפריט קליק-ימני
   const onCellContextMenu = (e: React.MouseEvent, hourId: string) => {
     e.preventDefault();
+    // נעילה כוללת: שינוי הגדרת פרטני/שהייה הוא גם שינוי שעה — נחסם.
+    if (guardLocked()) return;
     if (!activeMap[hourId]) return; // תפריט רלוונטי רק על שעה פעילה
     setMenu({ visible: true, x: e.clientX, y: e.clientY, hourId });
   };
@@ -472,6 +537,51 @@ export default function SchoolHours() {
           </div>
         );
       })()}
+
+      {lockOpen && (
+        <div
+          className="confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setLockOpen(false);
+          }}
+        >
+          <div className="confirm-modal__card">
+            <div className="confirm-modal__icon" style={{ color: '#7c3aed' }}>
+              <i className="fa fa-lock" />
+            </div>
+            <h3 className="confirm-modal__title">המערכת משובצת</h3>
+            <p className="confirm-modal__text" style={{ textAlign: 'right' }}>
+              לא ניתן לשנות את שעות בית הספר כל עוד קיים שיבוץ במערכת.
+              <br />
+              <br />
+              כדי לשנות שעות, יש למחוק תחילה את שיבוץ המערכת. לאחר המחיקה
+              תוכל להוסיף, להסיר ולעדכן שעות בחופשיות.
+            </p>
+            <div className="confirm-modal__actions" style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => setLockOpen(false)}
+                autoFocus
+                disabled={deletingAssign}
+              >
+                סגירה
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={handleDeleteAssignment}
+                disabled={deletingAssign}
+              >
+                <i className="fa fa-trash" />{' '}
+                {deletingAssign ? 'מוחק שיבוץ...' : 'מחיקת השיבוץ'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {addConfirm && (() => {
         const c = addConfirm;

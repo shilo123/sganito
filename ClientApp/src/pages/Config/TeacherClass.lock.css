@@ -1,0 +1,157 @@
+/* ====================================================================
+   מנגנון "מנעול" לטאב "הגדרת כיתות ומורים".
+   נטען מקומית ע"י TeacherClass.tsx בלבד — אינו נוגע ב-index.css המשותף.
+   פלטת BIZIT הסגולה, פינות מעוגלות, צללים מכובדים.
+   ==================================================================== */
+
+/* ---- באנר המנעול בראש הדף (מיקום אסטרטגי ליד טאבי השכבה) ---- */
+.tc-lock-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
+  border: 1.5px solid #7c3aed;
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.15);
+  direction: rtl;
+  animation: tc-lock-banner-in 260ms ease;
+}
+
+@keyframes tc-lock-banner-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tc-lock-banner__icon {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed, #6d28d9);
+  color: #fff;
+  font-size: 19px;
+  box-shadow: 0 2px 8px rgba(109, 40, 217, 0.4);
+}
+
+.tc-lock-banner__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.45;
+}
+
+.tc-lock-banner__title {
+  font-weight: 800;
+  font-size: 15px;
+  color: #5b21b6;
+  display: block;
+}
+
+.tc-lock-banner__sub {
+  font-size: 12.5px;
+  color: #6b21a8;
+  opacity: 0.92;
+}
+
+.tc-lock-banner__delete {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border: none;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  font-weight: 700;
+  font-size: 13.5px;
+  cursor: pointer;
+  box-shadow: 0 3px 10px rgba(220, 38, 38, 0.3);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+  white-space: nowrap;
+}
+
+.tc-lock-banner__delete:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 14px rgba(220, 38, 38, 0.4);
+  filter: brightness(1.05);
+}
+
+.tc-lock-banner__delete:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* ---- סימון אזורים נעולים: סמן חסימה + שכבת-על עדינה ב-hover ---- */
+.tc-locked-zone {
+  cursor: not-allowed !important;
+  position: relative;
+}
+
+/* כל הצאצאים האינטראקטיביים מקבלים אף הם סמן חסימה */
+.tc-locked-zone * {
+  cursor: not-allowed !important;
+}
+
+/* שכבת-על עדינה שמופיעה ב-hover כדי לסמן "לא ניתן לערוך" — בלי להזיז layout */
+.tc-locked-zone::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(124, 58, 237, 0.06);
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.tc-locked-zone:hover::after {
+  opacity: 1;
+}
+
+/* ---- פופאפון חוסם קטן וחצי-שקוף (toast צף, לא מודאל מלא) ---- */
+.tc-lock-toast {
+  position: fixed;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 11000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 18px;
+  border-radius: 12px;
+  background: rgba(76, 29, 149, 0.86);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  direction: rtl;
+  box-shadow: 0 8px 26px rgba(76, 29, 149, 0.4);
+  backdrop-filter: blur(3px);
+  pointer-events: none; /* לא מפריע לתקינות של שאר הדף */
+  animation: tc-lock-toast-in 200ms ease;
+}
+
+.tc-lock-toast--out {
+  animation: tc-lock-toast-out 280ms ease forwards;
+}
+
+.tc-lock-toast__icon {
+  font-size: 16px;
+  opacity: 0.95;
+}
+
+@keyframes tc-lock-toast-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes tc-lock-toast-out {
+  from { opacity: 1; transform: translate(-50%, 0); }
+  to   { opacity: 0; transform: translate(-50%, 10px); }
+}

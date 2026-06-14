@@ -5,6 +5,13 @@ import PageLoader from '../../lib/PageLoader';
 import ExportButtons from '../../lib/ExportButtons';
 import { buildScheduleHandlers } from '../../lib/export';
 import { readUserData } from '../../auth/userData';
+import './hakbatza.css';
+
+// צבע מזהה לכל הקבצה — תואם ל-Assign.tsx, לעקביות חזותית בין המסכים.
+function hakDotColor(n: number): string {
+  const p = ['#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#f97316', '#8b5cf6', '#14b8a6', '#ef4444'];
+  return p[(n - 1) % p.length] || '#8b5cf6';
+}
 
 // ---- Types ----
 
@@ -99,6 +106,31 @@ export default function AssignMatrix() {
       const inner = m.get(row.ClassId)!;
       if (!inner.has(row.HourId)) inner.set(row.HourId, []);
       inner.get(row.HourId)!.push(row);
+    }
+    return m;
+  }, [assignment]);
+
+  // צבירת מורי הקבצה: לכל (LayerId, Hakbatza, HourId) -> רשימת מורי ההקבצה
+  // הקבצה היא יחידה לוגית בתוך שכבה. אותה הקבצה (אותו מספר) יכולה להופיע
+  // בשתי שכבות שונות באותה שעה עם מורים שונים, לכן המפתח כולל גם LayerId.
+  // כל כיתה בהקבצה משובצת לשורה נפרדת עם מורה אחר; כאן מאחדים את כל
+  // מורי ההקבצה כדי שכל תא של ההקבצה יציג את כולם ("דניאל|דבורה").
+  const hakbatzaTeachers = useMemo(() => {
+    const m = new Map<string, { ids: Set<number>; names: string[] }>();
+    for (const row of assignment) {
+      if (!row) continue;
+      const hak = Number(row.Hakbatza ?? 0);
+      if (hak <= 0) continue;
+      const key = `${row.LayerId}|${hak}|${row.HourId}`;
+      let entry = m.get(key);
+      if (!entry) {
+        entry = { ids: new Set(), names: [] };
+        m.set(key, entry);
+      }
+      if (row.TeacherId != null && !entry.ids.has(row.TeacherId)) {
+        entry.ids.add(row.TeacherId);
+        entry.names.push(teacherShort(row.TeacherName));
+      }
     }
     return m;
   }, [assignment]);
@@ -310,12 +342,20 @@ export default function AssignMatrix() {
                       .filter((n): n is string => !!n)
                       .join(' / ');
                     const professional = rows[0]?.Professional ?? '';
-                    const short = teacherShort(names.split(' / ')[0]);
                     const hakNum = Number(rows[0]?.Hakbatza ?? 0);
+                    // בהקבצה: מציגים את כל מורי ההקבצה ("דניאל|דבורה"), לא רק מורה אחד.
+                    // הצבירה לפי (LayerId, Hakbatza, HourId) מאחדת את כל הכיתות בהקבצה.
+                    const hakNames =
+                      hakNum > 0
+                        ? hakbatzaTeachers.get(`${cls.LayerId}|${hakNum}|${hourId}`)?.names ?? []
+                        : [];
+                    const isHakbatza = hakNum > 0 && hakNames.length > 0;
+                    // תא רגיל מציג מורה בודד מקוצר; תא הקבצה מציג צ'יפים (להלן).
+                    const short = teacherShort(names.split(' / ')[0]);
                     const titleParts = [
                       cls.ClassName,
                       `${DAY_NAMES[day - 1]} שעה ${hour}`,
-                      names,
+                      isHakbatza ? `הקבצה: ${hakNames.join(' | ')}` : names,
                       professional,
                       hakNum > 0 ? `הקבצה ${hakNum}` : '',
                     ].filter(Boolean);
@@ -341,10 +381,19 @@ export default function AssignMatrix() {
                         title={titleParts.join(' · ')}
                         onClick={() => !isEmpty && handleCellClick(firstTeacher)}
                       >
-                        <span style={{ position: 'relative', display: 'inline-block' }}>
+                        <span style={{ position: 'relative', display: 'inline-block', maxWidth: '100%' }}>
                           {isEmpty ? (
                             <span style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: 10, fontWeight: 500 }}>
                               אין שיבוץ
+                            </span>
+                          ) : isHakbatza ? (
+                            <span className="hak-chips hak-chips--compact">
+                              {hakNames.map((nm, i) => (
+                                <span className="hak-chip" key={`mc-${i}`}>
+                                  <span className="hak-chip__dot" style={{ background: hakDotColor(hakNum) }} />
+                                  {nm}
+                                </span>
+                              ))}
                             </span>
                           ) : (
                             short
